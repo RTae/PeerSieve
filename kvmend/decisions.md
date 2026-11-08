@@ -48,3 +48,23 @@ Owner replies, quoted exactly, with the row text of the question each one answer
   - "39 keep". Decision 39: the open parts not built yet (checks inside the attention kernel, loads from host memory that land on only some GPUs, requests that arrive over time); suggestion: keep them in the proposal as planned evaluation work.
   - Next free number: 40.
 - 2026-11-08 13:38 CST. OWNER (mid-turn message): "39 i change my mind we can do it now". Decision 39: the open parts not built yet (checks inside the attention kernel, loads from host memory that land on only some GPUs, requests that arrive over time); this replaces the earlier "39 keep".
+- 2026-11-08 14:59 CST. OWNER: "40 a, 41 a, 42 a, 43 a, 44 a, 45 a".
+  - "40 a". Decision 40, option a: commit the proposal changes (text, Figure 13, its data and its script) as one commit on main: "Report the fair retry by damage position, and correct claims after the final read-through".
+  - "41 a". Decision 41, option a: keep the arrivals build's extra fix: when a strict request's rollback must wait a step, its prompt KV computed on top of the damage is now dropped, not reused.
+  - "42 a". Decision 42, option a: land the builds: commit each on its own branch, merge all three into main resolving the 10 conflicting spots, then rerun every CPU test on the merged code.
+  - "43 a". Decision 43, option a: GPU checks from the merged commit on octave: (1) a 2-GPU TinyLlama check (CPU tests, GPU kernel tests and the three new steps), at most 45 minutes (1.5 GPU-hours); (2) chained after it, each step only if it passed on TinyLlama, an 8-GPU Llama-3.1-8B run of the three steps, at most 55 minutes (7.3 GPU-hours); starts about 20 minutes after the yes on 42.
+  - "44 a". Decision 44, option a: build now the check right after the prefill for every request, not only strict ones, and a rerun of page 64 without the test's own check; the launch is asked separately.
+  - "45 a". Decision 45, option a: measure the tags' cost on one A100 with Llama-3.1-8B, plain against tags alone, on both workloads, on card 0, after decision 43's runs; at most 30 minutes (0.5 GPU-hours).
+  - Next free number: 46.
+- 2026-11-08 15:41 CST. OWNER: "a". Decision 46, option a: run one short 8-GPU check now on octave: Llama-3.1-8B, decode-heavy, tags alone and plain taking turns (tags, plain, tags, plain), with NCCL's setup log on; same commit ae09c14, no code change; at most 20 minutes (2.7 GPU-hours), expected 8-10 minutes.
+  - Next free number: 47.
+- 2026-11-08 15:56 CST. OWNER: "47 a, 48 a, 49 a".
+  - "47 a". Decision 47, option a: commit each fix on its own branch, merge all three into main, and rerun every CPU test on the merged code.
+  - "48 a". Decision 48, option a: rerun on octave from the merged commit: (1) a 2-GPU TinyLlama check (CPU tests, the incident test at both positions using the hook's own check, requests over time, host-memory loads), at most 30 minutes (1.0 GPU-hours); (2) chained after it, each step only if it passed, an 8-GPU Llama-3.1-8B run of page 64 with the hook's check, requests over time and host-memory loads, at most 45 minutes (6.0 GPU-hours); starts about 20 minutes after the yes on 47.
+  - "49 a". Decision 49, option a: build now the fix for skipped writes during the prefill: when the check after the prefill fails, also recompute every later prompt chunk that read the damaged page; add a test fault that skips a write during the prefill; the launch is asked separately.
+  - Next free number: 50.
+- 2026-11-08 16:51 CST. OWNER: "50 a, 51 a, 52 a".
+  - "50 a". Decision 50, option a: remove the co-author and session-link lines from the 12 commits that carry them, by rewriting main from d8e9273 on; keep the old history on a local branch so the job records still point to real commits, and add an old-to-new ID table to the results file.
+  - "51 a". Decision 51, option a: commit the refined verdict of the requests-over-time test (4 files, short message, no trailer lines), with the retry mode judged by the same rule as strict release, merge it into main, and rerun every CPU test.
+  - "52 a". Decision 52, option a: rerun the requests-over-time test on octave now, from decision 51's commit: a 2-GPU TinyLlama check (CPU tests, then the test), at most 20 minutes (0.67 GPU-hours), then chained, only if it passes, the test on Llama-3.1-8B with 8 GPUs, at most 20 minutes (2.7 GPU-hours).
+  - Next free number: 53.
