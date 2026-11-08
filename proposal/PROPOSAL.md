@@ -18,11 +18,13 @@ Nothing watches whether the KV cache is still correct, so silent damage reaches 
 - **Guard, an option:** a request can ask that none of its tokens leave the server before a check covers what they read.
 - **Parity, an option:** a compact backup in host memory rebuilds a damaged piece exactly, which pays off for bursts of damage.
 
-**Evidence.** A proof of concept on SGLang catches or drops four kinds of damage modelled on the incident. On Llama-3.1-8B at TP=8 it repaired a 32K-token request in 0.5 to 1.3 s; aborting and recomputing it took 14 s.
+**Evidence.** A proof of concept on SGLang catches three kinds of damage modelled on the incident; a fence modelled in the test drops the fourth.
 
-A retry that keeps the undamaged part of the prompt cached is as cheap when the damage is near its end; the repair pays off when the damage is early in a long prompt.
+On Llama-3.1-8B at TP=8 it repaired a 32K-token request in 0.5 to 1.3 s, where abort and retry took about 14 s.
 
-Keeping its tags cost 0.3% of Llama-3.1-8B's fault-free throughput. With the guard, a streaming client received none of the 78 wrong tokens that fast release sent.
+Against a retry that keeps the undamaged part of the prompt, the repair pays off when the damage is early and a check passed after the prefill: at page 64 it took 0.3 to 1.2 s, the retry 13 s. Near the end, both are cheap.
+
+Keeping its tags cost 0.3% of Llama-3.1-8B's fault-free throughput. With the guard, a streaming client received none of the 78 wrong tokens that a server with no checks sent.
 
 ## 1 Introduction
 
@@ -141,11 +143,11 @@ This project makes four contributions:
    Optional parity, across GPUs or within each GPU, rebuilds a damaged piece exactly, which pays off for bursts of damage.
 4. **An evaluation plan.** Fault injection on 8 A100 GPUs that measures detection, repair work and overhead against today's responses and against KVMend with parts removed.
 
-A proof of concept on our server catches or drops four kinds of damage modelled on the incident, each by the part of the check built for it; its tags cost 0.3% of Llama-3.1-8B's throughput (§7).
+A proof of concept on our server catches three kinds of damage modelled on the incident, each by the part of the check built for it; a fence modelled in the test drops the fourth. Its tags cost 0.3% of Llama-3.1-8B's throughput (§7).
 
-It repaired a 32K-token request in 0.5 to 1.3 s, where aborting and recomputing the request took 14 s; a retry that keeps the clean prefix is as cheap only for damage near the end of the prompt.
+It repaired a 32K-token request in 0.5 to 1.3 s, where abort and retry took about 14 s. Against a retry that keeps the clean prefix, it was 12 to 38 times faster for damage at page 64, once a check had passed after the prefill.
 
-On both models, strict release sent none of the 78 wrong tokens that fast release streamed.
+On both models, strict release sent none of the 78 wrong tokens that a server with no checks streamed.
 
 Section 9 answers the question we expect most: why not a simpler fix, such as ECC, a checksum on transfers, or abort and retry.
 
@@ -384,7 +386,9 @@ Other writers keep tags current: pages loaded from host memory bring the tag the
 
 By default, KVMend recomputes the damaged page: a short prefill of its 16 tokens that attends to the intact KV before them and writes new K and V over the damaged ones, in every layer.
 
-Only the page's readers are held while it is recomputed; the rest of the batch keeps running. The recompute works however many GPUs are damaged, and needs no backup.
+In the design, only the page's readers wait while it is recomputed; the rest of the batch keeps running. The proof of concept still runs the recompute inside a scheduler step, so the whole batch waits for it.
+
+The recompute works however many GPUs are damaged, and needs no backup.
 
 Recomputed KV may not match the original bit for bit, so KVMend refreshes the page's tags. In the running example, the page's 16 tokens and the 40 suspect tokens make 56 recomputed tokens (Figure 7, lower left).
 
@@ -503,30 +507,30 @@ Table 5 compares the work to fix one damaged page in the running example, and Ta
 
 *Table 5. Work to fix damage in the running example (Llama-3.1-8B at TP=8; R has a 32,768-token prompt and decoded 40 tokens since page 64's last good check; the burst rows damage 100 of R's pieces on GPU 2, all in one layer).*
 
-| Approach                                                  | Tokens recomputed | Parity read | Requests lost |
-| --------------------------------------------------------- | ----------------- | ----------- | ------------- |
-| Abort R, no retry                                         | none              | none        | 1             |
-| Abort and retry R (the main baseline, §5.3)               | 32,808            | none        | 0             |
-| Re-prefill all of R                                       | 32,808            | none        | 0             |
-| Re-prefill R from page 64, located by KVMend's tags       | 31,784            | none        | 0             |
-| KVMend: recompute page 64, redo the suspect tokens        | 56                | none        | 0             |
-| KVMend with checks on read                                | 17                | none        | 0             |
-| KVMend, damage caught before reuse                        | 16                | none        | 0             |
-| KVMend with parity, damage on one GPU                     | 40                | 64 KiB      | 0             |
-| KVMend with parity, burst over 100 pieces of R on one GPU | 40                | 6.25 MiB    | 0             |
-| KVMend without parity, same burst                         | 1,640             | none        | 0             |
+| Approach                                                                  | Tokens recomputed | Parity read | Requests lost |
+| ------------------------------------------------------------------------- | ----------------- | ----------- | ------------- |
+| Abort R, no retry                                                         | none              | none        | 1             |
+| Abort and retry R, cache flushed (today's practice, §5.3)                 | 32,808            | none        | 0             |
+| Re-prefill all of R                                                       | 32,808            | none        | 0             |
+| Retry that keeps the clean prefix: R from page 64, found by KVMend's tags | 31,784            | none        | 0             |
+| KVMend: recompute page 64, redo the suspect tokens                        | 56                | none        | 0             |
+| KVMend with checks on read                                                | 17                | none        | 0             |
+| KVMend, damage caught before reuse                                        | 16                | none        | 0             |
+| KVMend with parity, damage on one GPU                                     | 40                | 64 KiB      | 0             |
+| KVMend with parity, burst over 100 pieces of R on one GPU                 | 40                | 6.25 MiB    | 0             |
+| KVMend without parity, same burst                                         | 1,640             | none        | 0             |
 
 *Table 6. Other expected costs (estimates from model shapes and the A100's 1,555 GB/s memory bandwidth).*
 
-| Cost                                           | Estimate                                                                                                                                            | Basis                                                                                                        |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Tag memory                                     | 0.05% of the KV cache at TP=8                                                                                                                       | 4 B per 8 KiB piece                                                                                          |
-| Running-tag updates and checks before encoding | measured (§7.3): tags alone, fused, 0.3% of throughput on 8B at TP=8 and 1.6% on TinyLlama; with parity, nothing measurable over parity alone on 8B | one small update per stored token per layer                                                                  |
-| Parity in host memory (optional)               | 12.5% (8:1) or 25% (8:2) of the cached KV                                                                                                           | K/N                                                                                                          |
-| One scrub pass over 20 GB per GPU              | 1.0 s at 1.3% of bandwidth; 0.64 s at 2%                                                                                                            | 20 GB divided by the scrub rate, with a checker near full bandwidth (our fused one scans 710–784 GB/s, §7.3) |
-| Checks on read in attention                    | extra integer work per KV word and no extra memory traffic; to be measured                                                                          | the decode kernel already loads every KV byte                                                                |
-| Check before reusing a 32K-token prefix        | 0.5 ms (8B, TP=8) to 2 ms (32B, TP=4)                                                                                                               | 512 MiB to 2 GiB per GPU at 1 TB/s; measured with one launch over all layers: 0.52 and 1.74 ms (§7.3)        |
-| Suspect tokens per reader                      | one step's tokens with checks on read; up to 40 with a 1 s scrub pass                                                                               | 40 tokens/s while decoding; a prefilling reader computes thousands per second                                |
+| Cost                                           | Estimate                                                                                                                                                                                              | Basis                                                                                                        |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Tag memory                                     | 0.05% of the KV cache at TP=8                                                                                                                                                                         | 4 B per 8 KiB piece                                                                                          |
+| Running-tag updates and checks before encoding | measured (§7.3): tags alone, fused, 0.3% of throughput on 8B at TP=8 and 1.6% on TinyLlama; with parity, within 0.2% of parity alone on 8B's mostly prefill run and 1.8% slower on a decode-heavy run | one small update per stored token per layer                                                                  |
+| Parity in host memory (optional)               | 12.5% (8:1) or 25% (8:2) of the cached KV                                                                                                                                                             | K/N                                                                                                          |
+| One scrub pass over 20 GB per GPU              | 1.0 s at 1.3% of bandwidth; 0.64 s at 2%                                                                                                                                                              | 20 GB divided by the scrub rate, with a checker near full bandwidth (our fused one scans 710–784 GB/s, §7.3) |
+| Checks on read in attention                    | extra integer work per KV word and no extra memory traffic; to be measured                                                                                                                            | the decode kernel already loads every KV byte                                                                |
+| Check before reusing a 32K-token prefix        | 0.5 ms (8B, TP=8) to 2 ms (32B, TP=4)                                                                                                                                                                 | 512 MiB to 2 GiB per GPU at 1 TB/s; measured with one launch over all layers: 0.52 and 1.74 ms (§7.3)        |
+| Suspect tokens per reader                      | one step's tokens with checks on read; up to 40 with a 1 s scrub pass                                                                                                                                 | 40 tokens/s while decoding; a prefilling reader computes thousands per second                                |
 
 ## 5 Evaluation Methodology
 
@@ -561,11 +565,12 @@ GhostServe's released code does not run on A100, so we implement per-page parity
 
 ### 5.3 Baselines
 
-- **Abort and retry, the main baseline:** our checks find the damage, the readers are aborted, as SGLang does when its transfer checksum fails [2], their cached KV is dropped, and the client resubmits.
+- **Abort and retry, today's practice:** our checks find the damage, the readers are aborted, as SGLang does when its transfer checksum fails [2], their cached KV is dropped, and the client resubmits.
   Today's systems respond this way when a check fails; without per-page tags they cannot tell which cached pages are bad. This returns the right text at the cost of recomputing the whole request.
 - **No checks:** parity alone, as in GhostServe; damage stays silent.
 - **NaN check:** SGLang's optional check for NaN in the logits. It logs the NaN and masks it, so it notices such faults but cannot locate or repair them, and the text stays wrong.
-- **Detect and re-prefill:** our checks, then re-prefill each reader, either fully, as today's checks allow, or from the damaged page onward, which already needs our tags to find the page.
+- **Retry that keeps the clean prefix:** the same abort, but only the damaged page and what follows it are dropped, so the resubmitted request recomputes from that page on.
+  It needs our tags to find the page, and is the strongest baseline (§7.5).
 - **KVMend with parity:** the default plus per-page parity, which rebuilds a damaged piece instead of recomputing its page; this shows what parity is worth, and the burst size at which it beats recompute.
 - **KVMend without the redo:** the page is repaired, but the suspect tokens are kept; this shows what the redo is worth.
 - **Parity without tags:** an RS 8:2 code checks stripes and corrects one bad piece on its own; this shows what tags are worth.
@@ -582,16 +587,16 @@ We inject faults in software, because the A100's ECC reports most memory errors 
 
 *Table 8. Fault classes for injection.*
 
-| Fault class             | How we inject it                                                                                                                  | Real counterpart                               | Expected repair                                                 |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------- |
-| Bit flips on one GPU    | flip one bit at swept positions (sign, exponent, mantissa) of K or V, in a sealed piece, the open page, or a page not yet encoded | memory errors without ECC [11]                 | recompute of the page; with parity, a rebuild                   |
-| Partial load            | a page loaded from host memory lands on only some GPUs                                                                            | a failed per-GPU transfer                      | re-copy from the host copy                                      |
-| Late write on every GPU | write another request's data into a reused slot on all GPUs, through the store path or around it                                  | a dead request's late write [2]                | write dropped by its stale generation, or recompute of the page |
-| Read after free         | let a request keep reading a slot after it is freed and reused                                                                    | a slot-lifetime bug                            | changed generation, then recompute                              |
-| Misplaced page          | point one token-table entry at another live page                                                                                  | a slot-mapping bug                             | the tag's token key fails, then recompute                       |
-| Never-written page      | skip the writes of a page                                                                                                         | a rejected request that passed the handoff [1] | tag does not cover the read, then recompute                     |
-| Damaged parity or tag   | flip bits in host parity or in a tag                                                                                              | host memory error or bug                       | rebuilt piece fails its tag, then recompute of the page (§4.4)  |
-| Burst over many pages   | damage a range of slots on one GPU                                                                                                | a failing memory region                        | many parity rebuilds, then slot retirement                      |
+| Fault class             | How we inject it                                                                                                                  | Real counterpart                               | Expected repair                                                                  |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------- |
+| Bit flips on one GPU    | flip one bit at swept positions (sign, exponent, mantissa) of K or V, in a sealed piece, the open page, or a page not yet encoded | memory errors without ECC [11]                 | recompute of the page; with parity, a rebuild                                    |
+| Partial load            | a page loaded from host memory lands on only some GPUs                                                                            | a failed per-GPU transfer                      | re-copy from the host copy                                                       |
+| Late write on every GPU | write another request's data into a reused slot on all GPUs, through the store path or around it                                  | a dead request's late write [2]                | write dropped by its stale generation, or recompute of the page                  |
+| Read after free         | let a request keep reading a slot after it is freed and reused                                                                    | a slot-lifetime bug                            | changed generation, then recompute                                               |
+| Misplaced page          | point one token-table entry at another live page                                                                                  | a slot-mapping bug                             | the tag's token key fails, then recompute                                        |
+| Never-written page      | skip the writes of a page                                                                                                         | a rejected request that passed the handoff [1] | tag does not cover the read, then recompute                                      |
+| Damaged parity or tag   | flip bits in host parity or in a tag                                                                                              | host memory error or bug                       | rebuilt piece fails its tag, then recompute of the page (§4.4, measured in §7.7) |
+| Burst over many pages   | damage a range of slots on one GPU                                                                                                | a failing memory region                        | many parity rebuilds, then slot retirement                                       |
 
 Flips of the top exponent bit make NaN or huge values; a NaN check notices only the NaN cases. In §7.4, NaNs gave garbage, huge values changed nothing or, once, gave fluent but wrong text, and flips of lower bits changed nothing.
 
@@ -623,17 +628,17 @@ Figure 11 plots the expected work per repair and the expected scrub trade-off, a
 
 *Table 9. Hypotheses and expected results.*
 
-| #  | Part                 | Hypothesis                                         | Expected result and basis                                                                                                                                                                                                                                                                                                                                                           |
-| -- | -------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| H1 | watch                | The checks find every injected change              | damage to pieces that running requests read found at the next read; idle pieces within one scrub pass or before reuse; stale writes, reads after free, misplaced and never-written pages caught before use; proof of concept: the incident's four kinds each found or dropped, where the scrub alone found one (§7.5)                                                               |
-| H2 | mend (parity option) | With parity, a rebuild is exact                    | every single-GPU fault rebuilt bit for bit against the fault-free copy, reading 64 KiB; proof of concept: bit for bit across GPUs, reading 64 KiB (§7.2), from a stripe within one GPU (§7.5), and for every burst of §7.7                                                                                                                                                          |
-| H3 | mend                 | KVMend recomputes far fewer tokens than re-prefill | 56 tokens instead of 32,808 in the running example (40 with parity), and 16 when caught before reuse; the last-good-check bound gives most of the saving; proof of concept: 41 instead of 32,809, with the window set by the test (§7.2); for four pages damaged on every GPU, 64 recomputed and 40 regenerated, where abort and retry recomputed the whole 32K-token prompt (§7.5) |
-| H4 | mend                 | Damage on every GPU needs no abort                 | the page's 16 tokens and the suspect tokens are recomputed: 56 in the example; proof of concept: four pages damaged on every GPU repaired with no abort, and the right text (§7.5)                                                                                                                                                                                                  |
-| H5 | mend                 | The repair set follows detection latency           | one step of tokens per reader with checks on read; with the scrub alone, in proportion to the pass time (Figure 11b)                                                                                                                                                                                                                                                                |
-| H6 | timing               | Lazy repair saves work                             | pieces whose owners finish before their next read are never repaired; the share is measured per workload                                                                                                                                                                                                                                                                            |
-| H7 | cost                 | Protection is cheap                                | targets: tags within 3% of plain SGLang's fault-free throughput, and KVMend with parity within 3% of parity alone; proof of concept on 8B at TP=8: fused tags alone 0.3%; KVMend with parity +0.2% against parity alone on the mixed workload, −1.8% on a decode-heavy one (§7.3)                                                                                                   |
-| H8 | mend (parity option) | Parity pays off for bursts                         | 100 damaged pieces rebuilt by reading 6.25 MiB, instead of recomputing their pages' 1,600 tokens (1,640 with the suspect tokens, Table 5); proof of concept: on 8B at TP=8 a rebuild beat recompute at every size tried, 1 to 1,024 pieces, by 8 to 100 times; on TinyLlama it lost at 512 pieces (§7.7)                                                                            |
-| H9 | guard                | No unchecked token reaches a strict request's user | with strict release, no unchecked token is released; with checks on read, holding tokens back adds less than one step; proof of concept on both models: strict release sent none of the 78 wrong tokens that fast release streamed; a check costs 0.4–1.1 ms, and checking before every token lengthened 8B's gap between tokens by 12% (§7.6)                                      |
+| #  | Part                 | Hypothesis                                         | Expected result and basis                                                                                                                                                                                                                                                                                                                                                              |
+| -- | -------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| H1 | watch                | The checks find every injected change              | damage to pieces that running requests read found at the next read; idle pieces within one scrub pass or before reuse; stale writes, reads after free, misplaced and never-written pages caught before use; proof of concept: three of the incident's four kinds found, and the fourth dropped by a fence modelled in the test, where the scrub alone found one (§7.5)                 |
+| H2 | mend (parity option) | With parity, a rebuild is exact                    | every single-GPU fault rebuilt bit for bit against the fault-free copy, reading 64 KiB; proof of concept: bit for bit across GPUs, reading 64 KiB (§7.2), from a stripe within one GPU (§7.5), and for every burst of §7.7                                                                                                                                                             |
+| H3 | mend                 | KVMend recomputes far fewer tokens than re-prefill | 56 tokens instead of 32,808 in the running example (40 with parity), and 16 when caught before reuse; the last-good-check bound gives most of the saving; proof of concept: 41 instead of 32,809, with the window set by the test (§7.2); with damage at page 64 on every GPU, 16 recomputed and 40 regenerated, 12 to 38 times faster than a retry that keeps the clean prefix (§7.5) |
+| H4 | mend                 | Damage on every GPU needs no abort                 | the page's 16 tokens and the suspect tokens are recomputed: 56 in the example; proof of concept: four pages damaged on every GPU repaired with no abort, and the right text (§7.5)                                                                                                                                                                                                     |
+| H5 | mend                 | The repair set follows detection latency           | one step of tokens per reader with checks on read; with the scrub alone, in proportion to the pass time (Figure 11b)                                                                                                                                                                                                                                                                   |
+| H6 | timing               | Lazy repair saves work                             | pieces whose owners finish before their next read are never repaired; the share is measured per workload                                                                                                                                                                                                                                                                               |
+| H7 | cost                 | Protection is cheap                                | targets: tags within 3% of plain SGLang's fault-free throughput, and KVMend with parity within 3% of parity alone; proof of concept on 8B at TP=8: fused tags alone 0.3%; KVMend with parity +0.2% against parity alone on the mixed workload, −1.8% on a decode-heavy one (§7.3)                                                                                                      |
+| H8 | mend (parity option) | Parity pays off for bursts                         | 100 damaged pieces rebuilt by reading 6.25 MiB, instead of recomputing their pages' 1,600 tokens (1,640 with the suspect tokens, Table 5); proof of concept: on 8B at TP=8 a rebuild beat recompute at every size tried, 1 to 1,024 pieces, by 8 to 110 times; on TinyLlama it lost at 512 pieces (§7.7)                                                                               |
+| H9 | guard                | No unchecked token reaches a strict request's user | with strict release, no unchecked token is released; with checks on read, holding tokens back adds less than one step; proof of concept on both models: strict release sent none of the 78 wrong tokens that a server with no checks streamed; a check costs 0.4–1.1 ms, and checking before every token lengthened 8B's gap between tokens by 12% (§7.6)                              |
 
 ## 7 Preliminary Results
 
@@ -651,12 +656,16 @@ It builds the core of the design:
 
 - **Watch:** a running tag per piece, keyed by each token's id and position and updated as SGLang stores K and V, also inside its decode CUDA graphs, by fused Triton kernels.
 - **Checks:** a scrub, and the reader's check of one request's pages: the tag must cover its tokens there, match them with its token keys, and keep the generation it had. Every layer is checked in one kernel launch.
-- **Stale writes:** slot generations, and a write fence that drops a write carrying an old generation.
+- **Stale writes:** slot generations. The write fence is modelled in the fault injector, which drops its own stale write; SGLang's store path does not yet carry a writer's generation.
 - **Mend:** a damaged page is recomputed in place by a short side prefill over the intact KV before it. With parity, a damaged piece is rebuilt instead, from the other GPUs or from a stripe within its own GPU.
 - **Mend what it reached:** SGLang's retract path rolls a request back; every strict reader of a mended page then regenerates its unchecked tokens, and cached KV written after the reader's last good check is evicted.
 - **Guard:** the release rule, with one batched check per step for every strict request that is due.
 
-It does not yet build checks on read inside the attention kernel, checks before reuse or after risky events, the repair and watch lists, slot retirement, Reed–Solomon parity, or loads from host memory.
+It does not yet build a fence in the store path, checks on read inside the attention kernel, checks before reuse or after risky events, the repair and watch lists, slot retirement, Reed–Solomon parity, or loads from host memory.
+
+Only strict requests are checked automatically. A fast-release request gets no check, rollback or report yet, so the fast-release runs of §7.6 and §7.8 have no checks at all.
+
+The reader's check runs between steps, over one request's pages. Checks on read would run inside the attention kernel, as it reads the KV.
 
 It also re-implements GhostServe's parity and rebuild, because GhostServe's released code does not run on A100 (§5.2).
 
@@ -774,7 +783,7 @@ In the earlier version KVMend cost 3.4% over parity alone, just above H7's targe
 
 Two parts caused the cost: the tag update was a series of separate PyTorch operations in every layer, and checking tags before encoding waited for the GPU once per layer.
 
-On Llama-3.1-8B the scrub cost nothing measurable at these rates, which are 170–500 times below the design rate; on TinyLlama it cost up to 3.5%. It raised no false alarm over about 0.8 million pieces per run on each GPU.
+On Llama-3.1-8B the scrub cost nothing measurable at these rates, which are 160–480 times below the design rate; on TinyLlama it cost up to 3.5%. It raised no false alarm over about 0.8 million pieces per run on each GPU.
 
 The checker of that version read only about 12–18 GB/s per GPU, about 1% of memory bandwidth, too slow for the 1.0 s pass over 20 GB of §4.3 and Table 6.
 
@@ -794,13 +803,13 @@ Prefill also takes more than half of each run above (estimated from its rate), s
 
 There each output step took 58.1 ms in plain SGLang, 58.9 ms with parity alone and 60.0 ms with KVMend and parity: 3.2% slower than plain and 1.8% slower than parity alone (median of 2 runs; tags alone not run).
 
-### 7.4 The fair test: strict release against abort and retry
+### 7.4 Returning the right text: strict release against abort and retry
 
 Here both repairing responses must return the fault-free text, as §5.3 requires (Table 12). The fault is the NaN of §7.2, found at output 41.
 
-KVMend uses strict release: R's 40 suspect tokens were never sent, so after the rebuild it drops them and generates them again. Abort and retry, the main baseline of §5.3, stops R, flushes the whole cache and resubmits R.
+KVMend uses strict release: R's 40 suspect tokens were never sent, so after the rebuild it drops them and generates them again. Abort and retry, today's practice (§5.3), stops R, flushes the whole cache and resubmits R.
 
-Dropping only the damaged KV, which needs KVMend's tags to locate it, would keep the first 1,024 prompt tokens cached and save about 3% of the retry's prefill.
+A retry that drops only the damaged KV, which needs KVMend's tags to locate it, would keep the first 1,024 prompt tokens cached, about 3% of the prompt. §7.5 measures such a retry.
 
 *Table 12. The two repairing responses must return the fault-free text (Llama-3.1-8B at TP=8, 32,768-token prompt; one run each). Extra time is over 17.0 s, the median of nine runs that inject a fault and take no action.*
 
@@ -837,16 +846,16 @@ The incident of §1.1 replaced whole pages instead of flipping bits. We injected
 
 We ran TinyLlama-1.1B at TP=2 with a 1,536-token prompt, and our main setup, Llama-3.1-8B at TP=8, with a 32,768-token prompt (Table 13).
 
-The pages never written are found by a check right after the prefill, before any decode step reads them. The late writes strike at output 10 and a check at output 41 looks for them; after a mend, R redoes its 40 suspect tokens (Figure 13a).
+The pages never written are found by a check right after the prefill, before any decode step reads them. The late writes strike at output 10 and a check at output 41 looks for them; after a mend, R redoes its 40 suspect tokens.
 
 *Table 13. The incident's kinds of damage (one run each). Extra time is over the median of three runs that take no repair action: 0.51 s on TinyLlama-1.1B at TP=2 and 15.10 s on Llama-3.1-8B at TP=8.*
 
-| Damage                            | Without checks (TinyLlama / 8B)     | Scrub finds it | Reader's check finds it by              | KVMend's repair                           | KVMend extra time (TinyLlama / 8B) | Abort and retry extra time (TinyLlama / 8B) |
-| --------------------------------- | ----------------------------------- | -------------- | --------------------------------------- | ----------------------------------------- | ---------------------------------- | ------------------------------------------- |
-| Never written                     | fluent but wrong / fluent but wrong | no             | coverage                                | recompute the pages                       | +0.08 s / +0.47 s                  | +0.30 s / +14.20 s                          |
-| Late write around the store path  | fluent but wrong / unchanged        | yes            | tag                                     | recompute the pages; regenerate 40 tokens | +0.35 s / +1.32 s                  | +0.68 s / +14.75 s                          |
-| Late write through the store path | fluent but wrong / unchanged        | no             | not needed: the fence dropped the write | none                                      | +0.04 s / +0.23 s                  | not run                                     |
-| Another sequence's KV             | fluent but wrong / unchanged        | no             | tag, keyed by R's own tokens            | recompute the pages; regenerate 40 tokens | +0.34 s / +1.32 s                  | not run                                     |
+| Damage                            | Without checks (TinyLlama / 8B)     | Scrub finds it | Reader's check finds it by                       | KVMend's repair                           | KVMend extra time (TinyLlama / 8B) | Abort and retry extra time (TinyLlama / 8B) |
+| --------------------------------- | ----------------------------------- | -------------- | ------------------------------------------------ | ----------------------------------------- | ---------------------------------- | ------------------------------------------- |
+| Never written                     | fluent but wrong / fluent but wrong | no             | coverage                                         | recompute the pages                       | +0.08 s / +0.47 s                  | +0.30 s / +14.20 s                          |
+| Late write around the store path  | fluent but wrong / unchanged        | yes            | tag                                              | recompute the pages; regenerate 40 tokens | +0.35 s / +1.32 s                  | +0.68 s / +14.75 s                          |
+| Late write through the store path | fluent but wrong / unchanged        | no             | not needed: the modelled fence dropped the write | none                                      | +0.04 s / +0.23 s                  | not run                                     |
+| Another sequence's KV             | fluent but wrong / unchanged        | no             | tag, keyed by R's own tokens                     | recompute the pages; regenerate 40 tokens | +0.34 s / +1.32 s                  | not run                                     |
 
 Without checks, TinyLlama's text went fluent but wrong, with no error, as in the incident: for pages never written, and for a late write that lands (one run stands for the three late kinds).
 
@@ -854,19 +863,38 @@ On Llama-3.1-8B only the pages never written changed the text; four late-written
 
 The scrub, which compares stored bytes with stored tags, found only the late write around the store path. In the other three cases the bytes match their tags.
 
-The reader's check found all three kinds that changed KV, each by a different part: coverage for the pages never written, the tag for the late write, the token key for another sequence's KV. The fence dropped the stale write.
+The reader's check found all three kinds that changed KV, each by a different part: coverage for the pages never written, the tag for the late write, the token key for another sequence's KV.
+
+The fence, modelled in the fault injector, dropped the stale write.
 
 KVMend's text equals the fault-free text in seven of eight cases. The eighth, TinyLlama's never-written pages, matches a fault-free run that recomputes the same pages: recompute is not bit for bit, and output 73 is a near-tie.
 
 Abort and retry, with the same checks, also returned the fault-free text, but it flushed the cache and recomputed R's whole prompt. On the 32K-token prompt KVMend's repairs cost 11 to 30 times less time than that.
 
-A fairer retry would drop only the damaged pages, which KVMend's tags locate, and keep the rest of the prompt cached. Our damage sat in the last four pages, so that retry would recompute 64 tokens and cost about as much as KVMend.
+A retry that keeps the clean prefix is stronger: it drops only the damaged pages and what follows them, which KVMend's tags locate, and keeps the prompt before them cached.
 
-We did not run it. KVMend's saving over it grows with the tokens after the damaged page: for page 64 of the running example, 56 tokens against 31,784 (Table 5), a case still to measure.
+We ran it on Llama-3.1-8B with the damage at the end of the prompt and at page 64 (Table 14, Figure 13a). In each run a check had passed right after the prefill, placed by the test (§7.1).
+
+*Table 14. KVMend against two retries, by where the damage sits (Llama-3.1-8B at TP=8, 32,768-token prompt; extra time over 15.0 s; one run each; every text right).*
+
+| Damage                         | KVMend  | Retry that keeps the clean prefix | Abort and retry, cache flushed |
+| ------------------------------ | ------- | --------------------------------- | ------------------------------ |
+| Never written, last four pages | +0.48 s | +0.45 s                           | +13.29 s                       |
+| Late write, last four pages    | +1.32 s | +1.17 s                           | +14.04 s                       |
+| Never written, page 64         | +0.34 s | +12.78 s                          | +13.37 s                       |
+| Late write, page 64            | +1.15 s | +13.49 s                          | +14.43 s                       |
+
+With the damage at the end, this retry recomputes 64 tokens and costs as much as KVMend's repair, or a little less.
+
+With the damage at page 64, it recomputes 31,744 tokens. KVMend recomputes 16, and regenerates 40 after the late write, so it is 12 to 38 times faster.
+
+Fixed costs, such as the 40 decode steps, keep this ratio far below the token ratio of Table 5. At page 64 no damage changed 8B's text, even with no checks, so these rows price the repair, not a wrong answer avoided.
 
 Most of KVMend's +1.32 s on 8B is the rollback and the 40 regenerated tokens. Recomputing the four pages took 0.22 s; the checks, still built from PyTorch operations, and parity encoding add 0.23 s even when nothing needs repair.
 
 On one GPU, Llama-3.1-8B with one damaged page shows what a stripe within the GPU does. It rebuilt the late write bit for bit, 32 pieces in 12 ms; KVMend added +0.8 to +2.1 s, and abort and retry, recomputing the prompt, +7.1 to +8.2 s.
+
+On one GPU the same request takes 8.7 s, not 15 s, so the gap to abort and retry is 4 to 9 times, not 11 to 30.
 
 The stripe could not rebuild another sequence's KV, for a reason given in §7.7.
 
@@ -874,17 +902,19 @@ The stripe could not rebuild another sequence's KV, for a reason given in §7.7.
 
 *Figure 13. Repairs on the main setup (Llama-3.1-8B at TP=8 on our 8 A100 GPUs; one run each).*
 
-*(a) Extra time to the right text for each kind of damage, on a log scale: KVMend against an abort and retry that flushes the cache and recomputes the whole request, run for the first two kinds.*
+*(a) Extra time to the right text, by where the damage sits, on a log scale: KVMend, a retry that keeps the clean prefix and recomputes from the damaged page, and an abort and retry that flushes the cache (Table 14).*
 
-*(b) Repair time of a burst on one GPU against the damaged pieces in one layer, on a log scale: rebuilt from parity, or recomputed. The burst over 8 layers is in Table 15.*
+*(b) Repair time of a burst on one GPU against the damaged pieces in one layer, on a log scale: rebuilt from parity, or recomputed. The burst over 8 layers is in Table 16.*
 
 ### 7.6 The release rule on a streamed request
 
-Section 7.4 returned the right text only for a request that was not streamed. Here R streams its 80 tokens, and from output 2 its last four prompt pages hold KV that was never written for it, on every GPU, as in the incident.
+Section 7.4 returned the right text only for a request that was not streamed. Here R streams its 80 tokens, and from output 2 its last four prompt pages hold KV never written for it, on every GPU.
 
-Under strict release, the release rule's own checks must find the damage. It checks right after the prefill, then before every token or every 8 tokens, each time over all layers in one kernel launch (Table 14).
+That is the incident's kind of damage, but here it strikes after the check that follows the prefill has passed.
 
-*Table 14. The release rule on a streamed request (80 output tokens; pages never written from output 2; one run each): TinyLlama-1.1B at TP=2 with a 1,536-token prompt, and Llama-3.1-8B at TP=8 with a 32,768-token prompt.*
+Under strict release, the release rule's own checks must find the damage. It checks right after the prefill, then before every token or every 8 tokens, each time over all layers in one kernel launch (Table 15).
+
+*Table 15. The release rule on a streamed request (80 output tokens; pages never written from output 2; one run each): TinyLlama-1.1B at TP=2 with a 1,536-token prompt, and Llama-3.1-8B at TP=8 with a 32,768-token prompt.*
 
 | Release                          | Damage              | Wrong tokens the client received (TinyLlama / 8B) | Final text right (TinyLlama / 8B) | Median gap between chunks (TinyLlama / 8B) | Checks: count, median time (TinyLlama / 8B) | Damage found at output | Tokens regenerated |
 | -------------------------------- | ------------------- | ------------------------------------------------- | --------------------------------- | ------------------------------------------ | ------------------------------------------- | ---------------------- | ------------------ |
@@ -894,7 +924,7 @@ Under strict release, the release rule's own checks must find the damage. It che
 | Strict, check every 8 tokens     | pages never written | 0 / 0                                             | yes / yes                         | 29.6 / 123.1 ms (chunks of 8)              | 12: 0.4 / 1.0 ms                            | 8                      | 7                  |
 | Strict, check before every token | pages never written | 0 / 0                                             | yes / yes                         | 4.6 / 17.0 ms                              | 81: 0.4 / 1.1 ms                            | 2                      | 1                  |
 
-On both models fast release streamed 78 wrong tokens of 80, with no error. Strict release sent none: a check found the damage before any token that read it left.
+On both models fast release, which has no checks yet (§7.1), streamed 78 wrong tokens of 80, with no error. Strict release sent none: a check found the damage before any token that read it left.
 
 KVMend then recomputed the four pages, kept the first token, which the check after the prefill had covered, and regenerated only the tokens after it.
 
@@ -904,17 +934,17 @@ The check is now cheap: 0.4 ms on TinyLlama and about 1.0 ms on Llama-3.1-8B. Th
 
 Earlier runs checked layer by layer, with a late write at output 10. Their checks took 6 ms on TinyLlama and 9 ms on Llama-3.1-8B, and checking before every token made the gap 2.2 and 1.6 times as long.
 
-On TinyLlama that late write sent 70 wrong tokens under fast release and none under strict release. On Llama-3.1-8B it did not change the text, which is why Table 14 uses pages never written.
+On TinyLlama that late write sent 70 wrong tokens under fast release and none under strict release. On Llama-3.1-8B it did not change the text, which is why Table 15 uses pages never written.
 
 The check after the prefill fixes a flaw an earlier run found. When damage struck before a request's first check, all its cached KV counted as suspect, and its whole prompt was recomputed.
 
-In the runs of Table 14, nothing was evicted.
+In the runs of Table 15, nothing was evicted.
 
 ### 7.7 When parity pays: bursts
 
-Recompute is KVMend's default, and parity an option for bursts (§4.4). We damaged 1 to 1,024 of a request's pieces on one GPU and repaired them both ways, with parity across the GPUs (Table 15, Figure 13b).
+Recompute is KVMend's default, and parity an option for bursts (§4.4). We damaged 1 to 1,024 of a request's pieces on one GPU and repaired them both ways, with parity across the GPUs (Table 16, Figure 13b).
 
-*Table 15. Rebuild from parity against recompute in place, for a burst on one GPU (one run each; both gave the right text every time): TinyLlama-1.1B at TP=2 with a 1,536-token prompt, Llama-3.1-8B at TP=8 with 20,480.*
+*Table 16. Rebuild from parity against recompute in place, for a burst on one GPU (one run each; both gave the right text every time): TinyLlama-1.1B at TP=2 with a 1,536-token prompt, Llama-3.1-8B at TP=8 with 20,480.*
 
 | Model        | Burst (pages × layers) | Pieces | Rebuild reads | Rebuild time | Recompute     | Recompute time |
 | ------------ | ---------------------- | ------ | ------------- | ------------ | ------------- | -------------- |
@@ -930,13 +960,15 @@ Recompute is KVMend's default, and parity an option for bursts (§4.4). We damag
 
 On TinyLlama a recompute of up to 1,024 tokens takes a flat 33 ms. So a rebuild wins up to 64 pieces and loses at 512, where gathering 8 MiB over PCIe takes 40 ms. The first rebuild includes the first exchange between the GPUs.
 
-On Llama-3.1-8B a rebuild won at every size we tried, by 8 to 100 times: 0.5 ms against 51.5 ms for one page, and 89 ms against 6.3 s for 1,024 pages. Recompute grows with the tokens; a rebuild reads 64 KiB per piece.
+On Llama-3.1-8B a rebuild won at every size we tried, by 8 to 110 times: 0.5 ms against 51.5 ms for one page, and 89 ms against 6.3 s for 1,024 pages. Recompute grows with the tokens; a rebuild reads 64 KiB per piece.
 
 Parity also makes a repair exact. Recompute is not: on Llama-3.1-8B it left only about 20% of the pages' K and V values bit-identical (largest difference 1.05), though the text still matched.
 
 A stripe within one GPU has limits. It rebuilds one page per stripe and layer, so in an earlier run, with four damaged pages in one stripe of eight, KVMend fell back to recompute.
 
 And a write through the store path marks its page as not yet encoded, so the old parity no longer covers it. This is why another sequence's KV in §7.5 was recomputed, not rebuilt.
+
+Damage to what KVMend keeps falls back the same way. With a stored tag or the parity damaged on one GPU, the rebuilt piece failed its tag, and KVMend recomputed the page: +1.2 to +1.3 s on Llama-3.1-8B, with the right text.
 
 ### 7.8 Under load
 
@@ -951,13 +983,13 @@ Four faults strike in one run, and the release rule's own checks, every 4 tokens
 
 On both models each fault that changed KV was found by the next check of a request that read it. One reader's check found the shared late write at output 12; its five other readers then regenerated the tokens they were holding.
 
-The burst was rebuilt from parity, bit for bit, in 9 ms on TinyLlama and 12 ms on Llama-3.1-8B. Another sequence's KV was recomputed, 16 tokens, and the fence dropped the stale write before it landed.
+The burst was rebuilt from parity, bit for bit, in a repair step of 9 ms on TinyLlama and 12 ms on Llama-3.1-8B (1.6 ms of rebuilding on 8B). Another sequence's KV was recomputed, 16 tokens, and the modelled fence dropped the stale write.
 
-On TinyLlama all 24 strict outputs were right, while fast release with the same faults gave 11 of 24 wrong outputs, with no error. An output counts as right when it equals one of three fault-free runs (§5.4).
+On TinyLlama all 24 strict outputs were right, while fast release, with no checks, gave 11 of 24 wrong outputs under the same faults, with no error. An output counts as right when it equals one of three fault-free runs (§5.4).
 
 On Llama-3.1-8B, 11 of 24 requests already vary among the three fault-free runs, so that rule no longer tells damage from batching. On the 13 that do not vary, strict release returned their fault-free text for all 13.
 
-Fast release returned it for 12 of the 13: one went wrong right after the burst struck its group. Two strict outputs match no fault-free run; both belong to requests that vary anyway, and one read no damaged page.
+Fast release, with no checks, returned it for 12 of the 13: one went wrong right after the burst struck its group. Two strict outputs match no fault-free run; both belong to requests that vary anyway, and one read no damaged page.
 
 The guard cost the most here: one batched check of all due requests, launched layer by layer, took 8.1 ms on TinyLlama and 36 ms on Llama-3.1-8B, every 4 steps.
 
@@ -965,31 +997,37 @@ Run times in that job varied up to threefold between identical runs, so we price
 
 A repeat on Llama-3.1-8B with five fault-free runs and the one-launch check passed: 11 requests gave the same text in all five, and strict release returned it for all 11.
 
-Its batched check took 5.0 ms per step instead of 36 ms. Run times were steady this time, and strict release took about 10% longer than fast release.
+Fast release, with no checks, also returned all 11 this time, so this run shows that strict release stays right, not that it avoided harm.
+
+Its batched check took 5.0 ms per step instead of 36 ms. Run times were steady this time, and strict release took about 10% longer than fast release with no checks.
 
 ### 7.9 What the results mean for the plan
 
-The current version supports H1 for the incident's kinds of damage: every kind was found or dropped, each by the part of the check built for it, while the scrub alone found one of four.
+The current version supports H1 for the incident's kinds of damage: the checks found three, each by the part built for it, and the modelled fence dropped the fourth. The scrub alone found one of four.
 
-It supports H3 and H4 for whole pages damaged on every GPU: KVMend recomputed 64 tokens and regenerated 40, with no abort, 11 to 30 times faster than a retry that recomputes the prompt.
+It supports H3 and H4 for whole pages damaged on every GPU, with no abort.
 
-It supports H9 on both models: strict release sent none of the 78 wrong tokens that fast release streamed. In one launch a check costs 0.4–1.1 ms; checking before every token lengthened 8B's gap between tokens by 12%.
+Against a retry that keeps the clean prefix, KVMend was 12 to 38 times faster for damage at page 64, given a passing check after the prefill, and about as fast for damage at the end.
+
+It supports H9 on both models: strict release sent none of the 78 wrong tokens that a server with no checks streamed. In one launch a check costs 0.4–1.1 ms; checking before every token lengthened 8B's gap between tokens by 12%.
 
 Under load on Llama-3.1-8B, a check every 4 tokens cost strict release about 10%.
 
-The fused kernels bring tags alone to 0.3% on Llama-3.1-8B and 1.6% on TinyLlama, meeting H7. Parity costs 4.3% on 8B, far more on TinyLlama, but on 8B it repairs a burst 8 to 100 times faster than recompute (H8).
+The fused kernels bring tags alone to 0.3% on Llama-3.1-8B and 1.6% on TinyLlama, meeting H7. Parity costs 4.3% on 8B, far more on TinyLlama, but on 8B it repairs a burst 8 to 110 times faster than recompute (H8).
 
-So the watch is cheap enough to run always, while parity is worth its cost where bursts are expected and recompute is slow.
+So keeping tags is cheap in this setup, and parity is worth its cost where bursts are expected and recompute is slow.
+
+Still to measure: the scrub at its design rate, checks before reuse, and 8B on one GPU, where steps are faster and tag work weighs more.
 
 The results also bound what mending can promise. Without the guard, it repairs the KV but not text already sent (§7.2); and since recompute is not bit for bit, a repaired text can differ where tokens are near-tied (§7.5).
 
-Still open: checks on read in attention; a retry from the damaged page, with damage early in a long prompt; damaged parity or tags; partial loads; requests that arrive over time.
+Still open: checks on read in attention; partial loads; requests that arrive over time.
 
 ## 8 Risks and Threats to Validity
 
-Table 16 lists the main risks and how we handle them.
+Table 17 lists the main risks and how we handle them.
 
-*Table 16. Risks and mitigations.*
+*Table 17. Risks and mitigations.*
 
 | Risk                                                                           | Effect                                                                                     | Mitigation                                                                                                                                               |
 | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1011,24 +1049,31 @@ Table 16 lists the main risks and how we handle them.
 
 ## 9 Why not something simpler?
 
-Simpler tools come to mind for silent KV damage. Table 17 sets each against KVMend, and says where the simpler tool is the better choice.
+Simpler tools come to mind for silent KV damage. Table 18 sets each against KVMend, and says where the simpler tool is the better choice.
 
-*Table 17. Simpler alternatives: what each misses, and where it is the better choice.*
+*Table 18. Simpler alternatives: what each misses, and where it is the better choice.*
 
-| Alternative                                         | What it does well                                 | What it misses                                                                                                        | Where it is the better choice                                       |
-| --------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| ECC on GPU memory                                   | corrects or reports memory errors                 | damage from software: pages never written, late writes, misplaced pages, as in the incident                           | memory errors on GPUs with ECC                                      |
-| A checksum on each KV transfer, as SGLang added [2] | catches damage in transit, then aborts            | damage after the transfer: late writes into reused slots, reuse from the prefix cache, loads from host memory         | a server whose only risk is the transfer                            |
-| Fixing and fuzzing the engine                       | removes known bugs; the write fence is such a fix | the next unknown bug: 7 of the 13 bugs in one fuzzer's table were cross-request KV corruption [19]                    | always, next to KVMend                                              |
-| Abort and retry                                     | right text, with no repair code                   | finding the damage, which it needs first; it recomputes the request from the first page it cannot trust               | damage near the end of a prompt (§7.5)                              |
-| A NaN check or another monitor of the output        | cheap, and independent of the engine              | fluent but wrong text, which damage of the incident's kinds gave in §7.5; it cannot name or repair the damage         | bit flips that make a NaN (§7.4)                                    |
-| Parity alone, as in GhostServe [10]                 | rebuilds damage on one GPU exactly                | finding the damage; pages never written or misplaced; damage on every GPU                                             | none: parity is KVMend's option for bursts                          |
-| A full copy of the KV in host memory                | exact repair, even of damage on every GPU         | a second copy of all cached KV in host memory, against 12.5% for XOR parity and 0.05% for tags, plus the copy traffic | a server with spare host memory; KVMend can repair from such a copy |
-| Running each request twice and comparing            | also catches wrong computation                    | twice the compute; 11 of 24 fault-free requests already differ between runs on Llama-3.1-8B (§7.8)                    | faults in computation, which KVMend leaves out (§4.1)               |
-| Turning off the prefix cache                        | damaged shared KV no longer spreads               | the cache's savings; damage to a request's own KV                                                                     | none                                                                |
-| A standard hash such as CRC32C                      | stronger guarantees for some patterns of damage   | parts that add in any order: a CRC part must be shifted for its position first (§4.2)                                 | blocks checked whole, as in storage                                 |
+| Alternative                                                        | What it does well                                                              | What it misses                                                                                                                                                                          | Where it is the better choice                                       |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| ECC on GPU memory                                                  | corrects or reports memory errors                                              | damage from software: pages never written, late writes, misplaced pages, as in the incident                                                                                             | memory errors on GPUs with ECC                                      |
+| A checksum on each KV transfer, as SGLang added [2]                | catches damage in transit, then aborts                                         | damage after the transfer: late writes into reused slots, reuse from the prefix cache, loads from host memory                                                                           | a server whose only risk is the transfer                            |
+| Fixing and fuzzing the engine                                      | removes known bugs; a write fence in the store path would be one               | the next unknown bug: 7 of the 13 bugs in one fuzzer's table were cross-request KV corruption [19]                                                                                      | always, next to KVMend                                              |
+| Abort and retry                                                    | right text, with no repair code                                                | finding the damage, which it needs first; it recomputes the request from the first page it cannot trust                                                                                 | damage near the end of a prompt, or a short prompt (§7.5)           |
+| Restarting the engine when a check fails                           | simple, and clears every bad state                                             | every request in flight is recomputed, not one page; the bug can strike again after the restart                                                                                         | damage to the engine's own state, which tags do not cover           |
+| A NaN check or another monitor of the output                       | cheap, and independent of the engine                                           | fluent but wrong text, which damage of the incident's kinds gave in §7.5; it cannot name or repair the damage                                                                           | bit flips that make a NaN (§7.4)                                    |
+| SGLang's KV canary [1, 2]                                          | flags possible corruption                                                      | it only logs: it names no page and repairs nothing, and the posts do not say what it checks                                                                                             | a first alarm where KVMend is not deployed                          |
+| A range check on stored K and V                                    | catches bit flips that make huge values                                        | damage that stays in range: the incident's kinds put real KV of other tokens in place                                                                                                   | a cheap filter for memory errors                                    |
+| Filling freed slots with NaN                                       | a read after free or a page never written turns into NaN, which a monitor sees | a write per freed page; late writes and misplaced pages, which hold real values                                                                                                         | a debugging mode                                                    |
+| Parity alone, as in GhostServe [10]                                | rebuilds damage on one GPU exactly                                             | finding the damage; pages never written or misplaced; damage on every GPU                                                                                                               | none: parity is KVMend's option for bursts                          |
+| A full copy of the KV in host memory                               | exact repair, even of damage on every GPU                                      | a second copy of all cached KV in host memory, against 12.5% for XOR parity and 0.05% for tags, plus the copy traffic                                                                   | a server with spare host memory; KVMend can repair from such a copy |
+| Running each request twice, or a sample of requests, and comparing | also catches wrong computation                                                 | twice the compute for each request compared; in SGLang 0.5.1, 11 of 24 fault-free requests already differ between runs on Llama-3.1-8B (§7.8), so comparing needs deterministic kernels | faults in computation, which KVMend leaves out (§4.1)               |
+| Checksums carried through the attention math                       | catches wrong computation                                                      | KV that was wrong before the math: the checksums are computed from the stored KV, so they agree with it                                                                                 | faults in computation, outside KVMend's scope (§4.1)                |
+| Turning off the prefix cache                                       | damaged shared KV no longer spreads                                            | the cache's savings; damage to a request's own KV                                                                                                                                       | none                                                                |
+| A standard hash such as CRC32C                                     | stronger guarantees for some patterns of damage                                | parts that add in any order: a CRC part must be shifted for its position first (§4.2)                                                                                                   | blocks checked whole, as in storage                                 |
 
-**Is the damage common enough to care?** No, and the design follows from that. Only the tags are kept all the time, at 0.3% of Llama-3.1-8B's throughput in our setup. Checks run when KV is reused or released; the rest, after a check fails.
+**Is the damage common enough to care?** No, and the design follows from that. Only the tags and a slow scrub run all the time. The tags cost 0.3% of Llama-3.1-8B's throughput in our setup; the scrub is not measured at its design rate yet.
+
+Checks run when KV is reused or released; the rest, after a check fails.
 
 What earns even that cost is how this failure looks: wrong answers with HTTP 200, and in the incident, KV from other requests [1]. Fuzzers keep finding this class of bug in vLLM and SGLang [19, 20].
 
@@ -1042,34 +1087,40 @@ Mixing the token key into the byte tag lets one check cover all of these.
 
 Faster servers, a decode-heavy workload with tags alone, and the overlap scheduler are still to measure (§8).
 
-**When is a plain retry enough?** When the damage is near the end of the prompt, a retry that keeps the clean prefix recomputes little, and costs about as much as KVMend's repair (§7.5).
+**When is a plain retry enough?** When the damage is near the end of the prompt, or the prompt is short, a retry that keeps the clean prefix recomputes little, and costs about as much as KVMend's repair (§7.5).
 
-KVMend's repair pays off when the damage is early in a long prompt. In §7.4, with damage at token 1,030 of 32,768, KVMend added 0.93 s and abort and retry 15.86 s; keeping the first 1,024 tokens cached would save the retry about 3%.
+KVMend's repair pays off when the damage is early in a long prompt and a check passed after the prefill: at page 64 of a 32K-token prompt it added 0.34 to 1.15 s, a retry that kept the clean prefix 12.8 to 13.5 s (Table 14).
 
-**What does deploying it take?** A patch on every path that writes or frees KV in the engine: the store path, loads from host memory, eviction and rollback. A writer that skips its tags causes false alarms, so each new path needs a test.
+Here the test placed that check (§7.1); the release rule makes one only for strict requests. Without it, KVMend counts the whole cached prompt as suspect and recomputes it.
 
-A first deployment can run the tags and checks alone, and add repair, the guard and parity later. Operators also need an alert for each detection and a limit on repeated repairs of one slot (§4.6).
+**What does deploying it take?** A patch on every path that writes or frees KV: the store path, loads from host memory, eviction, rollback, and transfers, so that tags travel with KV between machines.
+
+Checks on read also need a change to each attention kernel. A writer that skips its tags causes false alarms, so each new write path needs a test.
+
+The proof of concept hit two false alarms, both fixed: stale token keys in CUDA graphs, and a rollback misread as a read after free, which looped until the time limit.
+
+A first deployment can run the tags and checks alone, and add repair, the guard and parity later. Operators also need an alert for each detection and a limit on repeated repairs of one slot (§4.6), not built yet.
 
 ## 10 Timeline
 
-Table 18 gives an eight-week plan, to be adjusted to the course deadline.
+Table 19 gives an eight-week plan, to be adjusted to the course deadline.
 
-The proof of concept of §7 already covers much of weeks 1–5: fused tags with generations, fences and token keys; XOR parity; recompute and rebuild in place; the release rule with a one-launch check.
+The proof of concept of §7 already covers much of weeks 1–5: fused tags with generations and token keys; a fence modelled in the test; XOR parity; recompute and rebuild in place; the release rule with a one-launch check.
 
-What remains in those weeks: checks on read inside attention, Reed–Solomon parity, partial loads, damaged parity or tags, and the 32B setup.
+What remains in those weeks: checks on read inside attention, checks before reuse and after risky events, a fence in the store path, checks for fast-release requests, Reed–Solomon parity, partial loads, and the 32B setup.
 
-*Table 18. Eight-week plan.*
+*Table 19. Eight-week plan.*
 
-| Week | Work                                                                                                                                            | Output                                        |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| 1    | SGLang 0.5.1 at TP=8 on A100; fault injector with a bit-position sweep; fault-free KV snapshots                                                 | baseline throughput; working injector         |
-| 2    | Running tags with slot generations, write fences and token keys; checks on read in the Triton attention kernel; check before reuse              | detection working; tag and check overhead     |
-| 3    | Recompute of a damaged page in place; holding readers; rate-limited scrub                                                                       | repair of damage on any number of GPUs        |
-| 4    | Optional per-page parity with batched encoding (XOR; RS if time allows) and reference counts; rebuild in place                                  | exact repair of damage on one GPU, for bursts |
-| 5    | Repair set: partial retract, then regenerate or re-prefill suspect tokens; release rule; eviction of cached suspect KV; refresh tags and parity | complete repairs; no unchecked token released |
-| 6    | Repair list and watch list; slot retirement if time allows                                                                                      | scheduling policies working                   |
-| 7    | Experiments for RQ1–RQ5                                                                                                                         | results                                       |
-| 8    | Analysis and write-up                                                                                                                           | final report                                  |
+| Week | Work                                                                                                                                                       | Output                                        |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| 1    | SGLang 0.5.1 at TP=8 on A100; fault injector with a bit-position sweep; fault-free KV snapshots                                                            | baseline throughput; working injector         |
+| 2    | Running tags with slot generations, write fences and token keys; checks on read in the Triton attention kernel; checks before reuse and after risky events | detection working; tag and check overhead     |
+| 3    | Recompute of a damaged page in place; holding readers; rate-limited scrub                                                                                  | repair of damage on any number of GPUs        |
+| 4    | Optional per-page parity with batched encoding (XOR; RS if time allows) and reference counts; rebuild in place                                             | exact repair of damage on one GPU, for bursts |
+| 5    | Repair set: partial retract, then regenerate or re-prefill suspect tokens; release rule; eviction of cached suspect KV; refresh tags and parity            | complete repairs; no unchecked token released |
+| 6    | Repair list and watch list; slot retirement if time allows                                                                                                 | scheduling policies working                   |
+| 7    | Experiments for RQ1–RQ5                                                                                                                                    | results                                       |
+| 8    | Analysis and write-up                                                                                                                                      | final report                                  |
 
 ## References
 

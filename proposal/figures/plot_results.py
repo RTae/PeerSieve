@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Figure 13 of the KVMend proposal: the incident's kinds of damage and bursts on the main setup.
+"""Figure 13 of the KVMend proposal: KVMend against two retries, and bursts, on the main setup.
 
-Data: job 326412 on node octave (8x A100-PCIE-40GB), Llama-3.1-8B at TP=8, read from the proof of concept's records
-in ../../kvmend/results/kvmend-main-326412/ (incident/summary.json and burst/summary.json). The script writes the
-numbers it plots to results_tp8.csv, prints every one of them, and draws the figure from that file.
+Data: Llama-3.1-8B at TP=8 on node octave (8x A100-PCIE-40GB), from the proof of concept's records:
+  panel (a) job 326442, commit d33e5ea: ../../kvmend/results/kvmend-main5-326442/{incident,incident_early}/summary.json
+  panel (b) job 326412: ../../kvmend/results/kvmend-main-326412/burst/summary.json
+The script writes the numbers it plots to results_tp8.csv, prints every one of them, and draws the figure from that
+file.
 
 Run with a Python that has matplotlib (here /opt/homebrew/bin/python3.8):
     python3.8 -I -B plot_results.py
@@ -25,15 +27,17 @@ import figstyle as fs  # noqa: E402
 from figroles import DASH, HOLLOW, SERIES  # noqa: E402
 
 RUN = HERE.parent.parent / "kvmend" / "results" / "kvmend-main-326412"
+RUN_A = HERE.parent.parent / "kvmend" / "results" / "kvmend-main5-326442"
 
-# (fault kind in the records, label in the figure, what KVMend did)
-KINDS = [
-    ("unwritten", "pages never\nwritten", "recomputed\n64 tokens"),
-    ("late_bypass", "late write around\nthe store path", "recomputed 64,\nregenerated 40"),
-    ("late_store", "late write through\nthe store path", "dropped by\nthe fence"),
-    ("foreign", "another\nsequence's KV", "recomputed 64,\nregenerated 40"),
+# (record folder, position label, fault kind, label in the figure)
+GROUPS = [
+    ("incident", "end", "unwritten", "never written,\nlast 4 pages"),
+    ("incident", "end", "late_bypass", "late write,\nlast 4 pages"),
+    ("incident_early", "page64", "unwritten", "never written,\npage 64"),
+    ("incident_early", "page64", "late_bypass", "late write,\npage 64"),
 ]
 KV_EVERY = "KVMend, damage on every GPU"
+KEEP = "re-prefill from the damaged page"
 RETRY = "re-prefill the whole request"
 REBUILD = "KVMend, damage on one GPU"
 RECOMPUTE = "KVMend recomputing pages"
@@ -41,14 +45,19 @@ RECOMPUTE = "KVMend recomputing pages"
 
 def measurements():
     """Rows of (panel, item, metric, value) from the proof of concept's records."""
-    inc = json.loads((RUN / "incident" / "summary.json").read_text())
     burst = json.loads((RUN / "burst" / "summary.json").read_text())
-    rows = [("a", "reference", "seconds", inc["reference_seconds"])]
-    for kind, _, _ in KINDS:
+    rows = []
+    for folder, pos, kind, _ in GROUPS:
+        inc = json.loads((RUN_A / folder / "summary.json").read_text())
         f = inc["faults"][kind]
-        rows += [("a", kind, "kvmend_extra_s", f["kvmend_extra_s"]),
-                 ("a", kind, "kvmend_text_right", int(bool(f["kvmend_text_right"]))),
-                 ("a", kind, "retry_extra_s", f["retry_extra_s"] if f.get("retry_extra_s") is not None else -1)]
+        key = f"{pos}:{kind}"
+        rows += [("a", key, "reference_s", inc["reference_seconds"]),
+                 ("a", key, "kvmend_extra_s", f["kvmend_extra_s"]),
+                 ("a", key, "kvmend_text_right", int(bool(f["kvmend_text_right"] or f["kvmend_equals_control"]))),
+                 ("a", key, "recomputed_tokens", sum(x["tokens"] for x in f["recomputed"] or [])),
+                 ("a", key, "keep_extra_s", f["retry_keep_extra_s"]),
+                 ("a", key, "keep_from_position", f["retry_keep_cached_prefix"]),
+                 ("a", key, "retry_extra_s", f["retry_extra_s"])]
     for r in burst["rows"]:
         if r["layers"] != 1:  # the sweep over pages in one layer; the 8-layer burst is in Table 15 only
             continue
@@ -91,29 +100,28 @@ def main():
     fs.apply()
     fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(15, 7.0), gridspec_kw=dict(width_ratios=[1.35, 1]))
 
-    # (a) extra time to the right text, per kind of damage: KVMend against abort and retry, log axis
-    width = 0.36
-    for x, (kind, _, did) in enumerate(KINDS):
-        k = d[("a", kind, "kvmend_extra_s")]
-        ax_a.bar(x - width / 2, k, width, color=SERIES[KV_EVERY], edgecolor=fs.PALETTE["ink"], lw=1.8, zorder=2)
-        ax_a.text(x - width / 2, k * 1.12, secs(k), ha="center", va="bottom", fontsize=12)
-        ax_a.text(x, -0.155, did, transform=ax_a.get_xaxis_transform(), ha="center", va="top", fontsize=11.5,
-                  color=fs.PALETTE["dark"], style="italic")
-        r = d[("a", kind, "retry_extra_s")]
-        if r > 0:
-            ax_a.bar(x + width / 2, r, width, color=SERIES[RETRY], edgecolor=fs.PALETTE["ink"], lw=1.8, zorder=2)
-            ax_a.text(x + width / 2, r * 1.12, secs(r), ha="center", va="bottom", fontsize=12)
+    # (a) extra time to the right text: KVMend, a retry that keeps the clean prefix, and a flushed retry; log axis
+    width = 0.27
+    for x, (_, pos, kind, _) in enumerate(GROUPS):
+        key = f"{pos}:{kind}"
+        for dx, metric, role in ((-width, "kvmend_extra_s", KV_EVERY), (0.0, "keep_extra_s", KEEP),
+                                 (width, "retry_extra_s", RETRY)):
+            v = d[("a", key, metric)]
+            ax_a.bar(x + dx, v, width, color=SERIES[role], edgecolor=fs.PALETTE["ink"], lw=1.8, zorder=2)
+            ax_a.text(x + dx, v * 1.12, secs(v), ha="center", va="bottom", fontsize=10.5, rotation=90)
     ax_a.set_yscale("log")
-    ax_a.set_ylim(0.1, 60)
-    ax_a.set_xlim(-0.6, len(KINDS) - 0.4)
-    ax_a.set_xticks(range(len(KINDS)))
-    ax_a.set_xticklabels([label for _, label, _ in KINDS], fontsize=12.5)
+    ax_a.set_ylim(0.1, 200)
+    ax_a.set_xlim(-0.6, len(GROUPS) - 0.4)
+    ax_a.set_xticks(range(len(GROUPS)))
+    ax_a.set_xticklabels([label for _, _, _, label in GROUPS], fontsize=12.5)
     ax_a.set_ylabel("extra time to the right text (s, log scale)")
     ax_a.legend(handles=[Patch(facecolor=SERIES[KV_EVERY], edgecolor=fs.PALETTE["ink"], label="KVMend"),
+                         Patch(facecolor=SERIES[KEEP], edgecolor=fs.PALETTE["ink"],
+                               label="retry that keeps the clean prefix"),
                          Patch(facecolor=SERIES[RETRY], edgecolor=fs.PALETTE["ink"],
-                               label="abort and retry (run for the first two kinds)")],
-                loc="upper right", fontsize=12)
-    ax_a.set_title("(a) the incident's kinds of damage, on every GPU", loc="left", fontsize=16)
+                               label="abort and retry, cache flushed")],
+                loc="upper left", fontsize=12)
+    ax_a.set_title("(a) KVMend against two retries", loc="left", fontsize=16)
 
     # (b) repair time against burst size on one GPU: rebuild from parity against recompute, log-log
     keys = sorted((k for (p, k, m) in d if p == "b" and m == "pieces"), key=lambda k: d[("b", k, "pieces")])
@@ -143,15 +151,16 @@ def main():
                 loc="upper left", fontsize=12)
     ax_b.set_title("(b) a burst on one GPU", loc="left", fontsize=16)
 
-    fig.subplots_adjust(left=0.07, right=0.985, bottom=0.23, top=0.93, wspace=0.22)
+    fig.subplots_adjust(left=0.07, right=0.985, bottom=0.17, top=0.93, wspace=0.22)
     fs.save(fig, HERE, "fig13_results")
 
-    print(f"reference (no repair action): {secs(d[('a', 'reference', 'seconds')])}")
-    for kind, label, did in KINDS:
-        r = d[("a", kind, "retry_extra_s")]
-        print(f"{label.replace(chr(10), ' ')}: KVMend +{secs(d[('a', kind, 'kvmend_extra_s')])} "
-              f"({did.replace(chr(10), ' ')}; text right={int(d[('a', kind, 'kvmend_text_right')])}), "
-              f"abort and retry {'not run' if r < 0 else '+' + secs(r)}")
+    for _, pos, kind, label in GROUPS:
+        key = f"{pos}:{kind}"
+        print(f"{label.replace(chr(10), ' ')} (reference {secs(d[('a', key, 'reference_s')])}): "
+              f"KVMend +{secs(d[('a', key, 'kvmend_extra_s')])} (recomputed {d[('a', key, 'recomputed_tokens')]:,.0f} "
+              f"tokens; text right={int(d[('a', key, 'kvmend_text_right')])}), "
+              f"retry keeping the prefix +{secs(d[('a', key, 'keep_extra_s')])} (from position "
+              f"{d[('a', key, 'keep_from_position')]:,.0f}), flushed retry +{secs(d[('a', key, 'retry_extra_s')])}")
     for k in keys:
         print(f"burst {k} ({d[('b', k, 'pieces')]:,.0f} pieces): rebuild {millis(d[('b', k, 'rebuild_ms')])} "
               f"(bit for bit={int(d[('b', k, 'rebuild_bit_exact')])}), recompute {millis(d[('b', k, 'recompute_ms')])} "
