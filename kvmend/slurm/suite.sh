@@ -26,9 +26,15 @@
 #   overhead         bench_overhead.py, modes $OVERHEAD_MODES, then the decode-heavy workload, modes $DECODE_MODES
 #   attn             checks on read: bench_overhead.py on the decode-heavy workload, modes $ATTN_MODES, in $RUN/attn;
 #                    the attn modes exit 3 unless their self-check passes (no false alarm, the probe found)
+#   attn_repair      run_attn_repair.py: checks on read that repair (KVMEND_ATTN_ACT=repair), on a
+#                    $ATTN_REPAIR_PROMPT_LEN-token prompt: bench_overhead.py's probe bit flip and a late write on every
+#                    GPU, each found at the next decode step, mended, that step's token generated again, and the text
+#                    equal to a fault-free run on the same path; with ATTN_REQUIRE_WRONG=1, the late write must also
+#                    change the text of the run that only logs it (true on TinyLlama)
 # Environment: MODEL TP PROMPT_LEN [MAX_TOTAL] [LOCAL_MODEL LOCAL_PROMPT_LEN] [BURST_SIZES BURST_PROMPT_LEN]
 #              [LOAD_SHARED LOAD_CLEAN_RUNS] [RELEASE_KIND RELEASE_LATE_AT] [OVERHEAD_MODES DECODE_MODES]
-#              [ATTN_MODES] [EARLY_POS EARLY_PAGES] [LAST_GOOD] [COMMIT: the local git commit the copied files match]
+#              [ATTN_MODES] [ATTN_REPAIR_PROMPT_LEN ATTN_REQUIRE_WRONG] [EARLY_POS EARLY_PAGES] [LAST_GOOD]
+#              [COMMIT: the local git commit the copied files match]
 #              [PREFILL_CHUNK PREFILL_POS PREFILL_PAGES]
 #              [REQUIRE_OK_FROM] [LOCAL_PAGES] [HICACHE_PROMPT_LEN HICACHE_PAGES HICACHE_MODE]
 #              [ARRIVALS_SHARED ARRIVALS_REQUESTS ARRIVALS_RATE ARRIVALS_SEED ARRIVALS_EVERY ARRIVALS_REPLAYS]
@@ -45,7 +51,8 @@ export TRITON_CACHE_DIR=$ROOT/.cache/triton XDG_CACHE_HOME=$ROOT/.cache TORCH_EX
 export HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
 unset PYTHONPATH KVMEND_ENABLE KVMEND_PLAN KVMEND_TAGS KVMEND_CTRL KVMEND_ENCODE_EVERY KVMEND_SCRUB_PIECES KVMEND_FENCE \
   KVMEND_FUSED KVMEND_STRICT KVMEND_STRICT_EVERY KVMEND_STRIPE KVMEND_ON_FAIL KVMEND_LOAD_CHECK KVMEND_CHECK_IN_ATTN \
-  KVMEND_ATTN_RELOAD KVMEND_ATTN_LOG_MAX KVMEND_LOG_READS KVMEND_CHECK_AFTER_PREFILL
+  KVMEND_ATTN_RELOAD KVMEND_ATTN_LOG_MAX KVMEND_LOG_READS KVMEND_CHECK_AFTER_PREFILL KVMEND_ATTN_ACT \
+  KVMEND_ATTN_MAX_REPAIRS
 MAX_TOTAL=${MAX_TOTAL:-65536}
 LAST_GOOD=${LAST_GOOD:-plan}
 FIRST_GPU=$(echo "${CUDA_VISIBLE_DEVICES:-0}" | cut -d, -f1)
@@ -141,6 +148,12 @@ for S in $STEPS; do
       done
       step attn:report 120 0 $PY bench_overhead.py --report --out "$RUN/attn" || OK=0
       if [ $OK = 1 ]; then echo attn >> "$RUN/steps_ok"; fi ;;
+    attn_repair)
+      WRONG_FLAG=""
+      if [ "${ATTN_REQUIRE_WRONG:-0}" = 1 ]; then WRONG_FLAG=--require-wrong; fi
+      step attn_repair 900 0 $PY run_attn_repair.py --model "$MODEL" --tp "$TP" \
+        --prompt-len "${ATTN_REPAIR_PROMPT_LEN:-1536}" $WRONG_FLAG --max-total-tokens "$MAX_TOTAL" --require-pass \
+        --out "$RUN/attn_repair" ;;
     *) echo "== unknown step $S" ;;
   esac
 done

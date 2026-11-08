@@ -183,7 +183,7 @@ def bench(a):
     log_dir = os.path.join(out, f"{a.mode}_logs")
     ctrl = os.path.join(out, f"{a.mode}_ctrl.json")
     for k in ("KVMEND_PLAN", "KVMEND_ENABLE", "KVMEND_TAGS", "KVMEND_ENCODE_EVERY", "KVMEND_SCRUB_PIECES",
-              "KVMEND_FUSED", "KVMEND_STRICT", "KVMEND_CHECK_IN_ATTN", "KVMEND_ATTN_RELOAD"):
+              "KVMEND_FUSED", "KVMEND_STRICT", "KVMEND_CHECK_IN_ATTN", "KVMEND_ATTN_RELOAD", "KVMEND_ATTN_ACT"):
         os.environ.pop(k, None)
     if a.mode != "plain":  # plain SGLang does not even load the hook
         os.environ.update(KVMEND_ENABLE="1", KVMEND_TAGS="1" if a.mode in TAGGED else "0", KVMEND_OUT=log_dir,

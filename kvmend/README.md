@@ -16,6 +16,7 @@ itself is not edited.
 | `hook_site/sitecustomize.py` | loads the patch into every SGLang process when `KVMEND_ENABLE=1` |
 | `run_poc.py` | the driver: request R under each response to one fault, on one engine, then a summary and the comparison table |
 | `run_hicache.py` | loads from host memory (HiCache) that land on only some GPUs: found on arrival or by the reader's check, copied again from the host copy |
+| `run_attn_repair.py` | checks on read that repair (`KVMEND_ATTN_ACT=repair`): a probe bit flip and a late write, each found at the next decode step, mended, and that step's token generated again; each text compared with a fault-free run on the same path |
 | `bench_overhead.py` | fault-free throughput of plain SGLang, parity alone and KVMend, one engine per mode |
 | `run_arrivals.py` | requests that arrive over time, under fast release, strict release and abort-and-retry (below) |
 | `slurm/poc.sh`, `slurm/compare.sh` | the GPU jobs: the proof of concept, and the GhostServe comparison with the throughput benchmark |
@@ -189,6 +190,30 @@ SGLang's hierarchical cache copies KV pages to a host pool (`HiCacheController.w
 - **backstop:** what still fails (a damaged host copy, or a load not checked on arrival) fails the reader's check, and `mend` copies it again from the host copy or recomputes it in place. The prefill that read the damage is then undone whole (`retract` with `from_prefill`, back to its first chunk's start): SGLang cached its pages as it went, so they leave the prefix cache too, or the next prefill of the same tokens would be pointed at them.
 
 `run_hicache.py` evicts the prompt's device copy (op `offload`) and lets a request load it back with one GPU's copy of some pages left as zeros (fault `partial_load`), then compares the text with a fault-free load.
+
+## Checks on read that repair
+
+With `KVMEND_ATTN_ACT=repair` (default `log`: record the failure, op `attn_found`, and nothing more), a failed check on
+read acts in the step that found it, before that step's tokens leave:
+- **agree:** right after the verdict, the GPUs gather their findings (one small collective every decode step, the
+  details only on a failure), and every request of the batch that read a damaged page is marked so that SGLang's own
+  processing passes over it, as it passes over a request retracted while its batch was in flight: its token of this
+  step is neither appended nor streamed, by fast release or strict;
+- **mend:** each damaged page is mended once (copied again from host memory, rebuilt from parity where one GPU is
+  damaged, recomputed in place otherwise); a page that only a reader's own KV holds goes with that reader's rollback;
+- **roll back and regenerate:** a reader whose reads a check covered until this step (a decode step's check on read
+  since its latest prefill, or its check right after that prefill) keeps every token before this step, so only this
+  step's token is generated again; a strict reader's kept tokens past its last release check stay held until the next
+  one. Without such a check, its latest prefill may have read the damage too: that prefill's KV after the damaged page
+  is recomputed, as after a failed check right after the prefill, and a strict reader goes back to its last good check,
+  a fast one drops its prefill's token too unless it has left (then reported, `released_suspect`). SGLang re-prefills
+  each reader;
+- **evict:** cached KV written after the readers' last passing checks leaves the prefix cache (`evict_suspect`).
+
+The record is op `attn_act` (pages, readers with what each kept and generates again, the repair of each page). A
+request rolled back `KVMEND_ATTN_MAX_REPAIRS` times (3) by checks on read is not rolled back again: a guard against a
+false alarm that would stall it. `attn_act` in the `KVMEND_CTRL` file switches the setting at the next cache flush.
+`run_attn_repair.py` (suite.sh step `attn_repair`) tests it on one engine.
 
 ## Run it on cluster ja
 

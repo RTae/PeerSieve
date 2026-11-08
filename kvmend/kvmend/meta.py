@@ -9,7 +9,7 @@ import time
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES = ("kvmend/hook.py", "kvmend/tags.py", "kvmend/tag_kernels.py", "kvmend/meta.py", "hook_site/sitecustomize.py",
          "run_poc.py", "bench_overhead.py", "bench_checker.py", "run_fair.py", "run_incident.py", "run_release.py",
-         "run_load.py", "run_arrivals.py", "run_hicache.py")
+         "run_load.py", "run_arrivals.py", "run_hicache.py", "run_attn_repair.py", "kvmend/attn_check.py")
 
 
 def run_meta():

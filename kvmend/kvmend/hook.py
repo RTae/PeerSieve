@@ -18,7 +18,10 @@ It changes these places and nothing else:
   fails again from the host copy, and HostKVCache.free drops the records of freed host pages.
 - with KVMEND_CHECK_IN_ATTN=1, TritonAttnBackend's decode attention: copies of its stage-1 kernels also add up the tag
   of every piece they read (kvmend/attn_check.py), and after every decode step, before SGLang frees what finished
-  requests held, the scheduler compares those sums with the stored tags (checks on read).
+  requests held, the scheduler compares those sums with the stored tags (checks on read). With KVMEND_ATTN_ACT=repair
+  a failure acts in the same step, before that step's tokens leave: the GPUs agree on the findings, the damaged pages
+  are mended, and every request that read one drops the token the step computed and generates it again
+  (attn_agree, attn_repair); the default, log, only records it.
 
 Every tensor-parallel rank runs the actions at the same point of the same iteration, so their collectives line up.
 The plan (KVMEND_PLAN) maps a request id to actions, each due when the request has produced `at` output tokens:
@@ -108,6 +111,16 @@ LOG_READS = os.environ.get("KVMEND_LOG_READS", "0") == "1"
 CHECK_IN_ATTN = os.environ.get("KVMEND_CHECK_IN_ATTN", "0") == "1"
 ATTN_RELOAD = os.environ.get("KVMEND_ATTN_RELOAD", "0") == "1"
 ATTN_LOG_MAX = int(os.environ.get("KVMEND_ATTN_LOG_MAX", "200"))  # attn_found lines per flush; later ones are counted
+# What a failed check on read does (KVMEND_ATTN_ACT; "attn_act" in the KVMEND_CTRL file overrides it from the next
+# cache flush on): "log" (default) records the failure (op attn_found) and nothing more; "repair" mends the damaged pages
+# in the same step and makes every request that read one generate that step's token again, before it leaves
+# (attn_repair, op attn_act). A request rolled back KVMEND_ATTN_MAX_REPAIRS times by checks on read is not rolled back
+# again: its later failures are only logged, so a false alarm cannot stall it.
+ATTN_ACTS = ("log", "repair")
+ATTN_ACT = os.environ.get("KVMEND_ATTN_ACT", "log")
+if ATTN_ACT not in ATTN_ACTS:
+    raise ValueError(f"KVMEND_ATTN_ACT must be one of {ATTN_ACTS}, not {ATTN_ACT!r}")
+ATTN_MAX_REPAIRS = int(os.environ.get("KVMEND_ATTN_MAX_REPAIRS", "3"))
 _FB = [None]  # the forward batch whose attention layers run now (RadixAttention.forward sets it)
 _STATES = []  # the pool states of this process (one per KV pool), for patches that have no scheduler at hand
 
@@ -183,13 +196,18 @@ class PoolState:
             self.use_fused()
         self.attn = None        # the check on read inside the decode attention (attn_check.AttnCheck)
         self.attn_found = []    # [(step, rank, layer, page, reason)] that check found, this rank, since the last flush
+        # KVMEND_ATTN_ACT=repair: rid -> step of the request's last decode step whose check on read passed, since its
+        # latest prefill (_read_bound); the repair agreed on in this step, for on_step (attn_agree, attn_repair); and
+        # rid -> rollbacks the checks on read made (ATTN_MAX_REPAIRS)
+        self.attn_good, self.attn_todo, self.attn_repairs = {}, None, {}
         if CHECK_IN_ATTN and TAGS_ON and self.device.type == "cuda":
             self.use_attn_check()
         self.step = 0
         self.last_good = None
-        # background work (overhead benchmark): the same settings and step count on every rank
+        # background work (overhead benchmark): the same settings and step count on every rank; and what a failed
+        # check on read does (attn_act)
         self.ctrl = dict(encode_every=int(os.environ.get("KVMEND_ENCODE_EVERY", "0")),
-                         scrub_pieces=int(os.environ.get("KVMEND_SCRUB_PIECES", "0")), label="")
+                         scrub_pieces=int(os.environ.get("KVMEND_SCRUB_PIECES", "0")), label="", attn_act=ATTN_ACT)
         self.batch_steps = 0
         self.cursor = 0  # next piece of the background scrub, layer-major over pages 1 .. pages-1
         self.page_ids = torch.arange(1, self.pages, device=self.device)
@@ -257,6 +275,7 @@ class PoolState:
         if self.attn is not None:
             self.attn.reset()
         self.attn_found = []
+        self.attn_good, self.attn_todo, self.attn_repairs = {}, None, {}
 
     def drop(self, pages: torch.Tensor):
         """Freed pages lose their tags and parity, and start a new generation: a late write that still carries the
@@ -836,6 +855,11 @@ def act_retract(st, sched, a, req):
         else:
             rec.update(regenerated=0, kept_outputs=len(req.output_ids), refused="tokens already sent")
     batch.filter_batch(keep_indices=[j for j in range(len(batch.reqs)) if j != i])
+    running = getattr(sched, "running_batch", None)
+    if getattr(running, "batch_is_full", False):
+        # Room again, as SGLang's own retract leaves it (update_running_batch): with the flag left set, no prefill is
+        # scheduled until another request ends, and a rollback of every running request would never be re-prefilled
+        running.batch_is_full = False
     sched._extend_requests_to_queue([req], is_retracted=True)
     return rec
 
@@ -1044,10 +1068,12 @@ def read_record(st, tree, req):
 
 def forget(st, rid):
     """A request rolled back (by KVMend or by SGLang under memory pressure) will read new pages: drop its records. Its
-    next prefill starts a new record of forwards (note_fills)."""
+    next prefill starts a new record of forwards (note_fills), and its passing checks on read count from that prefill
+    on (attn_good)."""
     st.req_gen.pop(rid, None)
     st.view_cache.pop(rid, None)
     st.fills.pop(rid, None)
+    st.attn_good.pop(rid, None)
 
 
 def act_check(st, sched, a, req, mark_good=True):
@@ -1958,13 +1984,16 @@ def _after_mend(st, sched, req, mended, since):
     return dict(other_readers=others, evicted_tokens=evict_suspect(st, sched.tree_cache, mended, since))
 
 
-def _redo(st, sched, req, keep, suspect=None):
-    """Drop a strict request's tokens after `keep` and generate them again, now, or at its next step if it is not in
-    the running batch yet (it has just finished its prefill); until then, nothing past `keep` is released. suspect:
-    the repair's (mended pages, since). A request whose rollback waits still holds its cached pages, so the eviction
-    after the repair (evict_suspect) kept them: its prompt KV, computed on top of the damage if it arrived after it.
-    They are evicted when the rollback lets them go, or the re-prefill would reuse them."""
-    st.checked_upto[req.rid] = keep
+def _redo(st, sched, req, keep, suspect=None, checked=None):
+    """Drop a request's tokens after `keep` and generate them again, now, or at its next step if it is not in the
+    running batch yet (it has just finished its prefill); until then, nothing of a strict request past `keep` is
+    released. suspect: the repair's (mended pages, since). A request whose rollback waits still holds its cached pages,
+    so the eviction after the repair (evict_suspect) kept them: its prompt KV, computed on top of the damage if it
+    arrived after it. They are evicted when the rollback lets them go, or the re-prefill would reuse them. checked: the
+    output tokens that a passing reader's check still covers after the rollback, which the release rule may release
+    (checked_upto; default `keep`, the rollback's own point). A rollback after a failed check on read keeps tokens that
+    only checks on read covered (attn_repair): they stay held until the release rule's next check."""
+    st.checked_upto[req.rid] = keep if checked is None else min(checked, keep)
     rec = act_retract(st, sched, dict(keep=keep), req)
     if not rec.get("retracted"):
         st.pending_redo[req.rid] = keep
@@ -2051,7 +2080,7 @@ def evict_suspect(st, tree, damaged_pages, since):
     """Drop from the prefix cache the KV that may have read damaged pages: unlocked nodes, leaves first, in the
     subtrees of nodes that hold a damaged page, any of whose pages carries a write stamp (wstep) above `since`. Callers
     pass the stamp of the last write that cannot have read the damage: one less than the step of the check that bounds
-    it (_since). The damaged pages themselves are repaired in place and stay; a later request recomputes
+    it (_since, attn_repair). The damaged pages themselves are repaired in place and stay; a later request recomputes
     what was dropped instead of reusing it."""
     if tree is None or not damaged_pages or not hasattr(tree, "root_node"):
         return 0
@@ -2196,7 +2225,8 @@ def attn_verdict(st, sched, batch):
     """After a decode step, before SGLang frees the KV of the requests that finished in it: compare what the step's
     attention read with the stored tags and coverage (attn_check.AttnCheck.verdict), record this rank's failures as
     _reader_failures does, (rank, layer, page, reason), and zero the accumulators. The record's step is this
-    scheduler iteration's (on_step increments st.step later in the same iteration). Waits for the GPU once."""
+    scheduler iteration's (on_step increments st.step later in the same iteration). Waits for the GPU once. Returns
+    this rank's failures; with KVMEND_ATTN_ACT=repair, attn_agree acts on every rank's."""
     t0 = time.perf_counter()
     found, read, layout = st.attn.verdict()
     me = sched.tp_rank
@@ -2220,16 +2250,169 @@ def _readers_of(st, sched, batch, pages):
     if not pages:
         return []
     try:
-        want = torch.tensor(sorted(pages), dtype=torch.int64, device=st.device)
-        out = []
-        for req in batch.reqs:
-            n = len(req.origin_input_ids) + len(req.output_ids)  # what the step read: the new token's KV included
-            slots = sched.req_to_token_pool.req_to_token[req.req_pool_idx, :n].to(torch.int64)
-            if bool(torch.isin(torch.div(slots, PAGE, rounding_mode="floor"), want).any()):
-                out.append(req.rid)
-        return out
+        return [req.rid for req, _ in _attn_readers(sched, batch, pages)]
     except Exception:
         return None
+
+
+def _attn_readers(sched, batch, pages):
+    """The requests of the batch whose KV includes one of `pages`, as this step's attention read it (the new token's KV
+    included), each with the pages of `pages` it read: [(req, [page, ...])]."""
+    table = sched.req_to_token_pool.req_to_token
+    want = torch.tensor(sorted(pages), dtype=torch.int64, device=table.device)
+    out = []
+    for req in batch.reqs:
+        n = len(req.origin_input_ids) + len(req.output_ids)  # what the step read: the new token's KV included
+        pg = torch.div(table[req.req_pool_idx, :n].to(torch.int64), PAGE, rounding_mode="floor")
+        hit = torch.unique(pg[torch.isin(pg, want)]).tolist()
+        if hit:
+            out.append((req, hit))
+    return out
+
+
+def attn_act(st):
+    """What a failed check on read does now: "log" or "repair" (KVMEND_ATTN_ACT, unless the KVMEND_CTRL file, read at
+    every cache flush on every rank, sets attn_act: a driver switches between the runs of one engine)."""
+    act = st.ctrl.get("attn_act") or ATTN_ACT
+    if act not in ATTN_ACTS:
+        raise ValueError(f"attn_act must be one of {ATTN_ACTS}, not {act!r}")
+    return act
+
+
+def _read_bound(st, req):
+    """The step of the request's last passing check that covered what its latest prefill read, or None if it has none:
+    a decode step since that prefill whose check on read passed (attn_good, which a rollback clears), or the reader's
+    check after the prefill's last forward (good_step: the release rule's check right after the prefill). With one,
+    damage found now struck after the prefill read the page, and only what the request computed since that check is
+    suspect: with the check on read, this step alone."""
+    if req.rid in st.attn_good:
+        return st.attn_good[req.rid]
+    fills, good = st.fills.get(req.rid), st.good_step.get(req.rid)
+    return good if fills and good is not None and good > fills[-1][0] else None
+
+
+def attn_agree(st, sched, batch, fails):
+    """KVMEND_ATTN_ACT=repair, right after the verdict and before SGLang processes the step's tokens: every GPU's
+    findings, the same sorted list on every GPU (_gather_found: one small collective every decode step, the details
+    only when something failed, as in the release rule's batched check), and the requests of the batch that read a
+    damaged page. Their tokens of this step are skipped: SGLang's process_batch_result_decode passes over a request
+    marked is_retracted (as it does for one retracted while its batch was in flight), so the token is neither appended
+    to output_ids nor streamed, and the request does not finish in this step. The caller clears the mark after SGLang's
+    processing, and on_step mends the pages and rolls the readers back (attn_repair): a skipped request must be rolled
+    back, since its KV holds this step's input token and its output_ids lack this step's output. Every other request of
+    the batch passed this step's check on read (attn_good; only while no decode attention fell back to SGLang's own
+    kernel, so that the check covered every layer). A reader that the checks on read have rolled back ATTN_MAX_REPAIRS
+    times already is not skipped: its token goes on, as with KVMEND_ATTN_ACT=log (gave_up); when no reader is left to act
+    (or the findings name no page), nothing more is done than log mode does. Returns the skipped requests."""
+    g, _, _ = _group(sched)
+    found = _gather_found(st, g, fails)
+    step = st.step + 1  # this scheduler iteration's, as attn_verdict's records (on_step increments st.step later)
+    damaged = {p for _, _, p, _ in found if p > 0}
+    readers = _attn_readers(sched, batch, damaged) if damaged else []
+    complete = not st.attn.unsupported
+    if complete:
+        hit = {id(req) for req, _ in readers}
+        for req in batch.reqs:
+            if id(req) not in hit:
+                st.attn_good[req.rid] = step
+    act = [(req, pages) for req, pages in readers if st.attn_repairs.get(req.rid, 0) < ATTN_MAX_REPAIRS]
+    if not act:
+        return []
+    st.attn_todo = dict(step=step, t0=time.time(), found=found, readers=act, complete=complete,
+                        gave_up=[req.rid for req, _ in readers if st.attn_repairs.get(req.rid, 0) >= ATTN_MAX_REPAIRS])
+    for req, _ in act:
+        req.is_retracted = True
+    return [req for req, _ in act]
+
+
+def attn_repair(st, sched, todo):
+    """KVMEND_ATTN_ACT=repair: in on_step of the step whose check on read failed, after SGLang has processed the step's
+    tokens without the readers' (attn_agree), and before anything else reads the pages. The findings and the readers
+    are attn_agree's, the same on every GPU, so every GPU takes the same path.
+    - Pages. A damaged page that only a reader's own KV holds (after its cached prefix: its open prompt page, or a
+      decode page) goes with that reader's rollback. Every other one is mended once, by act_mend through the first
+      reader that holds it: copied again from host memory, rebuilt from parity where one GPU is damaged, recomputed in
+      place otherwise.
+    - What came before. A reader with a passing check since its latest prefill (_read_bound) read intact KV until this
+      step: only this step's token is suspect. A reader without one (its first decode step since that prefill, which
+      no check covered) may have read the damage in the prefill too: its mend also recomputes what the prefill computed
+      after the damaged page (act_mend with suffix), as when the check right after a prefill fails.
+    - Rollbacks (_redo). A strict reader goes back to the last token before this step if a check covered its reads
+      until then, else to its last good check; the tokens it keeps beyond checked_upto stay held until the release
+      rule's next check. A reader outside the release rule keeps every token before this step, which passed the check
+      on read; if its latest prefill read the damage, that prefill's token goes too unless it has left already, which
+      the record reports (released_suspect). SGLang then re-prefills each reader, which generates the dropped tokens
+      again.
+    - Cached KV that may have read the damage leaves the prefix cache (_after_mend, evict_suspect): what was written
+      after the earliest of the readers' last passing checks. As in _since, the KV written right after a check at
+      step b carries b, so since is b - 1, and 0 if a reader has no passing check.
+    Returns the op record (op attn_act)."""
+    t_start = time.perf_counter()
+    found, readers_in = todo["found"], todo["readers"]
+    plans = []
+    for req, pages in readers_in:
+        k = len(req.output_ids)
+        held = len(req.prefix_indices) // PAGE * PAGE  # what the prefix cache holds, as act_retract computes it
+        row = sched.req_to_token_pool.req_to_token[req.req_pool_idx, held:len(req.origin_input_ids) + k]
+        own = set(torch.unique(torch.div(row.to(torch.int64), PAGE, rounding_mode="floor")).tolist()) & set(pages)
+        plans.append(dict(req=req, pages=pages, own=own, k=k, strict=is_strict(req), suffix=None,
+                          bound=_read_bound(st, req) if todo["complete"] else None))
+    freed = ({p for x in plans for p in x["own"]}
+             - {p for x in plans for p in x["pages"] if p not in x["own"]})  # a page another reader caches stays
+    mended, mends = set(), []
+    for x in plans:
+        mine = [f for f in found if f[2] in x["pages"] and f[2] not in freed and f[2] not in mended]
+        if not mine and x["bound"] is not None:
+            continue  # its pages are mended or go with a rollback, and nothing before this step read them
+        st.found, st.damaged = mine, [(r, l, p) for r, l, p, why in mine if why == "tag"]
+        m = act_mend(st, sched, dict(suffix=x["bound"] is None, read=sorted(set(x["pages"]) - {f[2] for f in mine})),
+                     x["req"])
+        x["suffix"] = m.get("suffix")
+        if m.get("mended"):
+            mended |= set(m.get("mended_pages", []))
+        mends.append(dict(rid=x["req"].rid, **m))
+    st.found, st.damaged = [], []
+    since = min(0 if x["bound"] is None else x["bound"] - 1 for x in plans)
+    readers, waited = [], []
+    for x in plans:
+        req, k = x["req"], x["k"]
+        sent = getattr(req, "send_token_offset", 0)
+        # its latest prefill read the damage: no check covered that prefill, and the damage lies where it read (or
+        # there is no record of its forwards to tell)
+        prefill_read = x["bound"] is None and (x["suffix"] is not None or not st.fills.get(req.rid))
+        if x["strict"]:
+            keep = k if x["bound"] is not None else min(st.checked_upto.get(req.rid, 0), k)
+        elif prefill_read and sent < k:
+            keep = k - 1  # the prefill's token has not left: it goes too
+        else:
+            keep = k
+        if req.rid in st.pending_redo:  # a rollback that waited for the request to join the running batch
+            keep = min(keep, st.pending_redo.pop(req.rid))
+            if req.rid in st.pending_suspect:
+                waited.append(st.pending_suspect.pop(req.rid))
+        r = _redo(st, sched, req, keep, (mended, since), checked=st.checked_upto.get(req.rid, 0))
+        st.attn_repairs[req.rid] = st.attn_repairs.get(req.rid, 0) + 1
+        rec = dict(rid=req.rid, strict=x["strict"], n_out=k, pages=x["pages"], last_pass=x["bound"], keep=keep,
+                   dropped=1, rolled_back=k - keep, regenerate=1 + k - keep, retracted=bool(r.get("retracted")),
+                   checked_upto=st.checked_upto.get(req.rid))
+        if prefill_read and not x["strict"] and keep == k:
+            rec["released_suspect"] = dict(released_tokens=sent, suspect_tokens=1,
+                                           reason="its latest prefill read the damage before any check covered it, "
+                                                  "and that prefill's token has left")
+        readers.append(rec)
+    after = _after_mend(st, sched, plans[0]["req"], mended, since)
+    evicted = after["evicted_tokens"] + sum(evict_suspect(st, sched.tree_cache, *s) for s in waited)
+    redone = {p for m in mends for p in m.get("rebuild_failed_pages", []) + m.get("recopy_failed_pages", [])}
+    rebuilt = {e["page"] for m in mends for e in m.get("rebuilt", []) if e.get("rebuilt") is not False} - redone
+    recopied = {e["page"] for m in mends for e in m.get("recopied", [])} - redone
+    return dict(op="attn_act", step=todo["step"], t0=todo["t0"], found_pieces=len(found), found=found[:64],
+                summary=_summary(found), pages=sorted({p for _, _, p, _ in found if p > 0}),
+                mended_pages=sorted(mended), freed_pages=sorted(freed), rids=[x["req"].rid for x in plans],
+                repair=dict(rebuilt=sorted(rebuilt), recopied=sorted(recopied),
+                            recomputed=sorted(mended - rebuilt - recopied), freed=sorted(freed)),
+                readers=readers, mends=mends, gave_up=todo["gave_up"], other_readers=after["other_readers"],
+                evicted_tokens=evicted, since=since, layout_anomalies=sum(1 for f in found if f[2] < 0),
+                seconds=time.perf_counter() - t_start)
 
 
 def _attn_target(q, k_buffer, v_buffer):
@@ -2386,6 +2569,9 @@ def on_step(sched):
     st.step_t.fill_(st.step)
     st.sched = sched
     drain_load_events(st, sched)
+    if st.attn_todo is not None:  # this step's check on read failed (KVMEND_ATTN_ACT=repair): repair before all else
+        todo, st.attn_todo = st.attn_todo, None
+        _log(sched, attn_repair(st, sched, todo))
     for rid, i, a, req in list(PLAN.due(sched)):
         PLAN.done.add((rid, i))
         rec = dict(step=st.step, rid=rid, at=a["at"], op=a["op"], n_out=len(req.output_ids), t0=time.time())
@@ -2483,15 +2669,24 @@ def patch_scheduler(mod):
 
     def process_batch_result(self, batch, result, *args, **kwargs):
         st = _state(self)
+        skipped = []
         if st is not None and st.attn is not None and batch.forward_mode.is_decode():
             # Checks on read: before SGLang's own processing, which frees the tail pages of finished requests (and
-            # with them their tags), so every page this step read still holds the tag it was read against.
+            # with them their tags), so every page this step read still holds the tag it was read against. With
+            # KVMEND_ATTN_ACT=repair, the readers of a damaged page skip this step's token (attn_agree), and on_step
+            # mends the pages and rolls them back (attn_repair).
             try:
-                attn_verdict(st, self, batch)
+                fails = attn_verdict(st, self, batch)
+                if attn_act(st) == "repair":
+                    skipped = attn_agree(st, self, batch, fails)
             except Exception:
                 _log(self, dict(op="error", trace=traceback.format_exc()), now=True)
                 raise
-        out = orig_result(self, batch, result, *args, **kwargs)
+        try:
+            out = orig_result(self, batch, result, *args, **kwargs)
+        finally:
+            for req in skipped:  # SGLang's own flag again; the rollback in on_step sets it (reset_for_retract)
+                req.is_retracted = False
         try:
             if st is not None and batch.forward_mode.is_extend():
                 note_fills(st, batch)  # before this step's checks, which read it
@@ -2529,7 +2724,8 @@ def patch_scheduler(mod):
                                 piece_bytes=st.piece_bytes(), pool_pages=st.pages - 1, layers=st.layers, **st.stats))
             if st.attn is not None and st.attn.stats["steps"]:
                 _log(self, dict(op="attn_check", label=st.ctrl.get("label", ""), reuse=st.attn.reuse,
-                                unsupported=dict(st.attn.unsupported), piece_bytes=st.piece_bytes(), **st.attn.stats))
+                                act=st.ctrl.get("attn_act") or ATTN_ACT, unsupported=dict(st.attn.unsupported),
+                                piece_bytes=st.piece_bytes(), **st.attn.stats))
             st.reset()
             _read_ctrl(st)
         _flush_log(self)
@@ -2588,8 +2784,10 @@ def patch_radix_cache(mod):
         if LOG_READS and st is not None and st.sched is not None and req.req_pool_idx is not None:
             _log(st.sched, dict(step=st.step, **read_record(st, self, req)))
         out = orig_finished(self, req, *args, **kwargs)
-        for state in _STATES:  # the request has ended: its record of prefill forwards goes
-            getattr(state, "fills", {}).pop(req.rid, None)
+        for state in _STATES:  # the request has ended: its records of prefill forwards and of checks on read go
+            for record in (getattr(state, "fills", {}), getattr(state, "attn_good", {}),
+                           getattr(state, "attn_repairs", {})):
+                record.pop(req.rid, None)
         if st is not None and st.sched is not None and st.poisoned:
             _drop_and_log(st, st.sched, self, req.rid)
         return out
