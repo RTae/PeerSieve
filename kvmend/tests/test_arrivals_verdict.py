@@ -47,7 +47,8 @@ def test_logged_pages_decide_who_read_damage():
     judged = {q: RA.judge(q, run, ctx, windows, {"sf_q005"}) for q in run["requests"]}
     assert {q: j["read_damage"] for q, j in judged.items()} == {
         "q000": True, "q001": False, "q002": True, "q003": True, "q004": False, "q005": True, "q006": False}
-    assert judged["q002"]["damage_read"] == [dict(rid="sf_q002", fault="sf_q000", kind="late_bypass", pages=[10, 11])]
+    assert judged["q002"]["damage_read"] == [dict(rid="sf_q002", fault="sf_q000", kind="late_bypass", pages=[10, 11],
+                                                  struck=W0 + 2.0)]
     assert judged["q005"]["failed_checks"] == ["sf_q005"] and judged["q004"]["pages_logged"]
     # q008 was submitted at 2.4 s, while pages 10-11 were damaged, but its first check (right after its prefill)
     # came at 2.6 s, after the repair: it read the mended pages. Without that time it would count as a reader.
@@ -91,7 +92,14 @@ def _repair_ctx():
     abort = dict(op="release_check", rid="rf_q020", step=70, n_out=16, rank=0, found_pieces=4, found={"9": {}},
                  time=W0 + 1.7, aborted=True, poisoned_pages=[9], other_readers=[])
     by_key = {("sf_q012", 50, 16): {0: rank0, 1: rank1}, ("rf_q020", 70, 16): {0: abort}}
-    return dict(log0=[rank0, abort], by_key=by_key, ref={q: [REF] for q in ("q012", "q016", "q020", "q024")})
+    return dict(log0=[rank0, abort], by_key=by_key, ref={q: [REF] for q in ("q012", "q016", "q020", "q024")},
+                passes={}, finish_checks={}, every=4)
+
+
+def _read(rid, struck=None):
+    """A request that read damage: its check failed, or a damaged page it read (struck at wall time `struck`)."""
+    hits = [] if struck is None else [dict(rid=rid, fault="x", kind="late_bypass", pages=[9], struck=struck)]
+    return dict(read_damage=True, damage_read=hits, failed_checks=[rid])
 
 
 def test_a_rebuild_is_counted_on_the_rank_that_did_it():
@@ -145,12 +153,45 @@ def test_an_aborted_attempt_is_judged_on_what_it_released():
 
 
 def test_damage_with_no_repair_counts_every_token():
-    run = dict(wall=[W0, W0 + 10.0], requests={"q012": dict(attempts=[_att("ff_q012", REF[:40] + [0] * 24)])})
-    judged = dict(read_damage=True, damage_read=[dict(rid="ff_q012")], failed_checks=[])
-    released = RA.before_repair("q012", run, dict(ref={"q012": [REF]}), judged, {})
+    run = dict(wall=[W0, W0 + 10.0], requests={"q012": dict(attempts=[_att(
+        "ff_q012", REF[:40] + [0] * 24, released=[[1.0 + n / 64, n] for n in range(1, 65)])])})
+    judged = dict(read_damage=True, damage_read=[dict(rid="ff_q012", struck=W0 + 1.25)], failed_checks=[])
+    released = RA.before_repair("q012", run, dict(ref={"q012": [REF]}, passes={}, finish_checks={}, every=4),
+                                judged, {})
     assert released == [dict(rid="ff_q012", released_before_repair=64, point="never repaired",
-                             first_wrong_released=40, repair=[])]
-    assert RA.verdict_of(judged, released) == "wrong before the repair"
+                             first_wrong_released=40, first_wrong_released_s=1.640625, released_from="stream",
+                             damage_struck_s=1.25, repair=[])]
+    assert RA.verdict_of(judged, released) == "wrong before the repair"  # token 40 left at 1.64 s, after 1.25 s
+
+
+def test_a_wrong_token_that_left_before_the_damage_struck_is_batch_variation():
+    """The first wrong token's release (stream, or the passing check that cleared it) against the damage's strike: if
+    it left before the damage existed, intact KV computed it. A straight-line estimate excuses nothing."""
+    ctx = _repair_ctx()
+    timeline = [[1.0 + 0.02 * n, n] for n in range(1, 13)]  # 12 tokens by 1.24 s, the repair at 1.64 s
+
+    def verdict(att, struck, repairs=None):
+        run = dict(wall=[W0, W0 + 10.0], requests={"q012": dict(attempts=[att])})
+        judged = _read(att["rid"], struck)
+        return RA.verdict_of(judged, RA.before_repair("q012", run, ctx, judged, repairs or RA.repairs_of("sf", ctx)))
+
+    wrong7 = REF[:7] + [0] * 57  # token 7 left at 1.16 s
+    assert verdict(_att("sf_q012", wrong7, released=timeline), W0 + 1.5) == "varied before the damage"
+    assert verdict(_att("sf_q012", wrong7, released=timeline), W0 + 1.1) == "wrong before the repair"
+    assert verdict(_att("sf_q012", wrong7, released=timeline), None) == "wrong before the repair"  # strike unknown
+    # no timeline (older records): the passing check at output 8 cleared token 7 at 1.2 s
+    ctx["passes"] = {"sf_q012": [W0 + 1.05, W0 + 1.1, W0 + 1.2]}  # passes at outputs 1, 4 and 8
+    assert verdict(_att("sf_q012", wrong7), W0 + 1.5) == "varied before the damage"
+    assert verdict(_att("sf_q012", wrong7), W0 + 1.15) == "wrong before the repair"
+    ctx["passes"] = {}  # no checks either: the estimate (token 7 of 64 between 1.01 and 2.0 s) excuses nothing
+    assert verdict(_att("sf_q012", wrong7), W0 + 1.5) == "wrong before the repair"
+    # retry: the aborted attempt's first wrong token left before the strike
+    rf = RA.repairs_of("rf", ctx)
+    att = _att("rf_q020", REF[:3] + [0] * 9, finish="abort", end=1.7, released=[[1.1, 4], [1.3, 8], [1.6, 12]])
+    run = dict(wall=[W0, W0 + 10.0], requests={"q020": dict(attempts=[att])})
+    for struck, want in ((W0 + 1.5, "varied before the damage"), (W0 + 1.05, "wrong before the repair")):
+        assert RA.verdict_of(_read("rf_q020", struck), RA.before_repair("q020", run, ctx, _read("rf_q020", struck),
+                                                                         rf)) == want, struck
 
 
 def test_a_run_in_which_the_server_stood_still_is_cold():

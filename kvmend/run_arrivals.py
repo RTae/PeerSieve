@@ -41,13 +41,19 @@ repairs, which flips a near-tie later in its text. The hook logs the pages each 
 check that found the damage; to the end of the run when nothing checks), or if a check of it failed. Records without
 the pages (older runs) are judged by group: a fault in a shared prefix reaches its group's requests that ran while it
 was there; a fault in a request's own pages reaches only that request. A stable request with a wrong text is then
-  wrong before the repair    it read damage, and a token it released before the repair (before the detection that
-                             covered the damage: what the release rule had cleared by then or the stream had
-                             delivered; an aborted attempt: all it released), or with no repair at all, differs from
-                             the fault-free text: a miss
+  wrong before the repair    it read damage, and its first wrong token among those it released before the repair
+                             (before the detection that covered the damage: what the release rule had cleared by then
+                             or the stream had delivered; an aborted attempt: all it released), or with no repair at
+                             all, left after the damage struck: a miss
+  varied before the damage   it read damage, but its first wrong released token left before the damage struck (the
+                             stream's release timeline against the fault's strike time), so intact KV computed it:
+                             batch variation, which SGLang shows at TP=8 between identical runs; reported
   diverged after the repair  it read damage, but everything it released before the repair is right; reported with the
                              repair (rebuilt bit-exact, recopied, recomputed, regenerated, or aborted and resubmitted)
   varied without damage      it read no damaged page and passed every check: reported
+Records without the stream's release timeline (older runs) take a token's release time from the passing check that
+first covered it, no earlier than its computation either; for a request never checked, a straight line between its
+first and last token gives an estimate, which is reported but never excuses a wrong token.
 Per run: time to first token and end-to-end latency (median and 99th percentile, from the request's arrival to the
 first token and to the end of its last attempt), throughput, goodput (requests whose final text is right, per second),
 wrong outputs on stable requests, aborts and resubmissions, and checks per batch step. summary.json holds them,
@@ -311,7 +317,7 @@ def judge(q, run, ctx, windows, failing):
             else:
                 pages = w["pages"] if ((w["qid"] == q) if w["own"] else ctx["group"][q] == w["group"]) else set()
             if pages:
-                hits.append(dict(rid=att["rid"], fault=w["rid"], kind=w["kind"], pages=sorted(pages)))
+                hits.append(dict(rid=att["rid"], fault=w["rid"], kind=w["kind"], pages=sorted(pages), struck=w["start"]))
     failed = sorted(x["rid"] for x in run["requests"][q]["attempts"] if x["rid"] in failing)
     return dict(read_damage=bool(hits or failed), damage_read=hits, failed_checks=failed, pages_logged=logged)
 
@@ -382,11 +388,33 @@ def released_by(att, w0, t):
     return None if rel is None else max([n for s, n in rel if w0 + s <= t], default=0)
 
 
+def release_time(att, d, run, ctx):
+    """When output token d of attempt `att` was released (wall time), and from which record: the stream's timeline
+    (when the client got it); without one (older records), the passing check that first covered it (a strict request is
+    checked right after its prefill and every --every tokens, so its j-th pass covers its first 1, every, 2 * every,
+    ... tokens, until a rollback); without checks, a straight line from its first to its last token (an estimate)."""
+    w0 = run["wall"][0]
+    rel = att.get("released")
+    if rel is not None:
+        t = next((s for s, n in rel if n >= d + 1), None)
+        return (None if t is None else w0 + t), "stream"
+    passes = ctx["passes"].get(att["rid"], [])
+    cover = [1] + [ctx["every"] * j for j in range(1, len(passes))]
+    t = next((p for p, c in zip(passes, cover) if c >= d + 1), ctx["finish_checks"].get(att["rid"]))
+    if t is not None:
+        return t, "checks"
+    n = len(att.get("ids") or [])
+    if att.get("first") is None or att.get("end") is None or not n:
+        return None, "unknown"
+    return w0 + att["first"] + (att["end"] - att["first"]) * d / max(n - 1, 1), "estimated"
+
+
 def before_repair(q, run, ctx, judged, repairs):
     """For a request that read damage, each attempt that read it: the tokens it released before the repair (before
     the detection that covered the damage: what the release rule had cleared by then or the stream had delivered,
-    whichever is more), against the fault-free text. An attempt that ended with an abort counts all it released, and
-    one that read damage and was never repaired counts every token."""
+    whichever is more), against the fault-free text; and for the first wrong one, when it was released and when the
+    damage it read struck. An attempt that ended with an abort counts all it released, and one that read damage and
+    was never repaired counts every token."""
     ref, w0 = ctx["ref"][q][0], run["wall"][0]
     hit = {h["rid"] for h in judged["damage_read"]} | set(judged["failed_checks"])
     out = []
@@ -403,21 +431,33 @@ def before_repair(q, run, ctx, judged, repairs):
             k, point = len(ids), "never repaired"
         k = min(k, len(ids))
         wrong = next((i for i in range(k) if i >= len(ref) or ids[i] != ref[i]), None)
+        at, source = release_time(att, wrong, run, ctx) if wrong is not None else (None, None)
+        struck = [h["struck"] for h in judged["damage_read"] if h["rid"] == att["rid"] and h.get("struck") is not None]
         out.append(dict(rid=att["rid"], released_before_repair=k, point=point, first_wrong_released=wrong,
+                        first_wrong_released_s=None if at is None else at - w0, released_from=source,
+                        damage_struck_s=min(struck) - w0 if struck else None,
                         repair=[w for r in reps for w in r["how"]]))
     return out
 
 
 def verdict_of(judged, released):
-    """A stable request with a wrong text: "wrong before the repair" (a miss) if it read damage and released, before
-    a repair or with none, a token that differs from the fault-free text; "diverged after the repair" if it read damage
-    and everything it released before the repair is right; "varied without damage" if it read no damaged page and
-    passed every check."""
+    """A stable request with a wrong text: "varied without damage" if it read no damaged page and passed every check;
+    if it read damage: "diverged after the repair" if everything it released before the repair is right; "varied
+    before the damage" if its first wrong released token left before the damage it read struck, so it was computed
+    from intact KV (SGLang's output varies with the batch); else "wrong before the repair", a miss: the first wrong
+    token left after the damage struck and before the repair (or with none), or its times are unknown."""
     if not judged["read_damage"]:
         return "varied without damage"
-    if not released or any(c["first_wrong_released"] is not None for c in released):
-        return "wrong before the repair"
-    return "diverged after the repair"
+    wrong = [c for c in released if c["first_wrong_released"] is not None]
+    if released and not wrong:
+        return "diverged after the repair"
+    # only a time no earlier than the token's computation can excuse it: the client's receipt (stream) or the check
+    # that cleared it (checks); a straight-line estimate is reported but excuses nothing
+    if released and all(c["released_from"] in ("stream", "checks") and c["first_wrong_released_s"] is not None
+                        and c["damage_struck_s"] is not None and c["first_wrong_released_s"] < c["damage_struck_s"]
+                        for c in wrong):
+        return "varied before the damage"
+    return "wrong before the repair"
 
 
 def reads_of(q, run, ctx, prefix):
@@ -505,6 +545,7 @@ def run_row(code, run, ctx):
         stable_wrong_read_damage=[q for q in stable_wrong if judged[q]["read_damage"]],
         stable_wrong_before_repair=[q for q in stable_wrong if detail[q]["verdict"] == "wrong before the repair"],
         stable_diverged_after_repair=[q for q in stable_wrong if detail[q]["verdict"] == "diverged after the repair"],
+        stable_varied_before_damage=[q for q in stable_wrong if detail[q]["verdict"] == "varied before the damage"],
         stable_varied_without_damage=[q for q in stable_wrong if detail[q]["verdict"] == "varied without damage"],
         stable_wrong_detail=detail, damage=damage,
         aborts=sum(1 for x in attempts if x["finish"] == "abort"), resubmissions=len(attempts) - len(qids),
@@ -537,8 +578,21 @@ def summarize(src, out, a, runs, meta, order, offsets, faults, plan):
     for x in logs:
         if x["op"] == "release_check":
             by_key.setdefault((x.get("rid"), x.get("step"), x.get("n_out")), {})[x.get("rank", 0)] = x
+    passes, finish_checks = {}, {}  # when each request's checks passed (for records without a stream timeline)
+    for x in log0:
+        if x["op"] == "release_checks":
+            for rid in x.get("passed", []):
+                passes.setdefault(rid, []).append(x["time"])
+        elif x["op"] == "release_check" and "releasable" in x:
+            if x.get("finishing"):
+                finish_checks[x["rid"]] = x["time"]
+            else:
+                passes.setdefault(x["rid"], []).append(x["time"])
+    for times in passes.values():
+        times.sort()
     ctx = dict(qids=qids, ref=ref, stable=stable, log0=log0, plan=plan, reads=reads, read_span=read_span,
-               by_key=by_key, shared=a.shared, stall_s=getattr(a, "stall_s", 2.0),
+               by_key=by_key, passes=passes, finish_checks=finish_checks, every=a.every,
+               shared=a.shared, stall_s=getattr(a, "stall_s", 2.0),
                group={q: int(n[1:].split("_")[0]) for q, n in order},
                fault_of={order[i][0]: name for i, name in faults.items()})
     rows = {c: run_row(c, runs[c], ctx) for c in runs}
@@ -558,9 +612,9 @@ def summarize(src, out, a, runs, meta, order, offsets, faults, plan):
              runs=rows, errors=dict(hook=hook_errors, driver=driver_errors))
     s["verdict"] = {
         "no_errors": not hook_errors and not driver_errors,
-        # a stable request with a wrong text fails only if it released, before the repair of damage it read, a token
-        # that differs from the fault-free text (verdict_of); one that diverged after the repair, or varied without
-        # damage, is reported
+        # a stable request with a wrong text fails only if its first wrong released token left after damage it read
+        # struck and before the repair (verdict_of); one that varied before the damage, diverged after the repair, or
+        # varied without damage is reported
         "strict_sends_no_wrong_output_on_stable_requests": "sf" in rows and not rows["sf"]["stable_wrong_before_repair"],
         "retry_sends_no_wrong_output_on_stable_requests": "rf" in rows and not rows["rf"]["stable_wrong_before_repair"],
         "every_unfenced_fault_found_strict": all_found("sf"),
@@ -575,6 +629,8 @@ def summarize(src, out, a, runs, meta, order, offsets, faults, plan):
                                                        for w in x["repair"])
                                           for q in r["stable_diverged_after_repair"]}
                                       for c, r in rows.items() if r["stable_diverged_after_repair"]},
+        "varied_before_the_damage": {c: r["stable_varied_before_damage"] for c, r in rows.items()
+                                     if r["stable_varied_before_damage"]},
         "varied_without_damage": {c: r["stable_varied_without_damage"] for c, r in rows.items()
                                   if r["stable_varied_without_damage"]},
         "cold_runs_longest_stall_s": {c: round(r["longest_stall_s"], 2) for c, r in rows.items() if not r["warm"]},
@@ -603,8 +659,8 @@ def arrivals_md(s):
              f"{s['max_new']} output tokens each; checks every {s['every']} tokens. {s['model']} at TP={s['tp']}. "
              f"Stable requests: {s['stable']} of {s['requests']} (fault-free runs {', '.join(s['clean_runs'])}).", "",
              "| Run | Mode | Faults | TTFT p50 / p99 (ms) | E2E p50 / p99 (s) | Output tok/s | Goodput (right req/s) "
-             "| Wrong on stable: before the repair / diverged after it / without damage | Right "
-             "| Aborts / resubmissions | Checks per step |",
+             "| Wrong on stable: before the repair / diverged after it / varied before the damage / without damage "
+             "| Right | Aborts / resubmissions | Checks per step |",
              "|---|---|---|---|---|---|---|---|---|---|---|"]
     for c, r in s["runs"].items():
         cps = "" if r["checks_per_step"] is None else f"{r['checks_per_step']:.2f}"
@@ -615,7 +671,7 @@ def arrivals_md(s):
             timing = " | ".join([f"cold ({r['longest_stall_s']:.1f} s stall)"] + ["cold"] * 3)
         lines.append(f"| {c} | {r['mode']} | {'yes' if r['with_faults'] else 'no'} | {timing} | "
                      f"{len(r['stable_wrong_before_repair'])} / {len(r['stable_diverged_after_repair'])} / "
-                     f"{len(r['stable_varied_without_damage'])} | "
+                     f"{len(r['stable_varied_before_damage'])} / {len(r['stable_varied_without_damage'])} | "
                      f"{r['right']} of {r['requests']} | {r['aborts']} / {r['resubmissions']} | {cps} |")
     cold = {c: r["longest_stall_s"] for c, r in s["runs"].items() if not r["warm"]}
     if cold:
@@ -654,9 +710,15 @@ def arrivals_md(s):
         for q, d in r["stable_wrong_detail"].items():
             dmg = ("; ".join(f"{h['kind']} pages {_show(_ranges(h['pages']))}" for h in d["damage_read"])
                    or ("a check failed" if d["failed_checks"] else "no"))
+            def at(x):  # when the first wrong token left, and when the damage it read struck (s from the run's start)
+                t, s_ = x["first_wrong_released_s"], x["damage_struck_s"]
+                return ((f", left at {t:.2f} s" if t is not None else ", left at an unknown time")
+                        + ("" if x["released_from"] == "stream" else f" ({x['released_from']})")
+                        + (f"; damage struck at {s_:.2f} s" if s_ is not None else ""))
+
             rel = "; ".join(f"{x['rid']}: {x['released_before_repair']}"
                             + (" (all right)" if x["first_wrong_released"] is None
-                               else f" (token {x['first_wrong_released']} wrong)")
+                               else f" (token {x['first_wrong_released']} wrong{at(x)})")
                             + ("" if x["point"] == "repaired" else f", {x['point']}") for x in d["released"])
             how = "; ".join(w for x in d["released"] for w in x["repair"])
             chk = ("none (fast)" if r["mode"] == "fast" else

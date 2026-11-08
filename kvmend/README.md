@@ -123,10 +123,14 @@ SGLang's output depends on the batch, so a stable request's text can change in a
 damage. A repair also changes the compute path of the request it repairs, which can flip a near-tie later in its text.
 With `KVMEND_LOG_READS=1` the hook logs the pages each request read and since when (`read_pages`, when it finishes).
 A stable request with a wrong text is judged as follows:
-- **wrong before the repair:** a page it read was damaged while it read it, or a check of it failed, and a token it
-  released before the repair differs from the fault-free text. This counts against strict release (or retry).
-  "Released before the repair" means what the release rule had cleared, or the stream had delivered, when the detection
-  ran; for an aborted attempt, all it released.
+- **wrong before the repair:** a page it read was damaged while it read it, or a check of it failed, and its first
+  wrong token among those it released before the repair left after the damage struck. This counts against strict
+  release (or retry). "Released before the repair" means what the release rule had cleared, or the stream had
+  delivered, when the detection ran; for an aborted attempt, all it released.
+- **varied before the damage:** it read damage, but its first wrong token left before the damage struck, so intact KV
+  computed it. This is batch variation, which SGLang shows at TP=8 between identical runs; it is reported. The token's
+  time is when the stream delivered it. In older records it is when the passing check that cleared it ran; a
+  straight-line estimate for an unchecked request is reported but excuses nothing.
 - **diverged after the repair:** it read damage, but all it released before the repair is right. This is reported
   with the repair: rebuilt bit-exact, recomputed, regenerated, or aborted and resubmitted.
 - **varied without damage:** it read no damaged page and passed every check. This is reported.
