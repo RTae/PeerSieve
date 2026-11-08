@@ -115,6 +115,16 @@ Each run reports time to first token and end-to-end latency (median and 99th per
 the last attempt), throughput, goodput, wrong outputs on stable requests, aborts and resubmissions, and checks per
 step (`summary.json`, `arrivals.md`). The suite step is `arrivals`.
 
+An untimed warm-up run of the same workload (fast, no faults) comes first: in job 326443 the first two runs lost 40 s
+and 16 s to kernels compiled at their first use. A run in which the server still stands still for over `--stall-s`
+seconds is reported as cold, without its timing.
+
+SGLang's output depends on the batch, so a stable request's text can change in a run with faults without reading any
+damage. With `KVMEND_LOG_READS=1` the hook logs the pages each request read (`read_pages`, when it finishes). A stable
+request with a wrong text counts against strict release only if a page it read was damaged while it ran, or a check of
+it failed. One that read no damaged page and passed every check is reported as "varied without damage". Records
+without the pages are judged by group. `--resummarize <run folder>` judges an earlier run's records again.
+
 ## Loads from host memory (HiCache)
 
 SGLang's hierarchical cache copies KV pages to a host pool (`HiCacheController.write`, on a write thread) and back into new device pages on a prefix hit (`HiCacheController.load`, on a load thread, layer by layer). Neither copy goes through `set_kv_buffer`, so the patch carries the tags along:

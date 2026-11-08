@@ -80,6 +80,9 @@ ON_FAIL_DEFAULT = os.environ.get("KVMEND_ON_FAIL", "mend")
 if ON_FAIL_DEFAULT not in ON_FAIL_ACTIONS:
     raise ValueError(f"KVMEND_ON_FAIL must be one of {ON_FAIL_ACTIONS}, not {ON_FAIL_DEFAULT!r}")
 LOAD_CHECK_ON = os.environ.get("KVMEND_LOAD_CHECK", "1") == "1"  # HiCache: check loaded pages on arrival
+# The pages each request read (those its checks covered, and those it holds at the end), logged once as it finishes
+# (op read_pages), so that a driver can tell whether a request read a damaged page (run_arrivals.py)
+LOG_READS = os.environ.get("KVMEND_LOG_READS", "0") == "1"
 # Checks on read: the decode attention kernel adds up the tags of the pieces it reads (kvmend/attn_check.py). With
 # KVMEND_ATTN_RELOAD=1 the kernel reads the words again from memory instead of reusing the attention's tiles.
 CHECK_IN_ATTN = os.environ.get("KVMEND_CHECK_IN_ATTN", "0") == "1"
@@ -135,6 +138,7 @@ class PoolState:
         self.pending_redo = {}  # rid -> tokens to keep: a reader of a mended page that must regenerate the rest
         self.pending_suspect = {}  # rid -> (mended pages, since) for evict_suspect when that rollback happens
         self.poisoned = {}      # page -> its generation: damaged pages of aborted requests, to leave the prefix cache
+        self.read_pages = {}    # rid -> pages its checks covered (KVMEND_LOG_READS)
         self.checked_upto = {}  # rid -> output tokens covered by the request's last passing check (releasable)
         self.view_cache = {}    # rid -> token keys of the request's stored tokens, for the reader's check
         self.sched = None       # the scheduler, for checks that run outside on_step (the finish check)
@@ -215,6 +219,7 @@ class PoolState:
         self.stripe_of, self.stripe_pages, self.lparity = {}, {}, {}
         self.wstep.zero_()
         self.good_step, self.pending_redo, self.pending_suspect, self.poisoned = {}, {}, {}, {}
+        self.read_pages = {}
         self.batch_steps = 0
         self.alarm.zero_()
         self.stats = new_stats()
@@ -921,6 +926,33 @@ def _mark_good(st, req, pages):
     st.good_step[req.rid] = st.step
     on = pages.cpu()
     st.req_gen[req.rid] = (on, st.gen[on].clone())
+    _note_reads(st, req.rid, on)
+
+
+def _note_reads(st, rid, pages_cpu):
+    if LOG_READS:
+        st.read_pages.setdefault(rid, set()).update(pages_cpu.tolist())
+
+
+def _ranges(pages):
+    """Sorted page numbers as [first, last] runs: a request reads its prefix pages and its own pages in a few runs."""
+    out = []
+    for p in sorted(pages):
+        if out and p == out[-1][1] + 1:
+            out[-1][1] = p
+        else:
+            out.append([p, p])
+    return out
+
+
+def read_record(st, tree, req):
+    """The pages request `req` read: those its checks covered and those it holds now (a request never checked,
+    under fast release, holds all it read, since nothing rolled it back)."""
+    n = len(req.origin_input_ids) + max(len(req.output_ids) - 1, 0)
+    slots = tree.req_to_token_pool.req_to_token[req.req_pool_idx, :n].to(torch.int64)
+    now = set(torch.unique(torch.div(slots, PAGE, rounding_mode="floor")).tolist())
+    return dict(op="read_pages", rid=req.rid, n_out=len(req.output_ids),
+                pages=_ranges(now | st.read_pages.pop(req.rid, set())))
 
 
 def forget(st, rid):
@@ -946,6 +978,8 @@ def act_check(st, sched, a, req):
     st.damaged = [(r, l, p) for r, l, p, why in st.found if why == "tag"]
     if not st.found:
         _mark_good(st, req, pages)
+    else:
+        _note_reads(st, req.rid, pages.cpu())
     return dict(pages=int(pages.numel()), pieces_checked=int(pages.numel()) * st.layers, seconds=dt,
                 bytes_checked=int(pages.numel()) * st.layers * st.piece_bytes(), found=_summary(st.found),
                 found_pieces=len(st.found), last_good_step=st.last_good)
@@ -2040,15 +2074,17 @@ def patch_radix_cache(mod):
     final tokens read, so that they too leave only after a check. A request that ends with an abort releases nothing
     more and is not checked. Once SGLang has cached the request and released its lock, damaged pages of aborted
     requests that nothing holds any more leave the prefix cache (drop_poisoned), before the client hears of the
-    abort."""
+    abort. With KVMEND_LOG_READS, every finished request's pages are logged (read_record)."""
     cls = mod.RadixCache
     orig_finished = cls.cache_finished_req
 
     def cache_finished_req(self, req, *args, **kwargs):
-        st = getattr(self.token_to_kv_pool_allocator.get_kvcache(), "_kvm", None) if STRICT else None
-        if (st is not None and st.sched is not None and is_strict(req) and req.req_pool_idx is not None
+        st = getattr(self.token_to_kv_pool_allocator.get_kvcache(), "_kvm", None) if STRICT or LOG_READS else None
+        if (STRICT and st is not None and st.sched is not None and is_strict(req) and req.req_pool_idx is not None
                 and not getattr(req, "to_abort", False) and st.checked_upto.get(req.rid, 0) < len(req.output_ids)):
             _log(st.sched, dict(step=st.step, t0=time.time(), **release_check(st, st.sched, req, finishing=True)))
+        if LOG_READS and st is not None and st.sched is not None and req.req_pool_idx is not None:
+            _log(st.sched, dict(step=st.step, **read_record(st, self, req)))
         out = orig_finished(self, req, *args, **kwargs)
         if st is not None and st.sched is not None and st.poisoned:
             _drop_and_log(st, st.sched, self, req.rid)
