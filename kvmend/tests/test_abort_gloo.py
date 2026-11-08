@@ -159,11 +159,12 @@ def _setup(rank, rows):
         table[i, :len(slots)] = torch.tensor(slots, dtype=torch.int32)
     world = dist.group.WORLD
     queued = []
+    tree.req_to_token_pool = types.SimpleNamespace(req_to_token=table, free=lambda i: None)
     sched = types.SimpleNamespace(
         tp_rank=rank, page_size=PAGE, running_batch=_batch([], []), cur_batch=None,
         tp_group=types.SimpleNamespace(world_size=RANKS, rank_in_group=rank, ranks=list(range(RANKS)),
                                        cpu_group=world, device_group=world),
-        req_to_token_pool=types.SimpleNamespace(req_to_token=table, free=lambda i: None),
+        req_to_token_pool=tree.req_to_token_pool,
         token_to_kv_pool_allocator=tree.token_to_kv_pool_allocator, tree_cache=tree,
         _extend_requests_to_queue=lambda reqs, is_retracted: queued.extend(r.rid for r in reqs))
     st.sched = sched
@@ -228,6 +229,7 @@ def _abort_main(rank, port, out):
     recomputed = []
     hook._recompute_range = lambda *args: recomputed.append(args[3:])
     hook.STRICT, hook.ON_FAIL = hook._rules("rf_*:2:abort")
+    hook.LOG_READS = True  # KVMEND_LOG_READS=1: each finished request's pages are logged
     _stub_sglang()
     hook.patch_radix_cache(types.SimpleNamespace(RadixCache=Tree))
     try:
@@ -307,6 +309,7 @@ def _abort_main(rank, port, out):
                              checked=st.checked_upto["rf_U"], cached_pages=_cached_pages(tree),
                              record=[(x["finishing"], x.get("aborted"), x.get("poisoned_pages"))
                                      for x in _records("release_check", rid="rf_U")])
+        res["read_pages"] = {x["rid"]: x["pages"] for x in _records("read_pages")}
         out.put((rank, res))
     finally:
         dist.destroy_process_group()
@@ -352,6 +355,9 @@ def test_abort_on_fail_drops_the_damaged_pages_on_two_ranks():
         assert (fin["reason"], fin["message"]) == ("FINISH_ABORT", "KV damage found; resubmit the request")
         assert fin["checked"] == 6 and fin["record"][-1] == (True, True, [10])
         assert fin["cached_pages"] == [1, 2, 3, 9]  # U's prefix keeps its clean first page; page 3: the new owner
+        # each request's pages, logged as it ended: R and O read the shared prefix (1-4, with the damaged 3-4)
+        assert r["read_pages"] == {"rf_R": [[1, 6], [15, 15]], "rf_O": [[1, 4], [7, 8], [25, 25]],
+                                   "rf_U": [[9, 14], [35, 35]]}
 
 
 # ---------------------------------------------------------------------------------------------------------------

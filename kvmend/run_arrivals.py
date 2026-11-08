@@ -27,16 +27,28 @@ Three modes in one engine, the cache flushed between runs; each mode runs once w
                    them (hook: KVMEND_STRICT entries rid:every:abort), and the client resubmits the request, which
                    recomputes from the first damaged page on
 A request that ends with an abort is resubmitted in any mode, up to --max-attempts attempts (in strict mode, only a
-check at finish aborts). --replays more fault-free runs follow, fast and strict in turn (fc2, sc2, fc3, ...).
+check at finish aborts). --replays more fault-free runs follow, fast and strict in turn (fc2, sc2, fc3, ...). Before
+fc, one untimed warm-up run of the same workload (wu, fast, no faults) pays for the kernels compiled at their first
+use. A run in which the server stalled for over --stall-s seconds (some request in flight, and none got its first token
+or ended) is cold, and its timing is not reported.
 
 Outputs are judged as in run_load.py. A request is stable when every fault-free run gives it the same text; a stable
 request's final text is right when it is that text, and any request's is right when it equals some fault-free run's.
+SGLang's output depends on the batch, so a stable request's text can also change in a run with faults without reading
+any damage, when other requests' repairs change its batches. The hook logs the pages each request read
+(KVMEND_LOG_READS), and a stable request with a wrong text is judged on them:
+  read damage              a page it read was damaged while it ran (from the fault until the last check that found
+                           the damage; to the end of the run when nothing checks), or one of its checks failed
+  varied without damage    it read no damaged page and passed every check: reported, not a miss
+Records without the pages (older runs) are judged by group: a fault in a shared prefix reaches its group's requests
+that ran while it was there; a fault in a request's own pages reaches only that request.
 Per run: time to first token and end-to-end latency (median and 99th percentile, from the request's arrival to the
 first token and to the end of its last attempt), throughput, goodput (requests whose final text is right, per second),
 wrong outputs on stable requests, aborts and resubmissions, and checks per batch step. summary.json holds them,
 arrivals.md the tables.
 
   uv run python run_arrivals.py --model /home/tae/models/TinyLlama-1.1B-Chat-v1.0 --tp 2 --out runs/arrivals-check
+  python run_arrivals.py --resummarize runs/arrivals-check --out /tmp/rejudged    # judge old records again
 """
 import argparse
 import asyncio
@@ -51,13 +63,16 @@ import time
 from run_load import fault_specs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+PAGE = 16
 MODES = {"f": "fast", "s": "strict", "r": "retry"}
 FAULT_RUNS = ("ff", "sf", "rf")
+TIMING = ("makespan_s", "ttft_p50_s", "ttft_p99_s", "e2e_p50_s", "e2e_p99_s", "out_tok_per_s", "req_per_s",
+          "goodput_req_per_s", "check_ms_median")
 
 
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--model", required=True)
+    p.add_argument("--model")
     p.add_argument("--tp", type=int, default=2)
     p.add_argument("--requests", type=int, default=64)
     p.add_argument("--rate", type=float, default=8.0, help="arrivals per second (Poisson)")
@@ -69,13 +84,19 @@ def parse():
     p.add_argument("--rank", type=int, default=1, help="the GPU of the burst")
     p.add_argument("--max-attempts", type=int, default=4, help="attempts per request, resubmissions included")
     p.add_argument("--replays", type=int, default=2, help="more fault-free runs, fast and strict in turn")
+    p.add_argument("--stall-s", type=float, default=2.0, help="a run whose server stalled this long is cold")
     p.add_argument("--max-total-tokens", type=int, default=65536)
     p.add_argument("--mem-frac", type=float, default=0.6)
     p.add_argument("--chunk", type=int, default=8192)
     p.add_argument("--run-timeout", type=int, default=900, help="seconds before a stuck run ends the job")
     p.add_argument("--require-pass", action="store_true")
+    p.add_argument("--resummarize", metavar="DIR", help="judge the records in DIR again; write the summary to --out")
     p.add_argument("--out", required=True)
     a = p.parse_args()
+    if a.resummarize:
+        return a
+    if not a.model:
+        p.error("--model is required")
     specs = fault_specs(argparse.Namespace(shared=a.shared, rank=0))
     if a.groups < len(specs):
         p.error(f"--groups must be at least {len(specs)}: each fault strikes a group of its own")
@@ -215,8 +236,88 @@ def _pages(found):
     return {int(p) for p in (found or {})}
 
 
+def _ranges(pages):
+    out = []
+    for p in sorted(pages):
+        if out and p == out[-1][1] + 1:
+            out[-1][1] = p
+        else:
+            out.append([p, p])
+    return out
+
+
+def _show(ranges):
+    return ", ".join(f"{a_}-{b}" if b > a_ else f"{a_}" for a_, b in ranges)
+
+
+def longest_stall(run):
+    """The longest time in the run when some request was in flight and none got its first token or ended: the whole
+    server stood still, as when a kernel compiles at its first use."""
+    atts = [x for r in run["requests"].values() for x in r["attempts"] if x.get("end") is not None]
+    marks = sorted(t for x in atts for t in (x.get("first"), x.get("end")) if t is not None)
+    worst = 0.0
+    for t0, t1 in zip(marks, marks[1:]):
+        if t1 - t0 > worst and any(x["submit"] <= t0 and x["end"] >= t1 for x in atts):
+            worst = t1 - t0
+    return worst
+
+
+def damage_windows(code, run, ctx):
+    """The faults of run `code` that changed KV: their pages, when they struck, and the last time the damage could be
+    read: the last check that found it (strict: then mended; retry: its readers aborted), or the end of the run when
+    nothing found it. A late write the fence dropped changed nothing."""
+    hi = run["wall"][1]
+    mine = [x for x in ctx["log0"] if str(x.get("rid", "")).startswith(code + "_")]
+    found = [x for x in mine if x["op"] == "release_check" and x.get("found_pieces")]
+    out = []
+    for x in mine:
+        if x["op"] != "fault" or (x.get("fenced") and not x.get("written_tokens")):
+            continue
+        pages = set(x["pages"])
+        seen = [y["time"] for y in found if y["time"] >= x["time"] and pages & _pages(y.get("found"))]
+        qid = x["rid"].split("_", 1)[1]
+        out.append(dict(rid=x["rid"], qid=qid, kind=x["kind"], pages=pages, start=x["time"],
+                        end=max(seen) if seen else hi, found=bool(seen), group=ctx["group"][qid],
+                        own=x.get("start", 0) >= ctx["shared"]))  # past the shared prefix: the request's own pages
+    return out
+
+
+def judge(q, run, ctx, windows, failing):
+    """Did request q read damage in this run: a page it read was damaged while it ran, or one of its checks failed?
+    The pages come from the hook's read_pages records; without them, by group (see the module's docstring)."""
+    w0 = run["wall"][0]
+    hits, logged = [], True
+    for att in run["requests"][q]["attempts"]:
+        lo, hi = w0 + att["submit"], w0 + (att["end"] if att["end"] is not None else att["submit"])
+        got = ctx["reads"].get(att["rid"])
+        logged = logged and got is not None
+        for w in windows:
+            if lo > w["end"] or hi < w["start"]:
+                continue
+            if got is not None:
+                pages = got & w["pages"]
+            else:
+                pages = w["pages"] if ((w["qid"] == q) if w["own"] else ctx["group"][q] == w["group"]) else set()
+            if pages:
+                hits.append(dict(rid=att["rid"], fault=w["rid"], kind=w["kind"], pages=sorted(pages)))
+    failed = sorted(x["rid"] for x in run["requests"][q]["attempts"] if x["rid"] in failing)
+    return dict(read_damage=bool(hits or failed), damage_read=hits, failed_checks=failed, pages_logged=logged)
+
+
+def reads_of(q, run, ctx, prefix):
+    """The pages request q read, as logged, or what the records tell when they were not logged."""
+    atts = run["requests"][q]["attempts"]
+    if all(x["rid"] in ctx["reads"] for x in atts):
+        return {x["rid"]: _show(_ranges(ctx["reads"][x["rid"]])) for x in atts}
+    g = ctx["group"][q]
+    known = f"pages {_show([prefix[g]])}, from the fault records" if g in prefix else "pages not in the records"
+    return f"group {g}'s prefix ({known}) and its own pages (not logged)"
+
+
 def run_row(code, run, ctx):
-    """One run's metrics, its faults and what found them."""
+    """One run's metrics, its faults, what found them, and who read the damage."""
+    from run_poc import first_diff
+
     qids, ref, stable, log0, plan = ctx["qids"], ctx["ref"], ctx["stable"], ctx["log0"], ctx["plan"]
     reqs = run["requests"]
     lo, hi = run["wall"]
@@ -249,33 +350,57 @@ def run_row(code, run, ctx):
                        rebuilt=sum(1 for s in x.get("mend", {}).get("rebuilt", []) if s.get("rebuilt")),
                        poisoned=x.get("poisoned_pages"), dropped=x.get("dropped_tokens"))
                   for x in found]
+    # who read the damage, and what each stable request with a wrong text read
+    windows = damage_windows(code, run, ctx)
+    failing = {x["rid"] for x in found}
+    judged = {q: judge(q, run, ctx, windows, failing) for q in qids}
+    prefix = {}  # group -> [first, last] page of its prefix, where a fault in the prefix tells it
+    for x in mine:
+        if x["op"] == "fault" and "start" in x and x["start"] < ctx["shared"]:
+            base = x["pages"][0] - x["start"] // PAGE
+            prefix[ctx["group"][x["rid"].split("_", 1)[1]]] = [base, base + ctx["shared"] // PAGE - 1]
+    stable_wrong = [q for q in stable if reqs[q]["ids"] != ref[q][0]]
+    detail = {q: dict(group=ctx["group"][q], first_diff=first_diff(reqs[q]["ids"], ref[q][0]), **judged[q],
+                      reads=reads_of(q, run, ctx, prefix)) for q in stable_wrong}
+    damage = [dict(fault=w["rid"], kind=w["kind"], pages=_show(_ranges(w["pages"])),
+                   struck_s=w["start"] - lo, last_found_s=w["end"] - lo if w["found"] else None,
+                   readers=[q for q in qids if any(h["fault"] == w["rid"] for h in judged[q]["damage_read"])])
+              for w in windows]
     seconds = sorted(x["seconds"] for x in batched)
-    return dict(
-        mode=MODES[code[0]], with_faults=code in FAULT_RUNS, requests=len(qids), makespan_s=makespan,
-        ttft_p50_s=pct([reqs[q]["ttft"] for q in qids], 0.5), ttft_p99_s=pct([reqs[q]["ttft"] for q in qids], 0.99),
-        e2e_p50_s=pct([reqs[q]["e2e"] for q in qids], 0.5), e2e_p99_s=pct([reqs[q]["e2e"] for q in qids], 0.99),
-        output_tokens=sum(len(reqs[q]["ids"]) for q in qids),
+    stall = longest_stall(run)
+    timing = dict(
+        makespan_s=makespan, ttft_p50_s=pct([reqs[q]["ttft"] for q in qids], 0.5),
+        ttft_p99_s=pct([reqs[q]["ttft"] for q in qids], 0.99), e2e_p50_s=pct([reqs[q]["e2e"] for q in qids], 0.5),
+        e2e_p99_s=pct([reqs[q]["e2e"] for q in qids], 0.99),
         out_tok_per_s=sum(len(reqs[q]["ids"]) for q in qids) / makespan,
         req_per_s=sum(1 for q in qids if reqs[q]["finish"] not in ("abort", "error")) / makespan,
-        goodput_req_per_s=len(right) / makespan, right=len(right), wrong=[q for q in qids if q not in right],
-        stable_wrong=[q for q in stable if reqs[q]["ids"] != ref[q][0]],
+        goodput_req_per_s=len(right) / makespan,
+        check_ms_median=1e3 * statistics.median(seconds) if seconds else None)
+    warm = stall < ctx["stall_s"]
+    return dict(
+        mode=MODES[code[0]], with_faults=code in FAULT_RUNS, requests=len(qids), warm=warm, longest_stall_s=stall,
+        **(timing if warm else {k: None for k in TIMING}), cold_timing=None if warm else timing,
+        output_tokens=sum(len(reqs[q]["ids"]) for q in qids), right=len(right),
+        wrong=[q for q in qids if q not in right], stable_wrong=stable_wrong,
+        stable_wrong_read_damage=[q for q in stable_wrong if judged[q]["read_damage"]],
+        stable_varied_without_damage=[q for q in stable_wrong if not judged[q]["read_damage"]],
+        stable_wrong_detail=detail, damage=damage,
         aborts=sum(1 for x in attempts if x["finish"] == "abort"), resubmissions=len(attempts) - len(qids),
         aborted_again=sorted(x["rid"] for x in attempts if x["finish"] == "abort" and "." in x["rid"]),
         unfinished=[q for q in qids if reqs[q]["finish"] == "abort"],
         resubmission_cached_tokens={x["rid"]: x.get("cached") for x in attempts if "." in x["rid"]},
         errors=[dict(rid=x["rid"], finish=x["finish"], error=x.get("error"), lost=x.get("lost")) for x in attempts
                 if x["finish"] == "error" or x.get("lost")],
-        checks=checks, check_steps=len(batched), batch_steps=steps,
-        checks_per_step=checks / steps if steps else None,
-        check_ms_median=1e3 * statistics.median(seconds) if seconds else None,
+        checks=checks, check_steps=len(batched), batch_steps=steps, checks_per_step=checks / steps if steps else None,
         dropped_tokens=sum(x.get("dropped_tokens", 0) for x in window if x["op"] == "drop_poisoned")
         + sum(d["dropped"] or 0 for d in detections),
         faults=faults, detections=detections)
 
 
-def summarize(out, a, runs, meta, order, offsets, faults, plan):
+def summarize(src, out, a, runs, meta, order, offsets, faults, plan):
+    """Judge the runs, from the rank logs in `src`; write summary.json and arrivals.md to `out`."""
     logs = []
-    for path in sorted(glob.glob(os.path.join(out, "rank*.jsonl"))):
+    for path in sorted(glob.glob(os.path.join(src, "rank*.jsonl"))):
         with open(path) as fh:
             logs += [json.loads(line) for line in fh]
     log0 = [x for x in logs if x.get("rank") == 0]
@@ -284,7 +409,9 @@ def summarize(out, a, runs, meta, order, offsets, faults, plan):
     ref = {q: [runs[c]["requests"][q]["ids"] for c in clean] for q in qids}
     vary = [q for q in qids if any(x != ref[q][0] for x in ref[q])]
     stable = [q for q in qids if q not in vary]
-    ctx = dict(qids=qids, ref=ref, stable=stable, log0=log0, plan=plan,
+    reads = {x["rid"]: {p for a_, b in x["pages"] for p in range(a_, b + 1)} for x in log0 if x["op"] == "read_pages"}
+    ctx = dict(qids=qids, ref=ref, stable=stable, log0=log0, plan=plan, reads=reads, shared=a.shared,
+               stall_s=getattr(a, "stall_s", 2.0), group={q: int(n[1:].split("_")[0]) for q, n in order},
                fault_of={order[i][0]: name for i, name in faults.items()})
     rows = {c: run_row(c, runs[c], ctx) for c in runs}
     hook_errors = [x for x in logs if x["op"] == "error"]
@@ -296,23 +423,32 @@ def summarize(out, a, runs, meta, order, offsets, faults, plan):
 
     s = dict(meta=meta, model=a.model, tp=a.tp, requests=a.requests, rate=a.rate, seed=a.seed, groups=a.groups,
              shared=a.shared, max_new=a.max_new, every=a.every, max_attempts=a.max_attempts,
-             arrival_span_s=offsets[-1], faults={order[i][0]: name for i, name in faults.items()},
-             clean_runs=clean, fault_free_variation=vary, stable=len(stable), runs=rows,
-             errors=dict(hook=hook_errors, driver=driver_errors))
+             stall_s=ctx["stall_s"], arrival_span_s=offsets[-1],
+             faults={order[i][0]: name for i, name in faults.items()}, clean_runs=clean, fault_free_variation=vary,
+             stable=len(stable), pages_read="logged by the hook" if reads else
+             "not in the records: judged by group (a prefix fault reaches its group; an own-page fault its request)",
+             runs=rows, errors=dict(hook=hook_errors, driver=driver_errors))
     s["verdict"] = {
         "no_errors": not hook_errors and not driver_errors,
-        "strict_sends_no_wrong_output_on_stable_requests": "sf" in rows and not rows["sf"]["stable_wrong"],
+        # a stable request's wrong text fails only if it read damage; one that varied without damage is reported
+        "strict_sends_no_wrong_output_on_stable_requests": "sf" in rows and not rows["sf"]["stable_wrong_read_damage"],
         "every_unfenced_fault_found_strict": all_found("sf"),
         "every_unfenced_fault_found_retry": all_found("rf"),
     }
     s["observations"] = {  # reported, not pass checks
         "fast_wrong_on_stable": len(rows["ff"]["stable_wrong"]) if "ff" in rows else None,
         "retry_wrong_on_stable": len(rows["rf"]["stable_wrong"]) if "rf" in rows else None,
+        "wrong_on_stable_after_reading_damage": {c: r["stable_wrong_read_damage"] for c, r in rows.items()
+                                                 if r["stable_wrong_read_damage"]},
+        "varied_without_damage": {c: r["stable_varied_without_damage"] for c, r in rows.items()
+                                  if r["stable_varied_without_damage"]},
+        "cold_runs_longest_stall_s": {c: round(r["longest_stall_s"], 2) for c, r in rows.items() if not r["warm"]},
         "fenced_write_dropped": all(f["written"] == 0 for c in ("sf", "rf") if c in rows
                                     for f in rows[c]["faults"] if f["fenced"]),
         "unfinished": {c: r["unfinished"] for c, r in rows.items() if r["unfinished"]},
         "retry_resubmissions_aborted_again": rows["rf"]["aborted_again"] if "rf" in rows else None,
     }
+    os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "summary.json"), "w") as fh:
         json.dump(s, fh, indent=1, default=str)
     with open(os.path.join(out, "arrivals.md"), "w") as fh:
@@ -332,14 +468,23 @@ def arrivals_md(s):
              f"{s['max_new']} output tokens each; checks every {s['every']} tokens. {s['model']} at TP={s['tp']}. "
              f"Stable requests: {s['stable']} of {s['requests']} (fault-free runs {', '.join(s['clean_runs'])}).", "",
              "| Run | Mode | Faults | TTFT p50 / p99 (ms) | E2E p50 / p99 (s) | Output tok/s | Goodput (right req/s) "
-             "| Wrong on stable | Right | Aborts / resubmissions | Checks per step |",
+             "| Wrong on stable: read damage / varied without damage | Right | Aborts / resubmissions "
+             "| Checks per step |",
              "|---|---|---|---|---|---|---|---|---|---|---|"]
     for c, r in s["runs"].items():
         cps = "" if r["checks_per_step"] is None else f"{r['checks_per_step']:.2f}"
-        lines.append(f"| {c} | {r['mode']} | {'yes' if r['with_faults'] else 'no'} | {ms(r['ttft_p50_s'])} / "
-                     f"{ms(r['ttft_p99_s'])} | {sec(r['e2e_p50_s'])} / {sec(r['e2e_p99_s'])} | "
-                     f"{r['out_tok_per_s']:.0f} | {r['goodput_req_per_s']:.2f} | {len(r['stable_wrong'])} | "
+        if r["warm"]:
+            timing = (f"{ms(r['ttft_p50_s'])} / {ms(r['ttft_p99_s'])} | {sec(r['e2e_p50_s'])} / {sec(r['e2e_p99_s'])} "
+                      f"| {r['out_tok_per_s']:.0f} | {r['goodput_req_per_s']:.2f}")
+        else:
+            timing = " | ".join([f"cold ({r['longest_stall_s']:.1f} s stall)"] + ["cold"] * 3)
+        lines.append(f"| {c} | {r['mode']} | {'yes' if r['with_faults'] else 'no'} | {timing} | "
+                     f"{len(r['stable_wrong_read_damage'])} / {len(r['stable_varied_without_damage'])} | "
                      f"{r['right']} of {r['requests']} | {r['aborts']} / {r['resubmissions']} | {cps} |")
+    cold = {c: r["longest_stall_s"] for c, r in s["runs"].items() if not r["warm"]}
+    if cold:
+        lines += ["", f"Cold runs (the server stood still for over {s['stall_s']:g} s): "
+                  + ", ".join(f"{c} {v:.1f} s" for c, v in cold.items()) + "; their timing is not reported."]
     lines += ["", "| Fault | Request | At output | Pages | Fast: request right | Strict: found by | Retry: found by |",
               "|---|---|---|---|---|---|---|"]
     by = {c: {f["name"]: f for f in s["runs"][c]["faults"]} for c in FAULT_RUNS if c in s["runs"]}
@@ -356,17 +501,63 @@ def arrivals_md(s):
 
         lines.append(f"| {name} | {qid} | {row[0]['at'] if row[0] else ''} | {pages} | "
                      f"{'yes' if row[0] and row[0]['request_right'] else 'no'} | {found(row[1])} | {found(row[2])} |")
+    lines += ["", f"Damage, and the requests that read it (pages read: {s['pages_read']}):", "",
+              "| Run | Fault | Pages | Struck at (s) | Last found at (s) | Requests that read it |", "|---|---|---|---|---|---|"]
+    for c in FAULT_RUNS:
+        for d in s["runs"].get(c, {}).get("damage", []):
+            last = "never found" if d["last_found_s"] is None else f"{d['last_found_s']:.2f}"
+            lines.append(f"| {c} | {d['kind']} ({d['fault']}) | {d['pages']} | {d['struck_s']:.2f} | {last} | "
+                         f"{', '.join(d['readers']) or 'none'} |")
+    lines += ["", "Stable requests with a wrong text:", "",
+              "| Run | Request | Group | First differing token | Read damage | Pages read | Checks |",
+              "|---|---|---|---|---|---|---|"]
+    for c, r in s["runs"].items():
+        for q, d in r["stable_wrong_detail"].items():
+            dmg = ("; ".join(f"{h['kind']} pages {_show(_ranges(h['pages']))}" for h in d["damage_read"])
+                   or ("a check failed" if d["failed_checks"] else "no"))
+            chk = ("none (fast)" if r["mode"] == "fast" else
+                   f"failed: {', '.join(d['failed_checks'])}" if d["failed_checks"] else "all passed")
+            reads = d["reads"] if isinstance(d["reads"], str) else "; ".join(f"{k}: {v}" for k, v in d["reads"].items())
+            lines.append(f"| {c} | {q} | {d['group']} | {d['first_diff']} | {dmg} | {reads} | {chk} |")
     lines += ["", "Verdict: " + ", ".join(f"{k} {'yes' if v else 'NO'}" for k, v in s["verdict"].items()) + "."]
     return "\n".join(lines) + "\n"
+
+
+def report(s, a):
+    print(json.dumps(s["verdict"], indent=1))
+    print(json.dumps(s["observations"], indent=1, default=str))
+    print(arrivals_md(s), flush=True)
+    if a.require_pass and not all(s["verdict"].values()):
+        print("PASS CHECKS FAILED:", [k for k, ok in s["verdict"].items() if not ok], flush=True)
+        raise SystemExit(3)
+
+
+def resummarize(a, out):
+    """Judge the records of an earlier run (its folder `a.resummarize`) with this code."""
+    src = os.path.abspath(a.resummarize)
+
+    def load(name):
+        with open(os.path.join(src, name)) as fh:
+            return json.load(fh)
+
+    old, runs, plan, arr = load("summary.json"), load("outputs.json"), load("plan.json"), load("arrivals.json")
+    for k in ("model", "tp", "requests", "rate", "seed", "groups", "shared", "max_new", "every", "max_attempts"):
+        setattr(a, k, old[k])
+    order = [tuple(x) for x in arr["order"]]
+    qids = [q for q, _ in order]
+    faults = {qids.index(q): name for q, name in arr["faults"].items()}
+    report(summarize(src, out, a, runs, old.get("meta"), order, arr["offsets"], faults, plan), a)
 
 
 # ---------------------------------------------------------------------------------------------------------------
 
 def main():
     a = parse()
-    a.rank = min(a.rank, a.tp - 1)
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
+    if a.resummarize:
+        return resummarize(a, out)
+    a.rank = min(a.rank, a.tp - 1)
     from transformers import AutoTokenizer
 
     from run_load import prompts
@@ -389,6 +580,7 @@ def main():
     label("warmup")
     os.environ.update(KVMEND_ENABLE="1", KVMEND_PLAN=plan_path, KVMEND_OUT=out, KVMEND_FUSED="1",
                       KVMEND_STRICT=strict_rules(a, codes), KVMEND_ENCODE_EVERY="16", KVMEND_CTRL=ctrl_path,
+                      KVMEND_LOG_READS="1",
                       PYTHONPATH=os.pathsep.join(p for p in (os.path.join(HERE, "hook_site"), HERE,
                                                              os.environ.get("PYTHONPATH", "")) if p))
     for k in ("KVMEND_SCRUB_PIECES", "KVMEND_TAGS", "KVMEND_FENCE", "KVMEND_STRICT_EVERY", "KVMEND_ON_FAIL",
@@ -404,21 +596,27 @@ def main():
     meta = run_meta()
     engine = sgl.Engine(**engine_args(a.model, a.tp, a.mem_frac, a.max_total_tokens, a.chunk))
     start_loop(engine)
-    runs = {}
+    runs, warmup = {}, None
     try:
         flush(engine)
-        # warm-up, not counted: one request per group, checked, so the check kernels compile before the timed runs
+        # warm-up, not counted: one request per group, checked, so the check kernels compile before the timed runs;
+        # then the whole workload once (wu, fast, no faults), for the kernels the arriving batches compile
         run_batch(engine, "w", {f"g{g}_r0": P[f"g{g}_r0"] for g in range(a.groups)}, a)
-        for code in codes:
+        for code in ["wu"] + codes:
             label(code)
             flush(engine)
             faulthandler.dump_traceback_later(a.run_timeout, exit=True)
             warm_prefixes(engine, code, P, a)
-            runs[code] = drive(engine, code, order, P, offsets, a)
+            res = drive(engine, code, order, P, offsets, a)
             faulthandler.cancel_dump_traceback_later()
-            reqs = runs[code]["requests"].values()
-            print(f"run {code}: {sum(len(r['ids']) for r in reqs)} output tokens in {runs[code]['seconds']:.2f} s, "
-                  f"{sum(len(r['attempts']) - 1 for r in reqs)} resubmissions", flush=True)
+            if code == "wu":
+                warmup = res
+            else:
+                runs[code] = res
+            reqs = res["requests"].values()
+            print(f"run {code}: {sum(len(r['ids']) for r in reqs)} output tokens in {res['seconds']:.2f} s, "
+                  f"{sum(len(r['attempts']) - 1 for r in reqs)} resubmissions, longest stall "
+                  f"{longest_stall(res):.2f} s" + (" (warm-up, not timed)" if code == "wu" else ""), flush=True)
     finally:
         faulthandler.cancel_dump_traceback_later()
         faulthandler.dump_traceback_later(120, exit=True)
@@ -431,13 +629,9 @@ def main():
         engine.shutdown()
     with open(os.path.join(out, "outputs.json"), "w") as fh:
         json.dump(runs, fh, indent=1, default=str)
-    s = summarize(out, a, runs, meta, order, offsets, faults, plan)
-    print(json.dumps(s["verdict"], indent=1))
-    print(json.dumps(s["observations"], indent=1, default=str))
-    print(arrivals_md(s), flush=True)
-    if a.require_pass and not all(s["verdict"].values()):
-        print("PASS CHECKS FAILED:", [k for k, ok in s["verdict"].items() if not ok], flush=True)
-        raise SystemExit(3)
+    with open(os.path.join(out, "warmup.json"), "w") as fh:
+        json.dump(warmup, fh, indent=1, default=str)
+    report(summarize(out, out, a, runs, meta, order, offsets, faults, plan), a)
 
 
 if __name__ == "__main__":
