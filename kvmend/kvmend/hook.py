@@ -779,6 +779,8 @@ def act_fault(st, sched, a, req):
     rec = dict(kind=kind, start=start, tokens=n, donor=donor, pages=pages.tolist())
     if kind == "burst":
         return _burst(st, sched, a, tgt, pages, rec)
+    if kind in ("bad_tag", "bad_parity"):
+        return _meta_damage(st, sched, a, tgt, pages, rec)
     ids = list(req.origin_input_ids) + list(req.output_ids)
     tk = T.token_keys(torch.tensor(ids[donor:donor + n], dtype=torch.int64, device=st.device),
                       torch.arange(donor, donor + n, device=st.device))
@@ -807,6 +809,37 @@ def act_fault(st, sched, a, req):
         raise ValueError(f"unknown fault kind {kind}")
     st.sync()
     rec.setdefault("written_tokens", int(tgt.numel()))
+    return rec
+
+
+def _meta_damage(st, sched, a, tgt, pages, rec):
+    """Damage to what KVMend keeps rather than to the KV alone, in one layer (`layer`) on one GPU (rank `rank`):
+      bad_tag     one bit of each page's stored tag flips; the KV is intact, but its check fails, and a rebuild from
+                  parity restores the same bytes, which still fail: KVMend must recompute the pages, which writes new
+                  tags;
+      bad_parity  one low mantissa bit of every token's K flips on that GPU, and one bit of the parity that would
+                  rebuild each page flips too, on the rank that holds it: the rebuilt pieces fail their tags, and KVMend
+                  must recompute the pages.
+    The clean pieces are kept, to compare a repair with them."""
+    g, n, me = _group(sched)
+    rank = a.get("rank", 1)
+    layer = a.get("layer", 1)
+    rec.update(rank=rank, layer=layer, holders=[int(st.holder[int(p)]) for p in pages.tolist()])
+    if me == rank:
+        for p in pages.tolist():
+            st.saved[(layer, p)] = torch.stack([st.kflat(layer)[p], st.vflat(layer)[p]]).clone()
+    if rec["kind"] == "bad_tag":
+        if me == rank:
+            st.tags[layer, pages] = st.tags[layer, pages] ^ (1 << 7)
+    else:
+        if me == rank:
+            words = st.pool.k_buffer[layer].view(torch.int16).view(st.pool.k_buffer[layer].shape[0], -1)
+            words[tgt, 3] = words[tgt, 3] ^ (1 << 3)
+        if st.parity is not None:
+            for p in pages.tolist():
+                if int(st.holder[p]) == me:
+                    st.parity[p, layer, 0, 5] = st.parity[p, layer, 0, 5] ^ (1 << 9)
+    st.sync()
     return rec
 
 

@@ -125,6 +125,17 @@ def _rank_main(rank, port, out):
             r["check1"] = hook.act_check(st, sched, {}, req)
             r["mend"] = hook.act_mend(st, sched, {}, req)
             r["check2"] = hook.act_check(st, sched, {}, req)
+        # damage to what KVMend keeps, on rank 2 in layer 1 of R's last two prompt pages: a stored tag, or the KV
+        # together with the parity that would rebuild it. The rebuild fails its tag, so the pages are recomputed.
+        for kind in ("bad_tag", "bad_parity"):
+            st, sched, req = _setup(rank)
+            r = res[kind] = {"encode": hook.act_encode(st, sched, {}, req), "check0": hook.act_check(st, sched, {}, req)}
+            clean = _span_bytes(st).clone()
+            r["fault"] = hook.act_fault(st, sched, dict(SPAN, kind=kind, rank=2, layer=1), req)
+            r["check1"] = hook.act_check(st, sched, {}, req)
+            r["mend"] = hook.act_mend(st, sched, {}, req)
+            r["bytes_restored"] = torch.equal(_span_bytes(st), clean)
+            r["check2"] = hook.act_check(st, sched, {}, req)
         out.put((rank, res))
     finally:
         dist.destroy_process_group()
@@ -206,3 +217,14 @@ def test_incident_faults_on_four_ranks():
         assert crowded["mend"]["rebuilt"] == []
         assert [(x["start"], x["end"]) for x in crowded["mend"]["recomputed"]] == [(64, 96)]
         assert crowded["check2"]["found"] == {}
+    for rank in every:
+        for kind in ("bad_tag", "bad_parity"):
+            m = res[rank][kind]
+            assert m["check0"]["found"] == {}, kind
+            assert m["check1"]["found"] == {p: {"tag": {"ranks": [2], "layers": 1}} for p in span_pages}, kind
+            assert m["mend"]["rebuild_failed_pages"] == [5, 6], kind  # the rebuilt pieces failed their tags ...
+            assert [(x["start"], x["end"]) for x in m["mend"]["recomputed"]] == [(64, 96)], kind  # ... so: recompute
+            assert m["bytes_restored"] and m["check2"]["found"] == {}, kind
+    for kind in ("bad_tag", "bad_parity"):
+        tried = [x for x in res[2][kind]["mend"]["rebuilt"] if x.get("rebuilt")]
+        assert len(tried) == 2 and not any(x["tag_matches"] for x in tried), kind
