@@ -1888,7 +1888,7 @@ def release_check(st, sched, req, finishing=False):
         rec.update(abort_on_fail(st, sched, req, finishing))
         return rec
     keep = st.checked_upto.get(req.rid, 0)
-    since = st.good_step.get(req.rid, 0)  # the damage struck after this request's last passing check
+    since = _since(st, req)  # the damage struck after this request's last passing check
     rec["mend"] = act_mend(st, sched, dict(suffix=True), req)
     rec["suffix_tokens"] = (rec["mend"].get("suffix") or {}).get("tokens", 0)
     mended = set(rec["mend"].get("mended_pages", []))
@@ -1918,7 +1918,7 @@ def released_suspect(st, sched, req, read=()):
     recomputed even then."""
     rec = dict(op="released_suspect", rid=req.rid, n_out=len(req.output_ids), released_tokens=len(req.output_ids),
                reason="damage found right after the prefill: the released tokens were chosen before this check")
-    since = st.good_step.get(req.rid, 0)
+    since = _since(st, req)
     rec.update(act_check(st, sched, {}, req, mark_good=False))
     rec["mend"] = act_mend(st, sched, dict(suffix=True, read=sorted(read)), req)
     if not rec["mend"].get("mended"):
@@ -1932,6 +1932,16 @@ def released_suspect(st, sched, req, read=()):
                suffix={k: suffix[k] for k in ("first", "start", "end", "damage_in")} if suffix else None)
     rec.update(_after_mend(st, sched, req, set(rec["mend"].get("mended_pages", [])), since))
     return rec
+
+
+def _since(st, req):
+    """evict_suspect's bound for damage found by a check of `req`, which struck after the request's last passing check
+    (good_step): the stamp of the last write that cannot have read it. on_step sets the step before that step's checks,
+    and the next forward stamps its writes with that same step (wstep), so the first forward after a check at step g
+    already writes KV stamped g: since is g - 1. A request with no passing check bounds nothing, and since is 0: only
+    the engine's first forward, before any scheduler step, stamps 0, and it read nothing cached by another."""
+    good = st.good_step.get(req.rid)
+    return 0 if good is None else good - 1
 
 
 def _after_mend(st, sched, req, mended, since):
@@ -2039,8 +2049,10 @@ def _drop_subtree(tree, node):
 
 def evict_suspect(st, tree, damaged_pages, since):
     """Drop from the prefix cache the KV that may have read damaged pages: unlocked nodes, leaves first, in the
-    subtrees of nodes that hold a damaged page, any of whose pages was written after step `since`. The damaged pages
-    themselves are repaired in place and stay; a later request recomputes what was dropped instead of reusing it."""
+    subtrees of nodes that hold a damaged page, any of whose pages carries a write stamp (wstep) above `since`. Callers
+    pass the stamp of the last write that cannot have read the damage: one less than the step of the check that bounds
+    it (_since). The damaged pages themselves are repaired in place and stay; a later request recomputes
+    what was dropped instead of reusing it."""
     if tree is None or not damaged_pages or not hasattr(tree, "root_node"):
         return 0
     damaged = torch.tensor(sorted(damaged_pages), dtype=torch.int64, device=st.device)
