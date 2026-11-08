@@ -11,12 +11,15 @@
 #   release          run_release.py: the release rule on a streamed request
 #   burst            run_burst.py: a burst on one GPU, rebuilt from parity or recomputed ($BURST_SIZES)
 #   load             run_load.py: many requests, shared prefixes, four faults, detection by the release rule
+#   arrivals         run_arrivals.py: the same workload arriving over time (Poisson, $ARRIVALS_RATE per second),
+#                    fast release, strict release and abort-and-retry, with and without the four faults
 #   checker          bench_checker.py on the job's first GPU
 #   overhead         bench_overhead.py, modes $OVERHEAD_MODES, then the decode-heavy workload, modes $DECODE_MODES
 # Environment: MODEL TP PROMPT_LEN [MAX_TOTAL] [LOCAL_MODEL LOCAL_PROMPT_LEN] [BURST_SIZES BURST_PROMPT_LEN]
 #              [LOAD_SHARED LOAD_CLEAN_RUNS] [RELEASE_KIND RELEASE_LATE_AT] [OVERHEAD_MODES DECODE_MODES]
 #              [EARLY_POS EARLY_PAGES] [COMMIT: the local git commit the copied files match]
 #              [REQUIRE_OK_FROM] [LOCAL_PAGES]
+#              [ARRIVALS_SHARED ARRIVALS_REQUESTS ARRIVALS_RATE ARRIVALS_SEED ARRIVALS_EVERY ARRIVALS_REPLAYS]
 # Each step that exits 0 is listed in $RUN/steps_ok. With REQUIRE_OK_FROM=<an earlier run folder>, a step other than
 # the CPU tests runs only if that folder's steps_ok lists it: a check job on a small model gates each step of a
 # bigger job, so a bug that does not depend on the model size cannot spend the bigger job's GPU time.
@@ -29,7 +32,7 @@ mkdir -p "$RUN" "$ROOT/.cache"
 export TRITON_CACHE_DIR=$ROOT/.cache/triton XDG_CACHE_HOME=$ROOT/.cache TORCH_EXTENSIONS_DIR=$ROOT/.cache/torch_ext
 export HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
 unset PYTHONPATH KVMEND_ENABLE KVMEND_PLAN KVMEND_TAGS KVMEND_CTRL KVMEND_ENCODE_EVERY KVMEND_SCRUB_PIECES KVMEND_FENCE \
-  KVMEND_FUSED KVMEND_STRICT KVMEND_STRICT_EVERY KVMEND_STRIPE
+  KVMEND_FUSED KVMEND_STRICT KVMEND_STRICT_EVERY KVMEND_STRIPE KVMEND_ON_FAIL
 MAX_TOTAL=${MAX_TOTAL:-65536}
 FIRST_GPU=$(echo "${CUDA_VISIBLE_DEVICES:-0}" | cut -d, -f1)
 
@@ -86,6 +89,11 @@ for S in $STEPS; do
     load)
       step load 1200 0 $PY run_load.py --model "$MODEL" --tp "$TP" --shared "${LOAD_SHARED:-1024}" \
         --clean-runs "${LOAD_CLEAN_RUNS:-3}" --max-total-tokens "$MAX_TOTAL" --require-pass --out "$RUN/load" ;;
+    arrivals)
+      step arrivals 1200 0 $PY run_arrivals.py --model "$MODEL" --tp "$TP" --shared "${ARRIVALS_SHARED:-1024}" \
+        --requests "${ARRIVALS_REQUESTS:-64}" --rate "${ARRIVALS_RATE:-8}" --seed "${ARRIVALS_SEED:-0}" \
+        --every "${ARRIVALS_EVERY:-4}" --replays "${ARRIVALS_REPLAYS:-2}" --max-total-tokens "$MAX_TOTAL" \
+        --require-pass --out "$RUN/arrivals" ;;
     checker)
       step checker 600 0 env CUDA_VISIBLE_DEVICES=$FIRST_GPU $PY bench_checker.py --out "$RUN/checker" ;;
     overhead)
