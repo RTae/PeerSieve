@@ -151,6 +151,7 @@ class PoolState:
         self.pending_suspect = {}  # rid -> (mended pages, since) for evict_suspect when that rollback happens
         self.poisoned = {}      # page -> its generation: damaged pages of aborted requests, to leave the prefix cache
         self.read_pages = {}    # rid -> pages its checks covered (KVMEND_LOG_READS)
+        self.read_since = {}    # rid -> wall time of its first check, right after its prefill (KVMEND_LOG_READS)
         self.checked_upto = {}  # rid -> output tokens covered by the request's last passing check (releasable)
         self.prefill_checked = set()  # rids outside the release rule whose one check, after the prefill, has run
         self.view_cache = {}    # rid -> token keys of the request's stored tokens, for the reader's check
@@ -232,7 +233,7 @@ class PoolState:
         self.stripe_of, self.stripe_pages, self.lparity = {}, {}, {}
         self.wstep.zero_()
         self.good_step, self.pending_redo, self.pending_suspect, self.poisoned = {}, {}, {}, {}
-        self.read_pages = {}
+        self.read_pages, self.read_since = {}, {}
         self.batch_steps = 0
         self.alarm.zero_()
         self.stats = new_stats()
@@ -959,6 +960,7 @@ def _mark_good(st, req, pages):
 def _note_reads(st, rid, pages_cpu):
     if LOG_READS:
         st.read_pages.setdefault(rid, set()).update(pages_cpu.tolist())
+        st.read_since.setdefault(rid, time.time())
 
 
 def _ranges(pages):
@@ -974,12 +976,13 @@ def _ranges(pages):
 
 def read_record(st, tree, req):
     """The pages request `req` read: those its checks covered and those it holds now (a request never checked,
-    under fast release, holds all it read, since nothing rolled it back)."""
+    under fast release, holds all it read, since nothing rolled it back), and since when: its first check, right after
+    its prefill (None if it had none). The record's own time is the end of its reading."""
     n = len(req.origin_input_ids) + max(len(req.output_ids) - 1, 0)
     slots = tree.req_to_token_pool.req_to_token[req.req_pool_idx, :n].to(torch.int64)
     now = set(torch.unique(torch.div(slots, PAGE, rounding_mode="floor")).tolist())
     return dict(op="read_pages", rid=req.rid, n_out=len(req.output_ids),
-                pages=_ranges(now | st.read_pages.pop(req.rid, set())))
+                pages=_ranges(now | st.read_pages.pop(req.rid, set())), since=st.read_since.pop(req.rid, None))
 
 
 def forget(st, rid):

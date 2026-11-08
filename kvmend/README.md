@@ -120,10 +120,18 @@ and 16 s to kernels compiled at their first use. A run in which the server still
 seconds is reported as cold, without its timing.
 
 SGLang's output depends on the batch, so a stable request's text can change in a run with faults without reading any
-damage. With `KVMEND_LOG_READS=1` the hook logs the pages each request read (`read_pages`, when it finishes). A stable
-request with a wrong text counts against strict release only if a page it read was damaged while it ran, or a check of
-it failed. One that read no damaged page and passed every check is reported as "varied without damage". Records
-without the pages are judged by group. `--resummarize <run folder>` judges an earlier run's records again.
+damage. A repair also changes the compute path of the request it repairs, which can flip a near-tie later in its text.
+With `KVMEND_LOG_READS=1` the hook logs the pages each request read and since when (`read_pages`, when it finishes).
+A stable request with a wrong text is judged as follows:
+- **wrong before the repair:** a page it read was damaged while it read it, or a check of it failed, and a token it
+  released before the repair differs from the fault-free text. This counts against strict release (or retry).
+  "Released before the repair" means what the release rule had cleared, or the stream had delivered, when the detection
+  ran; for an aborted attempt, all it released.
+- **diverged after the repair:** it read damage, but all it released before the repair is right. This is reported
+  with the repair: rebuilt bit-exact, recomputed, regenerated, or aborted and resubmitted.
+- **varied without damage:** it read no damaged page and passed every check. This is reported.
+
+Records without the pages are judged by group. `--resummarize <run folder>` judges an earlier run's records again.
 
 ## The check after the prefill
 

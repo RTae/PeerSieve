@@ -35,13 +35,19 @@ or ended) is cold, and its timing is not reported.
 Outputs are judged as in run_load.py. A request is stable when every fault-free run gives it the same text; a stable
 request's final text is right when it is that text, and any request's is right when it equals some fault-free run's.
 SGLang's output depends on the batch, so a stable request's text can also change in a run with faults without reading
-any damage, when other requests' repairs change its batches. The hook logs the pages each request read
-(KVMEND_LOG_READS), and a stable request with a wrong text is judged on them:
-  read damage              a page it read was damaged while it ran (from the fault until the last check that found
-                           the damage; to the end of the run when nothing checks), or one of its checks failed
-  varied without damage    it read no damaged page and passed every check: reported, not a miss
-Records without the pages (older runs) are judged by group: a fault in a shared prefix reaches its group's requests
-that ran while it was there; a fault in a request's own pages reaches only that request.
+any damage, when other requests' repairs change its batches, and a repair changes the compute path of the request it
+repairs, which flips a near-tie later in its text. The hook logs the pages each request read and since when
+(KVMEND_LOG_READS). A request read damage if a page it read was damaged while it read it (from the fault until the last
+check that found the damage; to the end of the run when nothing checks), or if a check of it failed. Records without
+the pages (older runs) are judged by group: a fault in a shared prefix reaches its group's requests that ran while it
+was there; a fault in a request's own pages reaches only that request. A stable request with a wrong text is then
+  wrong before the repair    it read damage, and a token it released before the repair (before the detection that
+                             covered the damage: what the release rule had cleared by then or the stream had
+                             delivered; an aborted attempt: all it released), or with no repair at all, differs from
+                             the fault-free text: a miss
+  diverged after the repair  it read damage, but everything it released before the repair is right; reported with the
+                             repair (rebuilt bit-exact, recopied, recomputed, regenerated, or aborted and resubmitted)
+  varied without damage      it read no damaged page and passed every check: reported
 Per run: time to first token and end-to-end latency (median and 99th percentile, from the request's arrival to the
 first token and to the end of its last attempt), throughput, goodput (requests whose final text is right, per second),
 wrong outputs on stable requests, aborts and resubmissions, and checks per batch step. summary.json holds them,
@@ -160,8 +166,9 @@ def make_plan(a, order, faults):
 
 async def _attempt(engine, rid, ids, max_new, t0):
     """One streamed attempt: when its first token and its end arrive (seconds from the run's start), how it finished,
-    and its tokens. The tokens are read from the tokenizer manager's state of the request, which keeps every chunk's:
-    when chunks arrive faster than the client reads them, the stream yields only the newest."""
+    its tokens, and `released`: [seconds, tokens received so far] at each chunk that brought tokens. The tokens are
+    read from the tokenizer manager's state of the request, which keeps every chunk's: when chunks arrive faster than
+    the client reads them, the stream yields only the newest."""
     from sglang.srt.managers.io_struct import GenerateReqInput
 
     from run_poc import output_tokens
@@ -169,7 +176,7 @@ async def _attempt(engine, rid, ids, max_new, t0):
     tm = engine.tokenizer_manager
     obj = GenerateReqInput(input_ids=ids, rid=rid, stream=True,
                            sampling_params=dict(temperature=0.0, max_new_tokens=max_new, ignore_eos=True))
-    rec = dict(rid=rid, submit=time.perf_counter() - t0, first=None, end=None, finish=None, chunks=0)
+    rec = dict(rid=rid, submit=time.perf_counter() - t0, first=None, end=None, finish=None, chunks=0, released=[])
     state, got, last = None, [], None
     try:
         async for chunk in tm.generate_request(obj, None):
@@ -178,8 +185,10 @@ async def _attempt(engine, rid, ids, max_new, t0):
             if state is None:  # gone if the request ended before its first chunk was read; then `lost` tells
                 state = tm.rid_to_state.get(rid)  # whether the chunks read hold all its tokens
             got += list(chunk["output_ids"])
-            if rec["first"] is None and (chunk["meta_info"].get("completion_tokens") or 0) > 0:
-                rec["first"] = rec["end"]  # a held-back step streams a chunk with no output token
+            n_now = chunk["meta_info"].get("completion_tokens") or 0
+            if n_now > (rec["released"][-1][1] if rec["released"] else 0):  # a held-back step brings no token
+                rec["released"].append([rec["end"], n_now])
+                rec["first"] = rec["end"] if rec["first"] is None else rec["first"]
             last = chunk
     except Exception as e:  # recorded and counted as an error; the request is not resubmitted
         rec.update(end=time.perf_counter() - t0, finish="error", error=repr(e)[:500], ids=[], tokens=0, lost=False)
@@ -283,12 +292,15 @@ def damage_windows(code, run, ctx):
 
 
 def judge(q, run, ctx, windows, failing):
-    """Did request q read damage in this run: a page it read was damaged while it ran, or one of its checks failed?
-    The pages come from the hook's read_pages records; without them, by group (see the module's docstring)."""
+    """Did request q read damage in this run: a page it read was damaged while it read it, or one of its checks
+    failed? The pages, and the time from its first check to its end, come from the hook's read_pages records; without
+    them, by group (see the module's docstring), from its submission to its end."""
     w0 = run["wall"][0]
     hits, logged = [], True
     for att in run["requests"][q]["attempts"]:
-        lo, hi = w0 + att["submit"], w0 + (att["end"] if att["end"] is not None else att["submit"])
+        since, until = ctx["read_span"].get(att["rid"], (None, None))
+        lo = since if since is not None else w0 + att["submit"]
+        hi = until if until is not None else w0 + (att["end"] if att["end"] is not None else att["submit"])
         got = ctx["reads"].get(att["rid"])
         logged = logged and got is not None
         for w in windows:
@@ -302,6 +314,110 @@ def judge(q, run, ctx, windows, failing):
                 hits.append(dict(rid=att["rid"], fault=w["rid"], kind=w["kind"], pages=sorted(pages)))
     failed = sorted(x["rid"] for x in run["requests"][q]["attempts"] if x["rid"] in failing)
     return dict(read_damage=bool(hits or failed), damage_read=hits, failed_checks=failed, pages_logged=logged)
+
+
+def repair_of(x, ctx):
+    """What the repair in release_check record x did. A rebuilt or recopied piece is counted on the rank that did it:
+    only that rank's record marks it (the others list the piece and what they sent)."""
+    recs = ctx["by_key"].get((x.get("rid"), x.get("step"), x.get("n_out")), {x.get("rank", 0): x})
+    mends = {r: (y.get("mend") or {}) for r, y in recs.items()}
+    rebuilt = [s for r, m in mends.items() for s in m.get("rebuilt", []) if s.get("rebuilt") and s.get("rank") == r]
+    recopied = [s for r, m in mends.items() for s in m.get("recopied", []) if s.get("recopied") and s.get("rank") == r]
+    diffs = [m["max_abs_diff_vs_clean"] for m in mends.values() if m.get("max_abs_diff_vs_clean") is not None]
+    return dict(rebuilt=len(rebuilt), rebuilt_bit_exact=sum(1 for s in rebuilt if s.get("bit_exact")),
+                recopied=len(recopied),
+                recomputed=sum(s["tokens"] for s in (x.get("mend") or {}).get("recomputed", [])),
+                max_abs_diff_vs_clean=max(diffs) if diffs else None)
+
+
+def _repair_words(rep, regenerated, note):
+    words = []
+    if rep["rebuilt"]:
+        words.append(f"rebuilt bit-exact ({rep['rebuilt']} pieces)" if rep["rebuilt_bit_exact"] == rep["rebuilt"]
+                     else f"rebuilt ({rep['rebuilt']} pieces, {rep['rebuilt_bit_exact']} bit for bit)")
+    if rep["recopied"]:
+        words.append(f"copied again from host memory ({rep['recopied']} pieces)")
+    if rep["recomputed"]:
+        d = rep["max_abs_diff_vs_clean"]
+        words.append(f"recomputed {rep['recomputed']} tokens" + (f" (largest difference {d:g})" if d else ""))
+    if regenerated:
+        words.append(f"regenerated {regenerated} tokens")
+    return words + ([note] if note else [])
+
+
+def repairs_of(code, ctx):
+    """Every repair that reached an attempt of run `code`, by attempt rid: the time of the detection that covered the
+    damage, the output tokens the release rule had cleared for release by then (kept; None for an abort: its stream
+    holds what it released), and what the repair did."""
+    pend = {x["rid"]: x for x in ctx["log0"] if x["op"] == "pending_redo"}
+    out = {}
+    for x in ctx["log0"]:
+        if x["op"] != "release_check" or not x.get("found_pieces") or not str(x.get("rid", "")).startswith(code + "_"):
+            continue
+        rep = repair_of(x, ctx)
+
+        def add(rid, redo, note=None):  # redo: that request's rollback (regenerate, an other reader's entry, ...)
+            if redo.get("pending") and rid in pend:  # rolled back a step later (it had only just been prefilled)
+                redo = pend[rid]
+            aborted = bool(redo.get("aborted"))
+            out.setdefault(rid, []).append(dict(
+                time=x["time"], by=x["rid"], kept=None if aborted else redo.get("kept_outputs"), aborted=aborted,
+                how=_repair_words(rep, None if aborted else redo.get("regenerated"), note), repair=rep))
+
+        if x.get("aborted"):  # on_fail "abort": nothing is mended
+            add(x["rid"], dict(aborted=True), "aborted, not mended; resubmitted")
+        elif x.get("aborted_at_finish"):
+            add(x["rid"], dict(aborted=True), "aborted at finish; resubmitted")
+        else:
+            add(x["rid"], x.get("regenerate") or {})
+        for o in x.get("other_readers", []):
+            add(o["rid"], o, "aborted, not mended; resubmitted" if o.get("aborted") else None)
+    return out
+
+
+def released_by(att, w0, t):
+    """The output tokens the client of attempt `att` had received by wall time t, from the stream's release
+    timeline (None in records without one)."""
+    rel = att.get("released")
+    return None if rel is None else max([n for s, n in rel if w0 + s <= t], default=0)
+
+
+def before_repair(q, run, ctx, judged, repairs):
+    """For a request that read damage, each attempt that read it: the tokens it released before the repair (before
+    the detection that covered the damage: what the release rule had cleared by then or the stream had delivered,
+    whichever is more), against the fault-free text. An attempt that ended with an abort counts all it released, and
+    one that read damage and was never repaired counts every token."""
+    ref, w0 = ctx["ref"][q][0], run["wall"][0]
+    hit = {h["rid"] for h in judged["damage_read"]} | set(judged["failed_checks"])
+    out = []
+    for att in run["requests"][q]["attempts"]:
+        reps = repairs.get(att["rid"], [])
+        if att["rid"] not in hit and not reps:
+            continue
+        ids = att.get("ids") or []
+        if att["finish"] == "abort":
+            k, point = len(ids), "aborted"
+        elif reps:
+            k, point = max(max(r["kept"] or 0, released_by(att, w0, r["time"]) or 0) for r in reps), "repaired"
+        else:
+            k, point = len(ids), "never repaired"
+        k = min(k, len(ids))
+        wrong = next((i for i in range(k) if i >= len(ref) or ids[i] != ref[i]), None)
+        out.append(dict(rid=att["rid"], released_before_repair=k, point=point, first_wrong_released=wrong,
+                        repair=[w for r in reps for w in r["how"]]))
+    return out
+
+
+def verdict_of(judged, released):
+    """A stable request with a wrong text: "wrong before the repair" (a miss) if it read damage and released, before
+    a repair or with none, a token that differs from the fault-free text; "diverged after the repair" if it read damage
+    and everything it released before the repair is right; "varied without damage" if it read no damaged page and
+    passed every check."""
+    if not judged["read_damage"]:
+        return "varied without damage"
+    if not released or any(c["first_wrong_released"] is not None for c in released):
+        return "wrong before the repair"
+    return "diverged after the repair"
 
 
 def reads_of(q, run, ctx, prefix):
@@ -345,23 +461,27 @@ def run_row(code, run, ctx):
                        found_pages=sorted(_pages(x.get("found"))),
                        reasons=sorted({w for v in (x.get("found") or {}).values() for w in v}),
                        aborted=bool(x.get("aborted")), other_readers=[o["rid"] for o in x.get("other_readers", [])],
-                       regenerated=x.get("regenerate", {}).get("regenerated"), evicted=x.get("evicted_tokens"),
-                       recomputed=sum(s["tokens"] for s in x.get("mend", {}).get("recomputed", [])),
-                       rebuilt=sum(1 for s in x.get("mend", {}).get("rebuilt", []) if s.get("rebuilt")),
-                       poisoned=x.get("poisoned_pages"), dropped=x.get("dropped_tokens"))
+                       regenerated=x.get("regenerate", {}).get("regenerated"),
+                       kept=x.get("regenerate", {}).get("kept_outputs"), evicted=x.get("evicted_tokens"),
+                       **repair_of(x, ctx), poisoned=x.get("poisoned_pages"), dropped=x.get("dropped_tokens"))
                   for x in found]
-    # who read the damage, and what each stable request with a wrong text read
+    # who read the damage, and what each stable request with a wrong text read and released before its repair
     windows = damage_windows(code, run, ctx)
     failing = {x["rid"] for x in found}
     judged = {q: judge(q, run, ctx, windows, failing) for q in qids}
+    repairs = repairs_of(code, ctx)
     prefix = {}  # group -> [first, last] page of its prefix, where a fault in the prefix tells it
     for x in mine:
         if x["op"] == "fault" and "start" in x and x["start"] < ctx["shared"]:
             base = x["pages"][0] - x["start"] // PAGE
             prefix[ctx["group"][x["rid"].split("_", 1)[1]]] = [base, base + ctx["shared"] // PAGE - 1]
     stable_wrong = [q for q in stable if reqs[q]["ids"] != ref[q][0]]
-    detail = {q: dict(group=ctx["group"][q], first_diff=first_diff(reqs[q]["ids"], ref[q][0]), **judged[q],
-                      reads=reads_of(q, run, ctx, prefix)) for q in stable_wrong}
+    detail = {}
+    for q in stable_wrong:
+        released = before_repair(q, run, ctx, judged[q], repairs) if judged[q]["read_damage"] else []
+        detail[q] = dict(group=ctx["group"][q], first_diff=first_diff(reqs[q]["ids"], ref[q][0]), **judged[q],
+                         released=released, verdict=verdict_of(judged[q], released),
+                         reads=reads_of(q, run, ctx, prefix))
     damage = [dict(fault=w["rid"], kind=w["kind"], pages=_show(_ranges(w["pages"])),
                    struck_s=w["start"] - lo, last_found_s=w["end"] - lo if w["found"] else None,
                    readers=[q for q in qids if any(h["fault"] == w["rid"] for h in judged[q]["damage_read"])])
@@ -383,7 +503,9 @@ def run_row(code, run, ctx):
         output_tokens=sum(len(reqs[q]["ids"]) for q in qids), right=len(right),
         wrong=[q for q in qids if q not in right], stable_wrong=stable_wrong,
         stable_wrong_read_damage=[q for q in stable_wrong if judged[q]["read_damage"]],
-        stable_varied_without_damage=[q for q in stable_wrong if not judged[q]["read_damage"]],
+        stable_wrong_before_repair=[q for q in stable_wrong if detail[q]["verdict"] == "wrong before the repair"],
+        stable_diverged_after_repair=[q for q in stable_wrong if detail[q]["verdict"] == "diverged after the repair"],
+        stable_varied_without_damage=[q for q in stable_wrong if detail[q]["verdict"] == "varied without damage"],
         stable_wrong_detail=detail, damage=damage,
         aborts=sum(1 for x in attempts if x["finish"] == "abort"), resubmissions=len(attempts) - len(qids),
         aborted_again=sorted(x["rid"] for x in attempts if x["finish"] == "abort" and "." in x["rid"]),
@@ -410,8 +532,14 @@ def summarize(src, out, a, runs, meta, order, offsets, faults, plan):
     vary = [q for q in qids if any(x != ref[q][0] for x in ref[q])]
     stable = [q for q in qids if q not in vary]
     reads = {x["rid"]: {p for a_, b in x["pages"] for p in range(a_, b + 1)} for x in log0 if x["op"] == "read_pages"}
-    ctx = dict(qids=qids, ref=ref, stable=stable, log0=log0, plan=plan, reads=reads, shared=a.shared,
-               stall_s=getattr(a, "stall_s", 2.0), group={q: int(n[1:].split("_")[0]) for q, n in order},
+    read_span = {x["rid"]: (x.get("since"), x.get("time")) for x in log0 if x["op"] == "read_pages"}
+    by_key = {}  # the same release_check record on every rank
+    for x in logs:
+        if x["op"] == "release_check":
+            by_key.setdefault((x.get("rid"), x.get("step"), x.get("n_out")), {})[x.get("rank", 0)] = x
+    ctx = dict(qids=qids, ref=ref, stable=stable, log0=log0, plan=plan, reads=reads, read_span=read_span,
+               by_key=by_key, shared=a.shared, stall_s=getattr(a, "stall_s", 2.0),
+               group={q: int(n[1:].split("_")[0]) for q, n in order},
                fault_of={order[i][0]: name for i, name in faults.items()})
     rows = {c: run_row(c, runs[c], ctx) for c in runs}
     hook_errors = [x for x in logs if x["op"] == "error"]
@@ -430,16 +558,23 @@ def summarize(src, out, a, runs, meta, order, offsets, faults, plan):
              runs=rows, errors=dict(hook=hook_errors, driver=driver_errors))
     s["verdict"] = {
         "no_errors": not hook_errors and not driver_errors,
-        # a stable request's wrong text fails only if it read damage; one that varied without damage is reported
-        "strict_sends_no_wrong_output_on_stable_requests": "sf" in rows and not rows["sf"]["stable_wrong_read_damage"],
+        # a stable request with a wrong text fails only if it released, before the repair of damage it read, a token
+        # that differs from the fault-free text (verdict_of); one that diverged after the repair, or varied without
+        # damage, is reported
+        "strict_sends_no_wrong_output_on_stable_requests": "sf" in rows and not rows["sf"]["stable_wrong_before_repair"],
+        "retry_sends_no_wrong_output_on_stable_requests": "rf" in rows and not rows["rf"]["stable_wrong_before_repair"],
         "every_unfenced_fault_found_strict": all_found("sf"),
         "every_unfenced_fault_found_retry": all_found("rf"),
     }
     s["observations"] = {  # reported, not pass checks
         "fast_wrong_on_stable": len(rows["ff"]["stable_wrong"]) if "ff" in rows else None,
         "retry_wrong_on_stable": len(rows["rf"]["stable_wrong"]) if "rf" in rows else None,
-        "wrong_on_stable_after_reading_damage": {c: r["stable_wrong_read_damage"] for c, r in rows.items()
-                                                 if r["stable_wrong_read_damage"]},
+        "wrong_before_the_repair": {c: r["stable_wrong_before_repair"] for c, r in rows.items()
+                                    if r["stable_wrong_before_repair"]},
+        "diverged_after_the_repair": {c: {q: "; ".join(w for x in r["stable_wrong_detail"][q]["released"]
+                                                       for w in x["repair"])
+                                          for q in r["stable_diverged_after_repair"]}
+                                      for c, r in rows.items() if r["stable_diverged_after_repair"]},
         "varied_without_damage": {c: r["stable_varied_without_damage"] for c, r in rows.items()
                                   if r["stable_varied_without_damage"]},
         "cold_runs_longest_stall_s": {c: round(r["longest_stall_s"], 2) for c, r in rows.items() if not r["warm"]},
@@ -468,8 +603,8 @@ def arrivals_md(s):
              f"{s['max_new']} output tokens each; checks every {s['every']} tokens. {s['model']} at TP={s['tp']}. "
              f"Stable requests: {s['stable']} of {s['requests']} (fault-free runs {', '.join(s['clean_runs'])}).", "",
              "| Run | Mode | Faults | TTFT p50 / p99 (ms) | E2E p50 / p99 (s) | Output tok/s | Goodput (right req/s) "
-             "| Wrong on stable: read damage / varied without damage | Right | Aborts / resubmissions "
-             "| Checks per step |",
+             "| Wrong on stable: before the repair / diverged after it / without damage | Right "
+             "| Aborts / resubmissions | Checks per step |",
              "|---|---|---|---|---|---|---|---|---|---|---|"]
     for c, r in s["runs"].items():
         cps = "" if r["checks_per_step"] is None else f"{r['checks_per_step']:.2f}"
@@ -479,7 +614,8 @@ def arrivals_md(s):
         else:
             timing = " | ".join([f"cold ({r['longest_stall_s']:.1f} s stall)"] + ["cold"] * 3)
         lines.append(f"| {c} | {r['mode']} | {'yes' if r['with_faults'] else 'no'} | {timing} | "
-                     f"{len(r['stable_wrong_read_damage'])} / {len(r['stable_varied_without_damage'])} | "
+                     f"{len(r['stable_wrong_before_repair'])} / {len(r['stable_diverged_after_repair'])} / "
+                     f"{len(r['stable_varied_without_damage'])} | "
                      f"{r['right']} of {r['requests']} | {r['aborts']} / {r['resubmissions']} | {cps} |")
     cold = {c: r["longest_stall_s"] for c, r in s["runs"].items() if not r["warm"]}
     if cold:
@@ -508,17 +644,26 @@ def arrivals_md(s):
             last = "never found" if d["last_found_s"] is None else f"{d['last_found_s']:.2f}"
             lines.append(f"| {c} | {d['kind']} ({d['fault']}) | {d['pages']} | {d['struck_s']:.2f} | {last} | "
                          f"{', '.join(d['readers']) or 'none'} |")
-    lines += ["", "Stable requests with a wrong text:", "",
-              "| Run | Request | Group | First differing token | Read damage | Pages read | Checks |",
-              "|---|---|---|---|---|---|---|"]
+    lines += ["", "Stable requests with a wrong text (released before the repair: the tokens the release rule had cleared, "
+              "or the stream had delivered, when the detection that covered the damage ran; an aborted attempt: all it "
+              "released):", "",
+              "| Run | Request | Group | First differing token | Read damage | Released before the repair | Repair "
+              "| Judged | Checks | Pages read |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
     for c, r in s["runs"].items():
         for q, d in r["stable_wrong_detail"].items():
             dmg = ("; ".join(f"{h['kind']} pages {_show(_ranges(h['pages']))}" for h in d["damage_read"])
                    or ("a check failed" if d["failed_checks"] else "no"))
+            rel = "; ".join(f"{x['rid']}: {x['released_before_repair']}"
+                            + (" (all right)" if x["first_wrong_released"] is None
+                               else f" (token {x['first_wrong_released']} wrong)")
+                            + ("" if x["point"] == "repaired" else f", {x['point']}") for x in d["released"])
+            how = "; ".join(w for x in d["released"] for w in x["repair"])
             chk = ("none (fast)" if r["mode"] == "fast" else
                    f"failed: {', '.join(d['failed_checks'])}" if d["failed_checks"] else "all passed")
             reads = d["reads"] if isinstance(d["reads"], str) else "; ".join(f"{k}: {v}" for k, v in d["reads"].items())
-            lines.append(f"| {c} | {q} | {d['group']} | {d['first_diff']} | {dmg} | {reads} | {chk} |")
+            lines.append(f"| {c} | {q} | {d['group']} | {d['first_diff']} | {dmg} | {rel} | {how} | {d['verdict']} | "
+                         f"{chk} | {reads} |")
     lines += ["", "Verdict: " + ", ".join(f"{k} {'yes' if v else 'NO'}" for k, v in s["verdict"].items()) + "."]
     return "\n".join(lines) + "\n"
 
