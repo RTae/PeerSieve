@@ -43,6 +43,20 @@ def test_strict_rollback_keeps_tokens_already_sent():
     assert req.output_ids == [100, 101, 102, 103, 104] and rec["refused"] == "tokens already sent"
 
 
+def test_rollback_right_after_the_prefill_takes_the_request_out_of_the_current_batch():
+    """A request that has just finished its prefill is only in the current batch: only from_prefill rolls it back,
+    and then it leaves that batch (which the scheduler would merge into the running batch) and is queued again."""
+    req = _req(1)
+    sched, calls = _sched_with(req)
+    prefill = types.SimpleNamespace(reqs=[req], seq_lens=torch.tensor([20]), forward_mode=types.SimpleNamespace(
+        is_extend=lambda: True), filter_batch=lambda keep_indices: calls.setdefault("prefill_kept", keep_indices))
+    sched.running_batch, sched.cur_batch = types.SimpleNamespace(reqs=[]), prefill
+    assert hook.act_retract(None, sched, {"keep": 0}, req)["retracted"] is False and not calls
+    rec = hook.act_retract(None, sched, {"keep": 0, "from_prefill": True}, req)
+    assert rec["retracted"] and (rec["regenerated"], rec["kept_outputs"]) == (1, 0) and req.output_ids == []
+    assert calls["freed"] == 4 and calls["prefill_kept"] == [] and calls["queued"] == (1, True)
+
+
 def test_abort_marks_the_request():
     req = types.SimpleNamespace(to_abort=False, to_abort_message=None)
     assert hook.act_abort(None, None, {}, req)["aborted"] and req.to_abort and req.to_abort_message

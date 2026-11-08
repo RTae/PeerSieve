@@ -1,13 +1,16 @@
 #!/bin/bash
 # Decision 20's tests on octave, one Slurm job: the steps named in STEPS, in this order, each with its own cap.
-# Gates for the job's exit code (what an afterok chain waits for): the CPU tests and the incident test. Every other
-# step is logged with its exit code and does not stop the job.
+# Gates for the job's exit code (what an afterok chain waits for): the CPU tests, the incident test and the HiCache
+# test. Every other step is logged with its exit code and does not stop the job.
 #   tests            CPU tests (one thread per process, at most 7 minutes)
 #   gputests         the fused Triton kernels against the PyTorch tags, in CUDA graphs too
 #   incident         run_incident.py at TP=$TP (the incident's faults; gate)
 #   incident_local   run_incident.py at TP=1 on the job's first GPU with stripes within the GPU ($LOCAL_MODEL)
 #   incident_early   run_incident.py at TP=$TP with the damage early in the prompt ($EARLY_PAGES pages from
 #                    position $EARLY_POS), where KVMend's saving over a retry from the damaged page is largest
+#   hicache          run_hicache.py at TP=$TP: SGLang's hierarchical cache (write_through) backs the prompt up to host
+#                    memory and loads it back; the load does not land on one GPU ($HICACHE_PAGES pages, $HICACHE_MODE)
+#                    (gate)
 #   release          run_release.py: the release rule on a streamed request
 #   burst            run_burst.py: a burst on one GPU, rebuilt from parity or recomputed ($BURST_SIZES)
 #   load             run_load.py: many requests, shared prefixes, four faults, detection by the release rule
@@ -16,7 +19,7 @@
 # Environment: MODEL TP PROMPT_LEN [MAX_TOTAL] [LOCAL_MODEL LOCAL_PROMPT_LEN] [BURST_SIZES BURST_PROMPT_LEN]
 #              [LOAD_SHARED LOAD_CLEAN_RUNS] [RELEASE_KIND RELEASE_LATE_AT] [OVERHEAD_MODES DECODE_MODES]
 #              [EARLY_POS EARLY_PAGES] [COMMIT: the local git commit the copied files match]
-#              [REQUIRE_OK_FROM] [LOCAL_PAGES]
+#              [REQUIRE_OK_FROM] [LOCAL_PAGES] [HICACHE_PROMPT_LEN HICACHE_PAGES HICACHE_MODE]
 # Each step that exits 0 is listed in $RUN/steps_ok. With REQUIRE_OK_FROM=<an earlier run folder>, a step other than
 # the CPU tests runs only if that folder's steps_ok lists it: a check job on a small model gates each step of a
 # bigger job, so a bug that does not depend on the model size cannot spend the bigger job's GPU time.
@@ -29,7 +32,7 @@ mkdir -p "$RUN" "$ROOT/.cache"
 export TRITON_CACHE_DIR=$ROOT/.cache/triton XDG_CACHE_HOME=$ROOT/.cache TORCH_EXTENSIONS_DIR=$ROOT/.cache/torch_ext
 export HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
 unset PYTHONPATH KVMEND_ENABLE KVMEND_PLAN KVMEND_TAGS KVMEND_CTRL KVMEND_ENCODE_EVERY KVMEND_SCRUB_PIECES KVMEND_FENCE \
-  KVMEND_FUSED KVMEND_STRICT KVMEND_STRICT_EVERY KVMEND_STRIPE
+  KVMEND_FUSED KVMEND_STRICT KVMEND_STRICT_EVERY KVMEND_STRIPE KVMEND_LOAD_CHECK
 MAX_TOTAL=${MAX_TOTAL:-65536}
 FIRST_GPU=$(echo "${CUDA_VISIBLE_DEVICES:-0}" | cut -d, -f1)
 
@@ -76,6 +79,10 @@ for S in $STEPS; do
       step incident_early 1500 0 $PY run_incident.py --model "$MODEL" --tp "$TP" --prompt-len "$PROMPT_LEN" \
         --pos "${EARLY_POS:-1024}" --pages "${EARLY_PAGES:-1}" \
         --max-total-tokens "$MAX_TOTAL" --require-pass --out "$RUN/incident_early" ;;
+    hicache)
+      step hicache 1200 1 $PY run_hicache.py --model "$MODEL" --tp "$TP" \
+        --prompt-len "${HICACHE_PROMPT_LEN:-$PROMPT_LEN}" --pages "${HICACHE_PAGES:-4}" --mode "${HICACHE_MODE:-zeros}" \
+        --max-total-tokens "$MAX_TOTAL" --require-pass --out "$RUN/hicache" ;;
     release)
       step release 900 0 $PY run_release.py --model "$MODEL" --tp "$TP" --prompt-len "$PROMPT_LEN" \
         --kind "${RELEASE_KIND:-late_bypass}" --late-at "${RELEASE_LATE_AT:-10}" \

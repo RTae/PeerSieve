@@ -1,20 +1,26 @@
 """KVMend as a small patch on SGLang 0.5.1, loaded into every SGLang process by hook_site/sitecustomize.py.
 
-It changes four places and nothing else:
+It changes these places and nothing else:
 - MHATokenToKVPool: keeps a running tag for every piece (one 16-token page, one layer, this GPU) as K and V are
   stored (set_kv_buffer). Each token's share is keyed by its token id and position (the token key), taken from the
   forward batch. With KVMEND_TAGS=0 (parity alone, as in GhostServe) it only tracks which pages are full;
 - RadixAttention.forward: remembers the forward batch, so that set_kv_buffer knows the ids and positions it stores;
 - PagedTokenToKVPoolAllocator.free: drops the tags of freed pages and moves them to a new generation;
 - Scheduler: after every iteration (process_batch_result, self_check_during_idle), runs the actions of a JSON plan,
-  and, when KVMEND_ENCODE_EVERY or KVMEND_SCRUB_PIECES is set, encodes parity and scrubs in the background.
+  and, when KVMEND_ENCODE_EVERY or KVMEND_SCRUB_PIECES is set, encodes parity and scrubs in the background;
+- HiCache (--enable-hierarchical-cache), whose copies to and from host memory bypass set_kv_buffer:
+  HiCacheController.write records the tags of the pages it backs up under their host pages, HiCacheController.load
+  gives the new device pages those tags before the load thread copies a byte, MHATokenToKVPoolHost
+  .load_to_device_per_layer checks each loaded layer on arrival (before the forward reads it) and copies a piece that
+  fails again from the host copy, and HostKVCache.free drops the records of freed host pages.
 
 Every tensor-parallel rank runs the actions at the same point of the same iteration, so their collectives line up.
 The plan (KVMEND_PLAN) maps a request id to actions, each due when the request has produced `at` output tokens:
 encode, scrub, inject, repair, retract, dump, and, for the comparison with GhostServe, repair_share and evict; for
 the incident's faults, fault (a never-written page, a late write through or around the store path, a page holding
 another sequence's KV), check (the reader's check of one request's pages) and mend (parity rebuild where one GPU is
-damaged, recompute in place otherwise).
+damaged, recompute in place otherwise); for HiCache, offload (evict the device copy of what is backed up to host
+memory) and fault kind partial_load (the next load from host memory does not land on one GPU).
 Each rank keeps one JSON line per action in memory and appends them to KVMEND_OUT/rank<r>.jsonl when the scheduler
 is idle or flushes its cache, so slow file writes (the cluster's /home is NFS) never fall inside a timed step.
 Run SGLang with page_size=16 and disable_overlap_schedule=True.
@@ -44,6 +50,7 @@ STRIPE = os.environ.get("KVMEND_STRIPE", "gpus")  # parity stripes across the GP
 STRICT = {rid: int(every) if every else None for rid, _, every in
           (x.partition(":") for x in os.environ.get("KVMEND_STRICT", "").split(",") if x)}
 STRICT_EVERY = int(os.environ.get("KVMEND_STRICT_EVERY", "1"))
+LOAD_CHECK_ON = os.environ.get("KVMEND_LOAD_CHECK", "1") == "1"  # HiCache: check loaded pages on arrival
 _FB = [None]  # the forward batch whose attention layers run now (RadixAttention.forward sets it)
 _STATES = []  # the pool states of this process (one per KV pool), for patches that have no scheduler at hand
 
@@ -95,6 +102,16 @@ class PoolState:
         self.checked_upto = {}  # rid -> output tokens covered by the request's last passing check (releasable)
         self.view_cache = {}    # rid -> token keys of the request's stored tokens, for the reader's check
         self.sched = None       # the scheduler, for checks that run outside on_step (the finish check)
+        # HiCache: what each host page left this GPU with (made at the first backup), the host slot each device slot
+        # was loaded from (-1: not loaded, or freed since), an armed partial-load fault and the device pages it
+        # strikes, and the records of the HiCache hooks, which on_step moves to the log (the load thread never
+        # writes the log itself)
+        self.hrec = None
+        self.src_slot = torch.full((slots,), -1, dtype=torch.int64)
+        self.partial = None
+        self.partial_target = None
+        self.load_events = []
+        self.load_batch = None  # the load thread's view of the load it is copying, made at its layer 0
         self.fused = FUSED_ON and self.device.type == "cuda"
         if self.fused:
             self.use_fused()
@@ -155,6 +172,10 @@ class PoolState:
         self.batch_steps = 0
         self.alarm.zero_()
         self.stats = new_stats()
+        if self.hrec is not None:  # the flush clears HiCache's host pool too
+            self.hrec.valid.zero_()
+        self.src_slot.fill_(-1)
+        self.partial = self.partial_target = self.load_batch = None
 
     def drop(self, pages: torch.Tensor):
         """Freed pages lose their tags and parity, and start a new generation: a late write that still carries the
@@ -165,6 +186,7 @@ class PoolState:
         cpu = pages.cpu()
         self.holder[cpu] = -1
         self.gen[cpu] += 1
+        self.src_slot.view(self.pages, PAGE)[cpu] = -1  # a freed page no longer holds what it was loaded from
         for sid in {self.stripe_of[p] for p in cpu.tolist() if p in self.stripe_of}:  # a stripe within the GPU loses
             for q in self.stripe_pages.pop(sid):                                        # its parity with any page
                 self.stripe_of.pop(q, None)
@@ -235,15 +257,16 @@ class PoolState:
                 self.encoded[fresh] = False
             mask.index_add_(0, pg, bits)
 
-    def check(self, layer: int, pages: torch.Tensor, tk: torch.Tensor = None, mask: torch.Tensor = None) -> torch.Tensor:
+    def check(self, layer: int, pages: torch.Tensor, tk: torch.Tensor = None, mask: torch.Tensor = None,
+              fused: bool = None) -> torch.Tensor:
         """Recompute the pages' tags from their bytes and compare. tk [n, PAGE]: the token keys a reader expects
         (default: the keys stored with the slots, which checks the bytes only); mask: the offsets to cover (default:
-        the written ones)."""
+        the written ones); fused=False: plain PyTorch even when the fused kernels are on (HiCache's load thread)."""
         if tk is None:
             tk = self.tkey.view(self.pages, PAGE)[pages]
         if mask is None:
             mask = self.mask[layer][pages]
-        if self.fused:
+        if self.fused if fused is None else fused:
             K = self.kern
             got = K.page_tags(K.words(self.pool.k_buffer[layer]), K.words(self.pool.v_buffer[layer]), pages, mask, tk,
                               self.keys)
@@ -271,6 +294,131 @@ class PoolState:
     def pieces(self, pages: torch.Tensor) -> torch.Tensor:
         """[layers, n, 2, piece words] int32: a copy of this rank's pieces of the given pages."""
         return torch.stack([torch.stack([self.kflat(l)[pages], self.vflat(l)[pages]], 1) for l in range(self.layers)])
+
+    # ---- HiCache: tags travel with the pages' host copies ------------------------------------------------------
+    def carry_out(self, dev_slots: torch.Tensor, host_slots: torch.Tensor, host_size: int):
+        """A backup to host memory (HiCache's write): record each copied page's tags, coverage, token keys and write
+        step under its host page. The pages are locked in the radix cache until the copy lands, and nothing writes a
+        cached page, so the record describes the bytes the write thread copies."""
+        if dev_slots.numel() == 0 or dev_slots.numel() % PAGE:
+            return
+        hp = _whole_pages(host_slots.cpu())
+        if hp is None:
+            self.load_events.append(dict(op="backup", tokens=int(dev_slots.numel()), carried=False,
+                                         reason="host slots are not whole pages"))
+            return
+        if self.hrec is None:
+            self.hrec = HostRecord(self, host_size)
+        r, hp = self.hrec, hp.to(self.device)
+        dp = torch.div(dev_slots.to(self.device, torch.int64)[::PAGE], PAGE, rounding_mode="floor")
+        r.tags[:, hp] = self.tags[:, dp]
+        r.mask[:, hp] = self.mask[:, dp]
+        r.tkey[hp] = self.tkey.view(self.pages, PAGE)[dp]
+        r.wstep[hp] = self.wstep[dp]
+        r.valid[hp] = True
+        self.load_events.append(dict(op="backup", tokens=int(dev_slots.numel()), carried=True))
+
+    def carry_in(self, host_slots: torch.Tensor, dev_slots: torch.Tensor):
+        """A load from host memory (HiCache's load) into new device pages: each page gets the tags, coverage, token
+        keys and write step its host page left with, before the load thread copies a byte. Nothing is recomputed from
+        the bytes that land, so a copy that does not land fails the check. No generation moves: the new pages moved
+        to a new one when they were freed. They have no parity yet. A host page with no record (never backed up from
+        this GPU, or freed since) loads uncovered, so its check fails rather than passing on no evidence."""
+        dcpu, hcpu = dev_slots.cpu().to(torch.int64), host_slots.cpu().to(torch.int64)
+        dp_cpu, hp_cpu = _whole_pages(dcpu), _whole_pages(hcpu)
+        if dp_cpu is None:  # the paged allocator always hands out whole pages
+            self.load_events.append(dict(op="load_issue", tokens=int(dcpu.numel()), carried_pages=0,
+                                         reason="device slots are not whole pages"))
+            return
+        dp = dp_cpu.to(self.device)
+        tk = self.tkey.view(self.pages, PAGE)
+        if self.hrec is None or hp_cpu is None:
+            valid = torch.zeros(dp.numel(), dtype=torch.bool, device=self.device)
+            self.tags[:, dp], self.mask[:, dp], tk[dp], self.wstep[dp] = 0, 0, 0, 0
+        else:
+            r, hp = self.hrec, hp_cpu.to(self.device)
+            valid = r.valid[hp]
+            self.tags[:, dp] = torch.where(valid, r.tags[:, hp], torch.zeros_like(r.tags[:, hp]))
+            self.mask[:, dp] = torch.where(valid, r.mask[:, hp], torch.zeros_like(r.mask[:, hp]))
+            tk[dp] = torch.where(valid.unsqueeze(1), r.tkey[hp], torch.zeros_like(r.tkey[hp]))
+            self.wstep[dp] = torch.where(valid, r.wstep[hp], torch.zeros_like(r.wstep[hp]))
+        self.encoded[dp] = False
+        self.holder[dp_cpu] = -1
+        self.src_slot[dcpu] = hcpu if hp_cpu is not None else -1
+        rec = dict(op="load_issue", tokens=int(dcpu.numel()), pages=int(dp_cpu.numel()),
+                   carried_pages=int(valid.sum()))
+        f, self.partial = self.partial, None
+        if f is not None:  # an armed partial load strikes this load: choose its pages, the same on every GPU
+            n = int(dp_cpu.numel())
+            k = max(1, min(int(f["pages"]), n))
+            j0 = int(f["pos"]) // PAGE if int(f.get("pos", -1)) >= 0 else n - k
+            j0 = max(0, min(j0, n - k))
+            pages = dp_cpu[j0:j0 + k]
+            self.partial_target = dict(rank=f["rank"], here=f["rank"] == f["me"], mode=f["mode"],
+                                       check=f["check_on_arrival"], pages=pages.tolist(),
+                                       slots=(pages.unsqueeze(1) * PAGE + torch.arange(PAGE)).flatten().to(self.device),
+                                       load_positions=[j0 * PAGE, (j0 + k) * PAGE])
+            rec["fault"] = dict(kind="partial_load", rank=f["rank"], mode=f["mode"], pages=pages.tolist(),
+                                load_positions=[j0 * PAGE, (j0 + k) * PAGE], load_tokens=n * PAGE,
+                                check_on_arrival=f["check_on_arrival"])
+        self.load_events.append(rec)
+
+    def forget_host(self, host_slots: torch.Tensor):
+        """Host slots freed (HostKVCache.free): their pages' records go, so a later load of them is uncovered."""
+        if self.hrec is None or host_slots.numel() == 0:
+            return
+        hp = torch.unique(torch.div(host_slots.cpu().to(torch.int64), PAGE, rounding_mode="floor"))
+        self.hrec.valid[hp.to(self.device)] = False
+
+    def host_copy(self, page: int):
+        """The 16 host slots a device page was loaded from, while their record is valid (the host copy is still
+        there and is what the page's tags describe); None otherwise."""
+        hs = self.src_slot[page * PAGE:(page + 1) * PAGE]
+        if self.hrec is None or bool((hs < 0).any()):
+            return None
+        hp = _whole_pages(hs)
+        if hp is None or not bool(self.hrec.valid[hp.to(self.device)].all()):
+            return None
+        return hs
+
+    def arrival_codes(self, layer: int, pages: torch.Tensor) -> torch.Tensor:
+        """The check on arrival of loaded pages in one layer: 0 = the bytes match the tag their page left with,
+        1 = no record covers the whole page, 2 = the tag differs. Plain PyTorch, in chunks: it runs in HiCache's
+        load thread, where no Triton kernel should be compiled."""
+        out = []
+        for chunk in pages.split(4096):
+            cover = self.mask[layer][chunk] == FULL
+            ok = self.check(layer, chunk, fused=False)
+            out.append(torch.where(~cover, 1, torch.where(ok, 0, 2)).to(torch.int8))
+        return torch.cat(out) if out else torch.zeros(0, dtype=torch.int8, device=self.device)
+
+
+class HostRecord:
+    """What each host page left this GPU with (HiCache keeps one host pool per GPU): per host page of 16 slots, every
+    layer's tag and coverage, the page's 16 token keys and its write step. It lives on the GPU, keyed by host page, so
+    recording and restoring are index copies with no wait. A page loaded back gets these, never tags recomputed from
+    the bytes that landed."""
+
+    def __init__(self, st, host_slots):
+        n = host_slots // PAGE
+        self.tags = torch.zeros(st.layers, n, dtype=torch.int64, device=st.device)
+        self.mask = torch.zeros(st.layers, n, dtype=torch.int32, device=st.device)
+        self.tkey = torch.zeros(n, PAGE, dtype=torch.int64, device=st.device)
+        self.wstep = torch.zeros(n, dtype=torch.int64, device=st.device)
+        self.valid = torch.zeros(n, dtype=torch.bool, device=st.device)
+
+
+def _whole_pages(slots: torch.Tensor):
+    """The page of each group of 16 slots, or None unless every group is one whole page in order (CPU tensors only:
+    no wait on the GPU). HiCache allocates and frees host memory in whole pages, and the paged allocator hands out
+    whole device pages, so this holds; anything else is not carried, and its check fails."""
+    if slots.numel() == 0 or slots.numel() % PAGE:
+        return None
+    s = slots.view(-1, PAGE)
+    first = s[:, 0]
+    if bool((first % PAGE != 0).any()) or not bool((s == first.unsqueeze(1) + torch.arange(PAGE)).all()):
+        return None
+    return torch.div(first, PAGE, rounding_mode="floor")
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -560,11 +708,19 @@ def act_repair_share(st, sched, a, req):
 def act_retract(st, sched, a, req):
     """Roll the request back with SGLang's own retract steps (ScheduleBatch.retract_decode), for this one request:
     free its KV after the cached prefix and send it back to the waiting queue. SGLang then re-prefills only the
-    tokens that the radix cache does not hold. With only_if_found, only when the last check found damage."""
+    tokens that the radix cache does not hold. With only_if_found, only when the last check found damage. With
+    from_prefill, a request that has just finished its prefill, and so is still only in the current batch (the
+    scheduler merges that batch into the running batch at its next step), is taken out of the current batch instead,
+    which keeps it out of that merge. Without it such a request is left alone (the release rule retries it a step
+    later)."""
     if a.get("only_if_found") and not st.alarm_found:
         return dict(retracted=False, reason="the last check found nothing")
     batch = sched.running_batch
     i = next((j for j, r in enumerate(batch.reqs) if r.rid == req.rid), None)
+    cur = getattr(sched, "cur_batch", None)
+    if i is None and a.get("from_prefill") and cur is not None and cur is not batch and cur.forward_mode.is_extend():
+        batch = cur
+        i = next((j for j, r in enumerate(batch.reqs) if r.rid == req.rid), None)
     if i is None:
         return dict(retracted=False, reason="request is not in the running batch")
     seq_len = int(batch.seq_lens[i].item())
@@ -766,7 +922,10 @@ def act_fault(st, sched, a, req):
                    had before they were freed and given to R; with fences on (fence, KVMEND_FENCE) it is dropped;
       foreign      the pages hold another sequence's KV with tags that match it: what R reads when its token table
                    points at another live page.
+      partial_load (HiCache) arms the next load from host memory to land on every GPU but one (see _arm_partial).
     The clean K and V of the span are kept, to measure how close a recompute comes."""
+    if a["kind"] == "partial_load":
+        return _arm_partial(st, sched, a)
     start, n = _span(req, a)
     donor = a.get("donor", 512)
     row = sched.req_to_token_pool.req_to_token[req.req_pool_idx]
@@ -892,15 +1051,17 @@ def _recompute_range(st, sched, req, s, e):
 
 
 def act_mend(st, sched, a, req):
-    """Repair what the last check found. A page damaged on one GPU only, still covered by its tags and with parity,
-    is rebuilt from parity, bit for bit (parity=False skips this path). Every other page (damage on several GPUs, a
-    skipped write, another sequence's KV, a new generation) is recomputed in place from R's tokens, with R's cached KV
-    before it as the prefix. With force, the span of `pages`/`pos` is recomputed whatever the check found: the
-    fault-free control of this path."""
+    """Repair what the last check found. A page loaded from host memory (HiCache) whose host copy is still there is
+    copied again from it, on each GPU whose piece failed, bit for bit (recopy=False skips this path). A page damaged on
+    one GPU only, still covered by its tags and with parity, is rebuilt from parity, bit for bit (parity=False skips
+    this path). Every other page (damage on several GPUs, a skipped write, another sequence's KV, a new generation,
+    a copy or rebuild that still fails) is recomputed in place from R's tokens, with R's cached KV before it as the
+    prefix. With force, the span of `pages`/`pos` is recomputed whatever the check found: the fault-free control of
+    this path."""
     g, n, me = _group(sched)
     pages, expected, tk = _reader_view(st, sched, req)
     block_of = {int(p): j for j, p in enumerate(pages.tolist())}
-    rebuild, redo = [], set()
+    rebuild, redo, recopy = [], set(), []
     if a.get("force"):
         start, length = _span(req, a)
         redo = {int(pages[j]) for j in range(start // PAGE, (start + length) // PAGE)}
@@ -913,10 +1074,15 @@ def act_mend(st, sched, a, req):
         by_page = {}
         for r, l, p, why in st.found:
             by_page.setdefault(p, []).append((r, l, why))
+        host = _host_pool(sched) if a.get("recopy", True) else None
         for p, fs in by_page.items():
             h, one_gpu = int(st.holder[p]), len({r for r, _, _ in fs}) == 1
+            # a page loaded from host memory: its host copy is what its tags describe, on every GPU (each GPU keeps
+            # its own host copy), so the GPUs whose pieces fail copy them again
+            if host is not None and all(w == "tag" for _, _, w in fs) and st.host_copy(p) is not None:
+                recopy += [(r, l, p) for r, l, _ in fs]
             # parity across GPUs rebuilds damage on one GPU; a stripe within each GPU rebuilds it on any number
-            if (a.get("parity", True) and all(w == "tag" for _, _, w in fs) and bool(st.encoded[p])
+            elif (a.get("parity", True) and all(w == "tag" for _, _, w in fs) and bool(st.encoded[p])
                     and (h == -2 or (h >= 0 and one_gpu))):
                 rebuild += [(r, l, p) for r, l, _ in fs]
             else:
@@ -930,8 +1096,17 @@ def act_mend(st, sched, a, req):
         crowded = {p for ps in crowd.values() if len(ps) > 1 for p in ps}
         rebuild = [x for x in rebuild if x[2] not in crowded]
         redo |= crowded
-    rec = dict(mended=True, rebuilt=[], recomputed=[])
+    rec = dict(mended=True, rebuilt=[], recomputed=[], recopied=[])
     t_mend = _start(st, g)
+    if recopy:
+        rec["recopied"] = _recopy(st, host, me, recopy)
+        # a copied piece that still fails R's check (the host copy is damaged too) is recomputed
+        rp = sorted({p for _, _, p in recopy if p in block_of})
+        js = torch.tensor([block_of[p] for p in rp], dtype=torch.int64, device=st.device)
+        failed = _gather_found(st, g, _reader_failures(st, me, pages[js], expected[js], tk[js]) if rp else [])
+        if failed:
+            rec["recopy_failed_pages"] = sorted({p for _, _, p, _ in failed})
+            redo |= set(rec["recopy_failed_pages"])
     if rebuild:
         st.damaged = rebuild
         rec["rebuilt"] = act_repair(st, sched, {}, req)["repairs"]
@@ -957,11 +1132,11 @@ def act_mend(st, sched, a, req):
         rec["recomputed"].append(dict(start=s, end=e, tokens=e - s, seconds=time.perf_counter() - t0))
     st.sync()
     rec["mend_seconds"] = time.perf_counter() - t_mend  # the whole repair, before the test's own checks below
-    rec["mended_pages"] = sorted({p for _, _, p in rebuild} | redo)
+    rec["mended_pages"] = sorted({p for _, _, p in rebuild} | {p for _, _, p in recopy} | redo)
     if blocks:
         idx = torch.tensor(blocks, device=st.device)
         rec["still_failing_here"] = len(_reader_failures(st, me, pages[idx], expected[idx], tk[idx]))
-    if st.saved_span is not None and (rec["recomputed"] or rec["rebuilt"]):
+    if st.saved_span is not None and (rec["recomputed"] or rec["rebuilt"] or rec["recopied"]):
         tgt, clean = st.saved_span
         now = torch.stack([torch.stack([st.pool.k_buffer[l][tgt], st.pool.v_buffer[l][tgt]]) for l in range(st.layers)])
         rec.update(max_abs_diff_vs_clean=float((now.float() - clean.float()).abs().max()),
@@ -970,9 +1145,220 @@ def act_mend(st, sched, a, req):
     return rec
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Loads from host memory (SGLang's hierarchical cache, HiCache): the tags travel with the host copy, every loaded
+# layer is checked on arrival before the forward reads it, and a piece that did not land is copied again
+
+def _host_pool(sched):
+    """HiCache's host pool of this GPU, or None without HiCache."""
+    return getattr(getattr(sched, "tree_cache", None), "token_to_kv_pool_host", None)
+
+
+def _host_kv(host, layer, host_slots):
+    """K and V of the given host slots in one layer, for either of HiCache's host layouts."""
+    if getattr(host, "layout", "layer_first") == "page_first":  # [size, layers, heads, dim]
+        return host.k_buffer[host_slots, layer], host.v_buffer[host_slots, layer]
+    return host.k_buffer[layer][host_slots], host.v_buffer[layer][host_slots]  # [layers, size, heads, dim]
+
+
+def _copy_from_host(st, host, layer, dev_slots, host_slots):
+    """Copy one layer's K and V of the given slots from the host copy; True if the device bytes now equal it."""
+    k, v = _host_kv(host, layer, host_slots.cpu())
+    st.pool.k_buffer[layer][dev_slots] = k.to(st.device)
+    st.pool.v_buffer[layer][dev_slots] = v.to(st.device)
+    return (torch.equal(st.pool.k_buffer[layer][dev_slots].cpu(), k)
+            and torch.equal(st.pool.v_buffer[layer][dev_slots].cpu(), v))
+
+
+def _arm_partial(st, sched, a):
+    """Arm a partial load: the next load from host memory lands on every GPU but `rank`, for `pages` pages from
+    position `pos` of the load (default: its last pages). On that GPU those device pages keep the bytes they held
+    (mode stale: a transfer that never arrived) or read zeros (mode zeros), and nothing reports an error, as after a
+    failed per-GPU transfer. Stale bytes can be the very bytes the load brings (SGLang hands the pages an eviction
+    just freed out first); the check's record counts the layers the fault changed. With check_on_arrival false, that
+    load is not checked on arrival, so the loading request's reader check must find it. Armed on every GPU, so that
+    every GPU names the same pages."""
+    g, n, me = _group(sched)
+    st.partial = dict(rank=min(int(a.get("rank", 1)), n - 1), me=me, pages=int(a.get("pages", 4)),
+                      pos=int(a.get("pos", -1)), mode=a.get("mode", "stale"),
+                      check_on_arrival=bool(a.get("check_on_arrival", True)))
+    if st.partial["mode"] not in ("stale", "zeros"):
+        raise ValueError(f"unknown partial-load mode {st.partial['mode']}")
+    return dict(kind="partial_load", armed=True, **{k: v for k, v in st.partial.items() if k != "me"})
+
+
+def _tree_nodes(tree):
+    stack, out = [tree.root_node], []
+    while stack:
+        node = stack.pop()
+        stack += list(node.children.values())
+        out.append(node)
+    return out
+
+
+def act_offload(st, sched, a, req):
+    """Leave the prefix cache's KV in host memory only (HiCache): wait until the backup of every node of the tree that
+    is still being written has landed, let SGLang release those nodes on every GPU together (its writing_check agrees
+    on the count across GPUs), then evict the device copy of every unlocked node. A node with a host copy keeps it,
+    so the next request with that prefix loads it back into new device pages; a node without one is dropped.
+    Only nodes of the current tree are waited for: SGLang's reset (every cache flush) clears the queue of finished
+    backups but not its list of backups in flight, so that list can hold nodes of an earlier tree for ever."""
+    tree = sched.tree_cache
+    ctl = getattr(tree, "cache_controller", None)
+    if ctl is None:
+        return dict(offloaded=False, reason="no hierarchical cache")
+    t0 = time.perf_counter()
+    deadline = t0 + float(a.get("timeout", 120))
+    writing = {n.id for n in _tree_nodes(tree) if tree.ongoing_write_through.get(n.id) is n}
+    acks = ctl.ack_write_queue
+    while time.perf_counter() < deadline:
+        with acks.mutex:  # the write thread adds to the queue; read it under its lock
+            landed = set(acks.queue)
+        if writing <= landed:
+            break
+        time.sleep(0.001)
+    waited = time.perf_counter() - t0
+    tree.writing_check()
+    pending = sum(1 for i in writing if i in tree.ongoing_write_through)
+    before = int(tree.evictable_size())
+    tree.evict(before)
+    host_only = sum(len(n.host_value) for n in _tree_nodes(tree)  # tokens now held in host memory only
+                    if n is not tree.root_node and n.value is None and getattr(n, "host_value", None) is not None)
+    return dict(offloaded=True, waited_s=waited, writes_waited_for=len(writing), pending_writes=pending,
+                evictable_before=before, evictable_after=int(tree.evictable_size()), host_only_tokens=host_only,
+                seconds=time.perf_counter() - t0)
+
+
+def _recopy(st, host, me, items):
+    """Copy damaged pieces [(rank, layer, page)] again from the host copy their pages were loaded from, each on the
+    GPU that holds it; no other GPU takes part. Each copied piece must match its tag again."""
+    st.sync()
+    t0 = time.perf_counter()
+    mine, exact = [(l, p) for r, l, p in items if r == me], {}
+    for l, p in mine:
+        exact[(l, p)] = _copy_from_host(st, host, l, torch.arange(p * PAGE, (p + 1) * PAGE, device=st.device),
+                                        st.host_copy(p))
+    st.sync()
+    dt = time.perf_counter() - t0
+    out = []
+    for r, l, p in items:
+        rec = dict(rank=r, layer=l, page=p, holder="host", bytes_read=st.piece_bytes())
+        if r == me:
+            rec.update(recopied=True, seconds=dt / max(1, len(mine)), equals_host_copy=exact[(l, p)],
+                       tag_matches=bool(st.check(l, torch.tensor([p], device=st.device)).all()))
+        out.append(rec)
+    return out
+
+
+def _load_view(st, host_slots, dev_slots):
+    """The load thread's view of the load it copies, made at layer 0 and kept for its other layers: the device and
+    host slot of each token, the loaded pages, the slots an armed partial load strikes here, and the running
+    totals of the check on arrival. In SGLang's "kernel" I/O both index tensors are on the GPU; in "direct" both are
+    on the CPU."""
+    ds = dev_slots.to(st.device, torch.int64)
+    t = st.partial_target
+    hit = None
+    if t is not None:
+        sel = torch.isin(ds, t["slots"])
+        hit = ds[sel] if bool(sel.any()) else None
+    skip = hit is not None and not t["check"]
+    return dict(ds=ds, hs=host_slots.cpu().to(torch.int64), dpage=torch.div(ds, PAGE, rounding_mode="floor"),
+                pages=torch.unique(torch.div(ds, PAGE, rounding_mode="floor")), target=t if hit is not None else None,
+                hit=hit, check=LOAD_CHECK_ON and TAGS_ON and not skip, t0=time.time(),
+                found=[], uncovered=[], recopied=0, still=[], exact=True, check_s=0.0, recopy_s=0.0)
+
+
+def load_layer(st, host, host_slots, dev_slots, layer, copy):
+    """One layer of a load from host memory, in HiCache's load thread on its load stream, before the layer is
+    released to the forward (the thread synchronizes the stream and counts the layer done after this returns, and
+    attention waits for that count): copy() does SGLang's copy; with an armed partial load on this GPU, the target
+    slots then hold their earlier bytes again, or zeros; then the check on arrival tests every loaded piece of this
+    layer against the tag its page left with, and copies each piece that fails again from the host copy, which must
+    then pass. Never raises: an exception would end the load thread, and the forward would wait for ever."""
+    b = stash = None
+    try:
+        if layer == 0 or st.load_batch is None:
+            st.load_batch = _load_view(st, host_slots, dev_slots)
+        b = st.load_batch
+        if b["hit"] is not None and b["target"]["here"] and b["target"]["mode"] == "stale":
+            stash = (st.pool.k_buffer[layer][b["hit"]].clone(), st.pool.v_buffer[layer][b["hit"]].clone())
+    except Exception:
+        st.load_events.append(dict(op="error", where="load_layer, before the copy", trace=traceback.format_exc()))
+        b = st.load_batch = None
+    copy()
+    if b is None:
+        return
+    try:
+        t = b["target"]
+        if t is not None and t["here"]:  # the copy of the target pages did not land on this GPU
+            k, v = st.pool.k_buffer[layer][b["hit"]], st.pool.v_buffer[layer][b["hit"]]  # what landed
+            if stash is not None:
+                changed = not (torch.equal(k, stash[0]) and torch.equal(v, stash[1]))
+                st.pool.k_buffer[layer][b["hit"]] = stash[0]
+                st.pool.v_buffer[layer][b["hit"]] = stash[1]
+            else:
+                changed = bool(k.any() or v.any())
+                st.pool.k_buffer[layer][b["hit"]] = 0
+                st.pool.v_buffer[layer][b["hit"]] = 0
+            # SGLang hands freed pages out first, so a load right after an eviction can land in the very slots just
+            # freed, whose stale bytes are the ones it brings: then the fault changes nothing in that layer
+            t["changed_layers"] = t.get("changed_layers", 0) + int(changed)
+            if layer == 0:
+                t["stale_was_zero"] = stash is None or bool((stash[0] == 0).all() and (stash[1] == 0).all())
+        if b["check"]:
+            t0 = time.perf_counter()
+            codes = st.arrival_codes(layer, b["pages"])
+            bad = b["pages"][codes == 2]
+            b["uncovered"] += [(layer, p) for p in b["pages"][codes == 1].tolist()]
+            b["check_s"] += time.perf_counter() - t0
+            if bad.numel():
+                bad_list = bad.tolist()
+                b["found"] += [(layer, p) for p in bad_list]
+                t1 = time.perf_counter()
+                sel = torch.isin(b["dpage"], bad)
+                b["exact"] &= _copy_from_host(st, host, layer, b["ds"][sel], b["hs"][sel.cpu()])
+                again = st.arrival_codes(layer, bad)
+                b["still"] += [(layer, p) for p, c in zip(bad_list, again.tolist()) if c]
+                b["recopied"] += len(bad_list)
+                b["recopy_s"] += time.perf_counter() - t1
+        if layer == st.layers - 1:
+            found_pages = sorted({p for _, p in b["found"]})
+            rec = dict(op="load_check", step=st.step, t0=b["t0"], tokens=int(b["ds"].numel()),
+                       pages=int(b["pages"].numel()), layers=st.layers, checked=b["check"],
+                       found_pieces=len(b["found"]), found_pages=found_pages,
+                       found_layers=len({l for l, _ in b["found"]}), uncovered_pieces=len(b["uncovered"]),
+                       uncovered_pages=sorted({p for _, p in b["uncovered"]})[:64], recopied_pieces=b["recopied"],
+                       still_failing=b["still"][:64], still_failing_pieces=len(b["still"]),
+                       recopy_equals_host_copy=b["exact"] if b["recopied"] else None,
+                       check_seconds=b["check_s"], recopy_seconds=b["recopy_s"])
+            if t is not None:
+                rec["fault"] = dict(kind="partial_load", rank=t["rank"], struck_here=t["here"], mode=t["mode"],
+                                    pages=t["pages"], load_positions=t["load_positions"],
+                                    stale_was_zero=t.get("stale_was_zero"), changed_layers=t.get("changed_layers"))
+                if st.partial_target is t:  # spent; a fault armed for a later load stays
+                    st.partial_target = None
+            st.load_events.append(rec)
+            st.load_batch = None
+    except Exception:
+        st.load_events.append(dict(op="error", where="load_layer, after the copy", trace=traceback.format_exc()))
+        st.load_batch = None
+
+
+def drain_load_events(st, sched):
+    """Move the records of the HiCache hooks (backups, loads issued, the load thread's checks on arrival, errors) to
+    the log, with the requests of the batch that just ran."""
+    if not st.load_events:
+        return
+    cur = getattr(sched, "cur_batch", None)
+    rids = [r.rid for r in cur.reqs] if cur is not None else []
+    while st.load_events:
+        rec = st.load_events.pop(0)
+        _log(sched, dict(rec, step=rec.get("step", st.step), rids=rids))
+
+
 ACTIONS = dict(encode=act_encode, scrub=act_scrub, inject=act_inject, repair=act_repair, retract=act_retract,
                dump=act_dump, repair_share=act_repair_share, evict=act_evict, abort=act_abort,
-               check=act_check, fault=act_fault, mend=act_mend)
+               check=act_check, fault=act_fault, mend=act_mend, offload=act_offload)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1263,6 +1649,7 @@ def on_step(sched):
     st.step += 1
     st.step_t.fill_(st.step)
     st.sched = sched
+    drain_load_events(st, sched)
     for rid, i, a, req in list(PLAN.due(sched)):
         PLAN.done.add((rid, i))
         rec = dict(step=st.step, rid=rid, at=a["at"], op=a["op"], n_out=len(req.output_ids), t0=time.time())
@@ -1372,6 +1759,7 @@ def patch_scheduler(mod):
         ok = orig_flush(self)
         st = _state(self)
         if ok and st is not None:
+            drain_load_events(st, self)
             if st.stats["batch_steps"]:
                 _log(self, dict(op="periodic", label=st.ctrl.get("label", ""), tags=TAGS_ON,
                                 encode_every=st.ctrl["encode_every"], scrub_pieces_per_step=st.ctrl["scrub_pieces"],
@@ -1428,6 +1816,68 @@ def patch_schedule_batch(mod):
     cls.reset_for_retract = reset_for_retract
 
 
+def _sync_current(device):
+    if device.type == "cuda":
+        torch.cuda.current_stream(device).synchronize()
+
+
+def patch_cache_controller(mod):
+    """HiCache's copies between GPU and host memory bypass set_kv_buffer, so the tags travel with them: a backup
+    records the tags of the pages it copies under their host pages, and a load gives the new device pages those
+    tags. load is SGLang 0.5.1's HiCacheController.load step for step, with the tags carried in before the operation
+    is queued: the load thread, which checks every layer on arrival, never sees the new pages without them."""
+    cls, op = mod.HiCacheController, mod.CacheOperation
+    orig_write = cls.write
+
+    def write(self, device_indices, priority=None, node_id=0):
+        host_indices = orig_write(self, device_indices, priority, node_id)
+        st = getattr(self.mem_pool_device, "_kvm", None)
+        if host_indices is not None and st is not None and TAGS_ON:
+            st.carry_out(device_indices, host_indices, self.mem_pool_host.size)
+        return host_indices
+
+    def load(self, host_indices, priority=None, node_id=0):
+        device_indices = self.mem_pool_device_allocator.alloc(len(host_indices))
+        if device_indices is None:
+            return None
+        self.mem_pool_host.protect_load(host_indices)
+        st = getattr(self.mem_pool_device, "_kvm", None)
+        if st is not None and TAGS_ON:
+            st.carry_in(host_indices, device_indices)
+        _sync_current(device_indices.device)  # SGLang: the indices must be ready before the load stream reads them
+        self.load_queue.put(op(host_indices, device_indices, node_id, priority))
+        return device_indices
+
+    cls.write, cls.load = write, load
+
+
+def patch_memory_pool_host(mod):
+    """HiCache's host pool: each layer of a load is checked on arrival (load_layer), and freed host slots lose
+    their tag records."""
+    cls, base = mod.MHATokenToKVPoolHost, mod.HostKVCache
+    orig_layer, orig_free = cls.load_to_device_per_layer, base.free
+
+    def load_to_device_per_layer(self, device_pool, host_indices, device_indices, layer_id, io_backend):
+        st = getattr(device_pool, "_kvm", None)
+
+        def copy():
+            orig_layer(self, device_pool, host_indices, device_indices, layer_id, io_backend)
+
+        if st is None or not TAGS_ON:
+            return copy()
+        # layer_id is the local layer (the load thread counts 0 .. layer_num - 1; SGLang indexes k_buffer with it)
+        load_layer(st, self, host_indices, device_indices, layer_id, copy)
+
+    def free(self, indices):
+        out = orig_free(self, indices)
+        st = getattr(getattr(self, "device_pool", None), "_kvm", None)
+        if st is not None:
+            st.forget_host(indices)
+        return out
+
+    cls.load_to_device_per_layer, base.free = load_to_device_per_layer, free
+
+
 PATCHES = {
     "sglang.srt.mem_cache.memory_pool": patch_memory_pool,
     "sglang.srt.mem_cache.allocator": patch_allocator,
@@ -1435,4 +1885,6 @@ PATCHES = {
     "sglang.srt.layers.radix_attention": patch_radix_attention,
     "sglang.srt.mem_cache.radix_cache": patch_radix_cache,
     "sglang.srt.managers.schedule_batch": patch_schedule_batch,
+    "sglang.srt.managers.cache_controller": patch_cache_controller,
+    "sglang.srt.mem_cache.memory_pool_host": patch_memory_pool_host,
 }

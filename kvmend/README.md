@@ -10,10 +10,11 @@ itself is not edited.
 | File | What it does |
 |---|---|
 | `kvmend/tags.py` | the tag of a piece (one 16-token page, one layer, one GPU): a 32-bit sum of mixed words, updated one token at a time |
-| `kvmend/hook.py` | the patch: running tags in `MHATokenToKVPool.set_kv_buffer`, dropped tags in the paged allocator's `free`, and a step after every scheduler iteration that runs the plan's actions (encode, scrub, inject, repair, retract, dump, and for the comparison repair_share and evict) and the background encode and scrub |
+| `kvmend/hook.py` | the patch: running tags in `MHATokenToKVPool.set_kv_buffer`, dropped tags in the paged allocator's `free`, and a step after every scheduler iteration that runs the plan's actions (encode, scrub, inject, repair, retract, dump, and for the comparison repair_share and evict) and the background encode and scrub; with HiCache, tags that travel with host copies and a check of every loaded layer on arrival |
 | `kvmend/meta.py` | names every record: Slurm job, node, GPUs and the SHA-256 of each source file |
 | `hook_site/sitecustomize.py` | loads the patch into every SGLang process when `KVMEND_ENABLE=1` |
 | `run_poc.py` | the driver: request R under each response to one fault, on one engine, then a summary and the comparison table |
+| `run_hicache.py` | loads from host memory (HiCache) that land on only some GPUs: found on arrival or by the reader's check, copied again from the host copy |
 | `bench_overhead.py` | fault-free throughput of plain SGLang, parity alone and KVMend, one engine per mode |
 | `slurm/poc.sh`, `slurm/compare.sh` | the GPU jobs: the proof of concept, and the GhostServe comparison with the throughput benchmark |
 | `tests/` | CPU tests: tag and parity math, running tags, the plan and the log, and the collective actions on 4 gloo processes |
@@ -87,6 +88,17 @@ Its output is also compared with a fault-free run that produced the same text on
 The workload is 64 requests × 1,024 prompt tokens × 256 output tokens, sent at once; each figure is the median of 3 runs.
 
 The proposal's target (H7) is throughput within 3% of parity alone.
+
+## Loads from host memory (HiCache)
+
+SGLang's hierarchical cache copies KV pages to a host pool (`HiCacheController.write`, on a write thread) and back into new device pages on a prefix hit (`HiCacheController.load`, on a load thread, layer by layer). Neither copy goes through `set_kv_buffer`, so the patch carries the tags along:
+
+- **backup:** the tags, coverage and token keys of each copied page are recorded under its host page (`PoolState.carry_out`);
+- **load:** the new device pages get that record before the load thread copies a byte (`carry_in`), never tags recomputed from the bytes that land;
+- **check on arrival:** in the load thread, each loaded layer is tested against those tags before attention reads it (`load_layer`); a piece that fails is copied again from the host copy, which must then pass;
+- **backstop:** what still fails (a damaged host copy, or a load not checked on arrival) fails the reader's check, and `mend` copies it again from the host copy or recomputes it in place.
+
+`run_hicache.py` evicts the prompt's device copy (op `offload`) and lets a request load it back with one GPU's copy of some pages left as zeros (fault `partial_load`), then compares the text with a fault-free load.
 
 ## Run it on cluster ja
 
