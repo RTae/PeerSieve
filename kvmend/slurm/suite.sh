@@ -8,6 +8,9 @@
 #   incident_local   run_incident.py at TP=1 on the job's first GPU with stripes within the GPU ($LOCAL_MODEL)
 #   incident_early   run_incident.py at TP=$TP with the damage early in the prompt ($EARLY_PAGES pages from
 #                    position $EARLY_POS), where KVMend's saving over a retry from the damaged page is largest
+#                    (the three incident steps take R's last good check from $LAST_GOOD: plan, the default, the
+#                    test's own check after the prefill; hook, KVMend's check after every prefill,
+#                    KVMEND_CHECK_AFTER_PREFILL=all)
 #   hicache          run_hicache.py at TP=$TP: SGLang's hierarchical cache (write_through) backs the prompt up to host
 #                    memory and loads it back; the load does not land on one GPU ($HICACHE_PAGES pages, $HICACHE_MODE)
 #                    (gate)
@@ -22,7 +25,7 @@
 #                    the attn modes exit 3 unless their self-check passes (no false alarm, the probe found)
 # Environment: MODEL TP PROMPT_LEN [MAX_TOTAL] [LOCAL_MODEL LOCAL_PROMPT_LEN] [BURST_SIZES BURST_PROMPT_LEN]
 #              [LOAD_SHARED LOAD_CLEAN_RUNS] [RELEASE_KIND RELEASE_LATE_AT] [OVERHEAD_MODES DECODE_MODES]
-#              [ATTN_MODES] [EARLY_POS EARLY_PAGES] [COMMIT: the local git commit the copied files match]
+#              [ATTN_MODES] [EARLY_POS EARLY_PAGES] [LAST_GOOD] [COMMIT: the local git commit the copied files match]
 #              [REQUIRE_OK_FROM] [LOCAL_PAGES] [HICACHE_PROMPT_LEN HICACHE_PAGES HICACHE_MODE]
 #              [ARRIVALS_SHARED ARRIVALS_REQUESTS ARRIVALS_RATE ARRIVALS_SEED ARRIVALS_EVERY ARRIVALS_REPLAYS]
 # Each step that exits 0 is listed in $RUN/steps_ok. With REQUIRE_OK_FROM=<an earlier run folder>, a step other than
@@ -38,11 +41,13 @@ export TRITON_CACHE_DIR=$ROOT/.cache/triton XDG_CACHE_HOME=$ROOT/.cache TORCH_EX
 export HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
 unset PYTHONPATH KVMEND_ENABLE KVMEND_PLAN KVMEND_TAGS KVMEND_CTRL KVMEND_ENCODE_EVERY KVMEND_SCRUB_PIECES KVMEND_FENCE \
   KVMEND_FUSED KVMEND_STRICT KVMEND_STRICT_EVERY KVMEND_STRIPE KVMEND_ON_FAIL KVMEND_LOAD_CHECK KVMEND_CHECK_IN_ATTN \
-  KVMEND_ATTN_RELOAD KVMEND_ATTN_LOG_MAX
+  KVMEND_ATTN_RELOAD KVMEND_ATTN_LOG_MAX KVMEND_CHECK_AFTER_PREFILL
 MAX_TOTAL=${MAX_TOTAL:-65536}
+LAST_GOOD=${LAST_GOOD:-plan}
 FIRST_GPU=$(echo "${CUDA_VISIBLE_DEVICES:-0}" | cut -d, -f1)
 
 echo "== job ${SLURM_JOB_ID:-local} on $(hostname) at $(date '+%F %T %Z'); steps: $STEPS; run folder $RUN; commit ${COMMIT:-unknown}"
+echo "== the incident steps' last good check: $LAST_GOOD"
 echo "${COMMIT:-unknown}" > "$RUN/commit.txt"
 nvidia-smi --query-gpu=index,name,pci.bus_id,memory.used,memory.total,driver_version --format=csv
 scontrol show job -d "${SLURM_JOB_ID:-0}" 2>/dev/null | grep -o 'IDX:[0-9,-]*' || true
@@ -76,14 +81,14 @@ for S in $STEPS; do
       step gputests 600 0 $PY -m pytest -v -p no:cacheprovider --durations=0 tests_gpu ;;
     incident)
       step incident 1200 1 $PY run_incident.py --model "$MODEL" --tp "$TP" --prompt-len "$PROMPT_LEN" \
-        --max-total-tokens "$MAX_TOTAL" --require-pass --out "$RUN/incident" ;;
+        --last-good "$LAST_GOOD" --max-total-tokens "$MAX_TOTAL" --require-pass --out "$RUN/incident" ;;
     incident_local)
       step incident_local 1200 0 env CUDA_VISIBLE_DEVICES=$FIRST_GPU $PY run_incident.py --model "${LOCAL_MODEL:-$MODEL}" \
         --tp 1 --stripe local --prompt-len "${LOCAL_PROMPT_LEN:-$PROMPT_LEN}" --pages "${LOCAL_PAGES:-4}" \
-        --max-total-tokens "$MAX_TOTAL" --require-pass --out "$RUN/incident_local" ;;
+        --last-good "$LAST_GOOD" --max-total-tokens "$MAX_TOTAL" --require-pass --out "$RUN/incident_local" ;;
     incident_early)
       step incident_early 1500 0 $PY run_incident.py --model "$MODEL" --tp "$TP" --prompt-len "$PROMPT_LEN" \
-        --pos "${EARLY_POS:-1024}" --pages "${EARLY_PAGES:-1}" \
+        --pos "${EARLY_POS:-1024}" --pages "${EARLY_PAGES:-1}" --last-good "$LAST_GOOD" \
         --max-total-tokens "$MAX_TOTAL" --require-pass --out "$RUN/incident_early" ;;
     hicache)
       step hicache 1200 1 $PY run_hicache.py --model "$MODEL" --tp "$TP" \

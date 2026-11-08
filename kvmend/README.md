@@ -115,6 +115,19 @@ Each run reports time to first token and end-to-end latency (median and 99th per
 the last attempt), throughput, goodput, wrong outputs on stable requests, aborts and resubmissions, and checks per
 step (`summary.json`, `arrivals.md`). The suite step is `arrivals`.
 
+## The check after the prefill
+
+A strict request is checked right after its prefill (its first output token). That check is its last good check, so
+damage found later can have reached only the tokens decoded since. `KVMEND_CHECK_AFTER_PREFILL=all` makes that check
+for every request, in the same batched check; `strict`, the default, keeps it for strict requests only.
+
+- **Pass:** a request outside the release rule gets the release rule's records (`checked_upto`, `good_step`, its pages'
+  generations). A plan's `retract` with `keep: "last_good"` keeps the tokens that check covered.
+- **Failure:** its pages are mended, and a log line `released_suspect` says that its first token, already released, may
+  be wrong. Nothing of it is held back, generated again or aborted.
+
+`run_incident.py --last-good hook` (suite.sh: `LAST_GOOD=hook`) relies on this check instead of scheduling its own.
+
 ## Loads from host memory (HiCache)
 
 SGLang's hierarchical cache copies KV pages to a host pool (`HiCacheController.write`, on a write thread) and back into new device pages on a prefix hit (`HiCacheController.load`, on a load thread, layer by layer). Neither copy goes through `set_kv_buffer`, so the patch carries the tags along:

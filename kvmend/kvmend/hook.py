@@ -27,6 +27,9 @@ memory) and fault kind partial_load (the next load from host memory does not lan
 The release rule (KVMEND_STRICT) checks strict requests as they run. A failed check mends the pages and regenerates
 the unreleased tokens, or, with on_fail "abort" (KVMEND_ON_FAIL, or an entry rid:every:abort), aborts the request and
 every other reader of the damaged pages and drops those pages from the prefix cache, for a client that resubmits.
+With KVMEND_CHECK_AFTER_PREFILL=all, every other request is checked once, right after its prefill, in the same batched
+check: a pass is its last good check; a failure mends the pages and reports that its first token, already released,
+may be wrong (op released_suspect).
 Each rank keeps one JSON line per action in memory and appends them to KVMEND_OUT/rank<r>.jsonl when the scheduler
 is idle or flushes its cache, so slow file writes (the cluster's /home is NFS) never fall inside a timed step.
 Run SGLang with page_size=16 and disable_overlap_schedule=True.
@@ -79,6 +82,15 @@ STRICT_EVERY = int(os.environ.get("KVMEND_STRICT_EVERY", "1"))
 ON_FAIL_DEFAULT = os.environ.get("KVMEND_ON_FAIL", "mend")
 if ON_FAIL_DEFAULT not in ON_FAIL_ACTIONS:
     raise ValueError(f"KVMEND_ON_FAIL must be one of {ON_FAIL_ACTIONS}, not {ON_FAIL_DEFAULT!r}")
+# Which requests get a check right after their prefill (their first output token): "strict" (default) only strict
+# requests, as the release rule needs; "all" every request. A pass is the request's last good check, which bounds what
+# damage found later can have reached. A request outside the release rule has released its first token before the
+# check, so a failure mends its pages and reports that token as suspect; it is never held back, generated again or
+# aborted (on_fail is a rule for strict requests).
+AFTER_PREFILL_RULES = ("strict", "all")
+CHECK_AFTER_PREFILL = os.environ.get("KVMEND_CHECK_AFTER_PREFILL", "strict")
+if CHECK_AFTER_PREFILL not in AFTER_PREFILL_RULES:
+    raise ValueError(f"KVMEND_CHECK_AFTER_PREFILL must be one of {AFTER_PREFILL_RULES}, not {CHECK_AFTER_PREFILL!r}")
 LOAD_CHECK_ON = os.environ.get("KVMEND_LOAD_CHECK", "1") == "1"  # HiCache: check loaded pages on arrival
 # Checks on read: the decode attention kernel adds up the tags of the pieces it reads (kvmend/attn_check.py). With
 # KVMEND_ATTN_RELOAD=1 the kernel reads the words again from memory instead of reusing the attention's tiles.
@@ -136,6 +148,7 @@ class PoolState:
         self.pending_suspect = {}  # rid -> (mended pages, since) for evict_suspect when that rollback happens
         self.poisoned = {}      # page -> its generation: damaged pages of aborted requests, to leave the prefix cache
         self.checked_upto = {}  # rid -> output tokens covered by the request's last passing check (releasable)
+        self.prefill_checked = set()  # rids outside the release rule whose one check, after the prefill, has run
         self.view_cache = {}    # rid -> token keys of the request's stored tokens, for the reader's check
         self.sched = None       # the scheduler, for checks that run outside on_step (the finish check)
         # HiCache: what each host page left this GPU with (made at the first backup), the host slot each device slot
@@ -211,7 +224,7 @@ class PoolState:
         self.gen += 1
         self.damaged, self.saved, self.last_good = [], {}, None
         self.req_gen, self.found, self.alarm_found, self.saved_span = {}, [], False, None
-        self.checked_upto, self.view_cache = {}, {}
+        self.checked_upto, self.view_cache, self.prefill_checked = {}, {}, set()
         self.stripe_of, self.stripe_pages, self.lparity = {}, {}, {}
         self.wstep.zero_()
         self.good_step, self.pending_redo, self.pending_suspect, self.poisoned = {}, {}, {}, {}
@@ -781,11 +794,14 @@ def act_retract(st, sched, a, req):
     rec = dict(retracted=True, kept_prefix=start, freed_tokens=seq_len - start, seq_len=seq_len)
     if "keep" in a:
         # Strict release: output tokens after the last good check were never released, so drop them and let the
-        # engine generate them again. Only allowed while no token past `keep` has been sent to the client.
+        # engine generate them again. Only allowed while no token past `keep` has been sent to the client. keep
+        # "last_good": the output tokens the request's last passing check covered (checked_upto, which the release
+        # rule and the check right after the prefill keep), 0 if it has none.
+        keep = st.checked_upto.get(req.rid, 0) if a["keep"] == "last_good" else a["keep"]
         sent = getattr(req, "send_token_offset", 0)
-        if sent <= a["keep"]:
-            rec.update(regenerated=len(req.output_ids) - a["keep"], kept_outputs=a["keep"])
-            del req.output_ids[a["keep"]:]
+        if sent <= keep:
+            rec.update(regenerated=len(req.output_ids) - keep, kept_outputs=keep)
+            del req.output_ids[keep:]
         else:
             rec.update(regenerated=0, kept_outputs=len(req.output_ids), refused="tokens already sent")
     batch.filter_batch(keep_indices=[j for j in range(len(batch.reqs)) if j != i])
@@ -929,12 +945,13 @@ def forget(st, rid):
     st.view_cache.pop(rid, None)
 
 
-def act_check(st, sched, a, req):
+def act_check(st, sched, a, req, mark_good=True):
     """The reader's check of request R before its KV is used again or its tokens are released. Every page R reads
     must carry a tag that covers exactly the tokens R reads there, and that tag, recomputed from the bytes with R's
     own token keys, must match. A skipped write fails the first test (coverage); changed bytes, or another
     sequence's KV with tags of its own, fail the second (tag). A page that moved to a new generation since R's last
-    good check fails as well (generation: a read after free). The findings, the same on every rank, go to st.found."""
+    good check fails as well (generation: a read after free). The findings, the same on every rank, go to st.found.
+    A pass is R's last good check, unless mark_good is False."""
     g, n, me = _group(sched)
     pages, expected, tk = _reader_view(st, sched, req)
     st.sync()
@@ -944,7 +961,7 @@ def act_check(st, sched, a, req):
     dt = time.perf_counter() - t0
     st.alarm_found = bool(st.found)
     st.damaged = [(r, l, p) for r, l, p, why in st.found if why == "tag"]
-    if not st.found:
+    if not st.found and mark_good:
         _mark_good(st, req, pages)
     return dict(pages=int(pages.numel()), pieces_checked=int(pages.numel()) * st.layers, seconds=dt,
                 bytes_checked=int(pages.numel()) * st.layers * st.piece_bytes(), found=_summary(st.found),
@@ -1472,17 +1489,43 @@ def release_check(st, sched, req, finishing=False):
         rec["aborted_at_finish"] = True
     else:
         rec["regenerate"] = _redo(st, sched, req, keep, (mended, since))
-    # every other strict reader of a mended page drops its unreleased tokens too: they may have read the damage
-    rec["other_readers"] = []
+    rec.update(_after_mend(st, sched, req, mended, since))
+    return rec
+
+
+def released_suspect(st, sched, req):
+    """The check right after the prefill (KVMEND_CHECK_AFTER_PREFILL=all) found damage in pages that a request outside
+    the release rule reads. Its first token, chosen by the prefill, has left already and may have read the damage: the
+    record (op released_suspect) reports it. What the request's own check still finds is mended as for a strict request
+    (copied again from host memory, rebuilt from parity, or recomputed), and the strict readers of a mended page and the
+    cached KV that may have read the damage are handled as release_check handles them. Nothing of this request is held
+    back, generated again or aborted, and this check is not its last good check: its own check may pass because another
+    request's repair in this step has mended the page already, and its prefill read the damage all the same."""
+    rec = dict(op="released_suspect", rid=req.rid, n_out=len(req.output_ids), released_tokens=len(req.output_ids),
+               reason="damage found right after the prefill: the released tokens were chosen before this check")
+    since = st.good_step.get(req.rid, 0)
+    rec.update(act_check(st, sched, {}, req, mark_good=False))
+    if not st.found:
+        rec["mend"] = dict(mended=False, reason="its own check passes: another request's repair in this step mended "
+                                                "the page, or the page failed only another reader's check")
+        return rec
+    rec["mend"] = act_mend(st, sched, {}, req)
+    rec.update(_after_mend(st, sched, req, set(rec["mend"].get("mended_pages", [])), since))
+    return rec
+
+
+def _after_mend(st, sched, req, mended, since):
+    """After a repair that `req`'s check found: every other strict reader of a mended page drops its unreleased tokens
+    too, since they may have read the damage, and the cached KV that finished readers computed after the damage leaves
+    the prefix cache."""
+    others = []
     for other in _batch_reqs(sched):
         if (not is_strict(other) or not _may_read(other, req) or not mended
                 or not mended & set(_reader_view(st, sched, other)[0].tolist())):
             continue
-        rec["other_readers"].append(dict(rid=other.rid, **_redo(st, sched, other, st.checked_upto.get(other.rid, 0),
-                                                                 (mended, since))))
-    # cached KV that finished readers computed after the damage may have read it: drop it from the prefix cache
-    rec["evicted_tokens"] = evict_suspect(st, sched.tree_cache, mended, since)
-    return rec
+        others.append(dict(rid=other.rid,
+                           **_redo(st, sched, other, st.checked_upto.get(other.rid, 0), (mended, since))))
+    return dict(other_readers=others, evicted_tokens=evict_suspect(st, sched.tree_cache, mended, since))
 
 
 def _redo(st, sched, req, keep, suspect=None):
@@ -1622,14 +1665,31 @@ def _batch_reqs(sched):
     return reqs
 
 
+def _due(st, req):
+    """Is a check of `req` due after this step? A strict request: right after its prefill (its first output token) and
+    every strict_every(req) output tokens, while it has tokens no check covers. Any other request, with
+    KVMEND_CHECK_AFTER_PREFILL=all: once, right after its prefill."""
+    n = len(req.output_ids)
+    if is_strict(req):
+        due = (n % strict_every(req) == 0 or n == 1) and st.checked_upto.get(req.rid, 0) < n
+    else:
+        due = (CHECK_AFTER_PREFILL == "all" and n == 1 and req.rid not in st.prefill_checked
+               and not str(req.rid).startswith("kvmend-"))
+    return (due and not req.finished() and req.req_pool_idx is not None and not getattr(req, "to_abort", False)
+            and req.rid not in st.pending_redo)
+
+
 def release_checks(st, sched):
     """After a step: check every strict request that has unreleased tokens, right after its prefill (its first
-    output token) and every strict_every(req) output tokens. The check after the prefill gives every strict request a
-    last good check before any decode step reads its KV: without it, damage found at the first scheduled check leaves
-    no bound on what read it, so all of the request's cached KV is suspect and its whole prompt is computed again.
-    First, a reader of a mended page that could not regenerate yet does so now, and its cached KV that may have read
-    the damage leaves the prefix cache. A request being aborted is not checked again."""
-    if not STRICT:
+    output token) and every strict_every(req) output tokens, and, with KVMEND_CHECK_AFTER_PREFILL=all, every other
+    request once, right after its prefill. The check after the prefill gives a request a last good check before any
+    decode step reads its KV: without it, damage found at a later check leaves no bound on what read it, so all of the
+    request's cached KV is suspect and its whole prompt is computed again. A request outside the release rule that
+    passes gets the same records as a strict one (checked_upto, good_step, its pages' generations); one that fails is
+    mended and reported (released_suspect), nothing more. First, a reader of a mended page that could not regenerate
+    yet does so now, and its cached KV that may have read the damage leaves the prefix cache. A request being aborted
+    is not checked again."""
+    if not STRICT and CHECK_AFTER_PREFILL != "all":
         return
     reqs = _batch_reqs(sched)
     running = set(map(id, getattr(sched.running_batch, "reqs", []) if getattr(sched, "running_batch", None) else []))
@@ -1642,16 +1702,12 @@ def release_checks(st, sched):
                 if req.rid in st.pending_suspect:
                     rec["evicted_tokens"] = evict_suspect(st, sched.tree_cache, *st.pending_suspect.pop(req.rid))
             _log(sched, dict(op="pending_redo", step=st.step, rid=req.rid, t0=time.time(), **rec))
-    due = [req for req in _batch_reqs(sched)
-           if is_strict(req) and not req.finished() and req.req_pool_idx is not None
-           and not getattr(req, "to_abort", False)
-           and (len(req.output_ids) % strict_every(req) == 0 or len(req.output_ids) == 1)
-           and st.checked_upto.get(req.rid, 0) < len(req.output_ids)
-           and req.rid not in st.pending_redo]
+    due = [req for req in _batch_reqs(sched) if _due(st, req)]
     if not due:
         return
-    # One check for every request that is due: one pass over all their pages, one collective. Only when something
-    # fails does each affected request go through the full path (mend, regenerate, other readers, cache).
+    # One check for every request that is due, strict or not: one pass over all their pages, one collective. Only when
+    # something fails does each affected request go through the full path (mend, regenerate, other readers, cache; for
+    # a request outside the release rule, mend and report).
     g, n, me = _group(sched)
     views = [(req,) + _reader_view(st, sched, req) for req in due]
     st.sync()
@@ -1662,22 +1718,28 @@ def release_checks(st, sched):
         found += _generation_failures(st, me, req, pages)
     found = _gather_found(st, g, found)
     bad = {p for _, _, p, _ in found}
-    passed, redone = [], set()
+    passed, redone, not_strict = [], set(), []
     for req, pages, _, _ in views:
         if req.rid in redone or req.req_pool_idx is None or req.rid in st.pending_redo:
             continue  # already regenerated this step, as a reader of a page another request's check mended
+        strict = is_strict(req)
+        if not strict:  # its one check, right after the prefill
+            not_strict.append(req.rid)
+            st.prefill_checked.add(req.rid)
         if bad and bad & set(pages.tolist()):
-            rec = release_check(st, sched, req)
+            rec = release_check(st, sched, req) if strict else released_suspect(st, sched, req)
             redone |= {req.rid} | {o["rid"] for o in rec.get("other_readers", [])}
             _log(sched, dict(step=st.step, t0=time.time(), **rec))
         else:
             st.checked_upto[req.rid] = len(req.output_ids)
             _mark_good(st, req, pages)
             passed.append(req.rid)
+        if not strict:
+            st.view_cache.pop(req.rid, None)  # checked once: its token keys need not stay on the GPU
     st.sync()
     _log(sched, dict(op="release_checks", step=st.step, t0=time.time(), requests=len(due), passed=passed,
-                     pages=sum(int(v[1].numel()) for v in views), seconds=time.perf_counter() - t0,
-                     found_pieces=len(found)))
+                     not_strict=not_strict, pages=sum(int(v[1].numel()) for v in views),
+                     seconds=time.perf_counter() - t0, found_pieces=len(found)))
 
 
 def held_back(st, reqs):

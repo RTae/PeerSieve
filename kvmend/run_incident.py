@@ -30,6 +30,12 @@ Responses:
   parity_late  GhostServe told the GPU: parity rebuilds GPU --rank's share from the other GPUs' damaged pieces
   control_*    no fault, the same recompute (and rollback) as KVMend: the text a fault-free server gives on that path
 
+R's last good check comes right after the prefill, at output 1. With --last-good plan (the default) the plan schedules
+it (op check). With --last-good hook it does not: KVMend makes it itself, for every request
+(KVMEND_CHECK_AFTER_PREFILL=all), and each rollback keeps the tokens KVMend's last passing check covered (retract keep
+"last_good"). Every run then gets that check, the no-check rows too: silent_unwritten's damage, which strikes at output
+1, is found by it and mended, and its report says that R's first token may be wrong (released_suspect).
+
   uv run python run_incident.py --model /home/tae/models/TinyLlama-1.1B-Chat-v1.0 --tp 4 --out runs/incident-check
 """
 import argparse
@@ -53,6 +59,10 @@ def parse():
     p.add_argument("--late-at", type=int, default=10)
     p.add_argument("--detect-at", type=int, default=41)
     p.add_argument("--keep", type=int, default=1, help="output tokens computed before the last good check")
+    p.add_argument("--last-good", default="plan", choices=("plan", "hook"),
+                   help="who makes R's last good check, right after the prefill: the plan (op check at output 1), or "
+                        "KVMend for every request (KVMEND_CHECK_AFTER_PREFILL=all); with hook, rollbacks keep what "
+                        "KVMend's last passing check covered")
     p.add_argument("--pages", type=int, default=4, help="pages the fault replaces")
     p.add_argument("--pos", type=int, default=-1,
                    help="first position of the damaged pages (a page boundary); default: the end of the prompt")
@@ -66,29 +76,35 @@ def parse():
     p.add_argument("--variant-timeout", type=int, default=600)
     p.add_argument("--require-pass", action="store_true")
     p.add_argument("--out", required=True)
-    return p.parse_args()
+    a = p.parse_args()
+    if a.last_good == "hook" and a.keep != 1:
+        p.error("--keep: KVMend's check after the prefill covers output 1, so --last-good hook keeps 1")
+    return a
 
 
 def make_plan(a):
     span = dict(pages=a.pages, donor=a.donor, **(dict(pos=a.pos) if a.pos >= 0 else {}))
     enc = dict(op="encode", at=1, stripe=a.stripe)
-    last_good = [enc, dict(op="check", at=1)]  # R's last good check, right after the prefill
-    ghost = [dict(enc, check=False)]  # parity, and nothing is checked
+    hook = a.last_good == "hook"
+    # R's last good check, right after the prefill: the plan's own, or KVMend's (hook), whose record each rollback reads
+    last_good = [enc] if hook else [enc, dict(op="check", at=1)]
+    keep = "last_good" if hook else a.keep
+    ghost = [dict(enc, check=False)]  # parity, and nothing is checked (with hook, KVMend checks after the prefill)
     unwritten = dict(op="fault", at=1, kind="unwritten", **span)
 
     def late(kind, **kw):
         return dict(op="fault", at=a.late_at, kind=kind, **span, **kw)
 
     detect = [dict(op="scrub", at=a.detect_at), dict(op="check", at=a.detect_at)]
-    fix = [dict(op="mend", at=a.detect_at), dict(op="retract", at=a.detect_at, keep=a.keep, only_if_found=True)]
+    fix = [dict(op="mend", at=a.detect_at), dict(op="retract", at=a.detect_at, keep=keep, only_if_found=True)]
     forced1 = dict(op="mend", at=1, force=True, **span)
     plans = {
         "warmup": last_good + [forced1],
         "clean": list(last_good),
         "control_mend1": last_good + [forced1],
         "control_mend41": last_good + [dict(op="mend", at=a.detect_at, force=True, **span),
-                                       dict(op="retract", at=a.detect_at, keep=a.keep)],
-        "control_retract41": last_good + [dict(op="retract", at=a.detect_at, keep=a.keep)],
+                                       dict(op="retract", at=a.detect_at, keep=keep)],
+        "control_retract41": last_good + [dict(op="retract", at=a.detect_at, keep=keep)],
         "silent_unwritten": ghost + [unwritten],
         "silent_late": ghost + [late("late_store", fence=False)],  # plain SGLang has no fence: the write lands
         "kvmend_unwritten": [enc, unwritten, dict(op="scrub", at=1), dict(op="check", at=1),
@@ -137,6 +153,7 @@ def summarize(out, a, res, meta):
         return [x for x in logs if x.get("rid") == rid and x["op"] == op and (at is None or x.get("at") == at)]
 
     clean = res["clean"]["ids"]
+    hook = a.last_good == "hook"
     ref = statistics.median(res[r]["seconds"] for r in ("clean", "silent_unwritten", "silent_late"))
     span_pages = None
     rows = {}
@@ -175,6 +192,8 @@ def summarize(out, a, res, meta):
         silent = "silent_unwritten" if f == "unwritten" else "silent_late"
         rows[f]["silent_outcome"], rows[f]["silent_first_diff"] = (
             classify(res[silent]["ids"], clean) if f not in META else ("not run", None))
+        if hook and f == "unwritten":  # KVMend's check after the prefill found this run's damage
+            rows[f]["silent_outcome"] = "mended after the prefill: " + rows[f]["silent_outcome"]
         retry = res.get({"unwritten": "retry_unwritten", "late_bypass": "retry_late"}.get(f, ""))
         if retry:
             rows[f].update(retry_first_finish=retry["first"]["finish"], retry_text_right=retry["ids"] == clean,
@@ -192,9 +211,36 @@ def summarize(out, a, res, meta):
         return bool(found) and span_pages is not None and all(
             found.get(str(p), {}).get(reason, {}).get("ranks") == every for p in span_pages)
 
+    def passed_at_1(rid):
+        """The GPUs where R's last good check at output 1 passed: the plan's check op, or KVMend's check after the
+        prefill (its batched record lists R among the requests outside the release rule, and among those that
+        passed)."""
+        if hook:
+            return sum(1 for x in logs if x["op"] == "release_checks" and rid in (x.get("not_strict") or [])
+                       and rid in x.get("passed", []))
+        return sum(1 for x in every_rank(rid, "check", at=1) if x.get("found") == {})
+
+    def check_s(rid):  # how long that check took on GPU 0
+        xs = ([x["seconds"] for x in logs if x["op"] == "release_checks" and x["rank"] == 0
+               and rid in x.get("passed", [])] if hook else [x["seconds"] for x in pick(rid, "check", at=1)])
+        return xs[0] if xs else None
+
+    # the runs that start from R's last good check at output 1 (their damage, if any, strikes after it)
+    relying = [r for r in ("control_mend41", "control_retract41", "kvmend_late_bypass", "kvmend_late_store",
+                           "kvmend_foreign", "kvmend_bad_tag", "kvmend_bad_parity", "retry_late", "retry_keep_late")
+               if r in res]
+    check_times = [t for t in map(check_s, relying) if t is not None]
+    suspect = [dict(rid=x["rid"], rank=x["rank"], n_out=x["n_out"], found=x.get("found"),
+                    mended_pages=x["mend"].get("mended_pages"),
+                    recomputed_tokens=sum(t["tokens"] for t in x["mend"].get("recomputed", [])),
+                    still_failing_here=x["mend"].get("still_failing_here"))
+               for x in logs if x["op"] == "released_suspect"]
     summary = dict(
         meta=meta, model=a.model, tp=a.tp, prompt_len=a.prompt_len, max_new=a.max_new, late_at=a.late_at,
-        detect_at=a.detect_at, keep=a.keep, pages=a.pages, pos=a.pos, donor=a.donor, reference_seconds=ref,
+        detect_at=a.detect_at, keep=a.keep, pages=a.pages, pos=a.pos, donor=a.donor,
+        last_good=a.last_good, last_good_checks={r: passed_at_1(r) for r in relying},
+        last_good_check_seconds=statistics.median(check_times) if check_times else None, released_suspect=suspect,
+        reference_seconds=ref,
         reference_runs={r: res[r]["seconds"] for r in ("clean", "silent_unwritten", "silent_late")},
         controls={c: dict(equals_clean=res[c]["ids"] == clean, first_diff=classify(res[c]["ids"], clean)[1],
                           seconds=res[c]["seconds"])
@@ -232,6 +278,15 @@ def summarize(out, a, res, meta):
                                                  for f in ("unwritten", "late_bypass")),
             retry_keep_final_text_right=all(fr[f]["retry_keep_text_right"] or fr[f]["retry_keep_equals_control"]
                                             for f in ("unwritten", "late_bypass")))
+    if hook:  # KVMend made R's last good check itself, and it found silent_unwritten's damage at output 1
+        mine = [x for x in suspect if x["rid"] == "silent_unwritten"]
+        first = [x for x in mine if x["rank"] == 0]
+        summary["verdict"].update(
+            last_good_by_the_check_after_the_prefill=all(n == a.tp for n in summary["last_good_checks"].values()),
+            unwritten_after_the_prefill_found_mended_and_reported=(
+                len(mine) == a.tp and len(first) == 1 and caught(first[0]["found"], "coverage")
+                and first[0]["recomputed_tokens"] == a.pages * 16 and all(x["still_failing_here"] == 0 for x in mine)
+                and res["silent_unwritten"]["ids"] in (clean, res["control_mend1"]["ids"])))
     for m in META:
         if m in fr:  # the rebuild from parity fails its tag on the damaged pages, which are then recomputed
             summary["verdict"][f"{m}_rebuild_failed_then_recomputed"] = (
@@ -251,8 +306,17 @@ def incident_md(s):
 
     where = (f"{s['pages']} pages from position {s['pos']}" if s.get("pos", -1) >= 0
              else f"the last {s['pages']} pages of the prompt")
+    hook = s.get("last_good") == "hook"
+    checks, check_s = s.get("last_good_checks", {}), s.get("last_good_check_seconds")
     lines = [f"Reference: {s['reference_seconds']:.2f} s, the median of {', '.join(s['reference_runs'])} "
-             f"(no recovery). Fault: {where}, every layer, every GPU (bad_tag, bad_parity: one layer, one GPU).", "",
+             f"(no recovery{'; but silent_unwritten mends its page after the prefill' if hook else ''}). "
+             f"Fault: {where}, every layer, every GPU (bad_tag, bad_parity: one layer, one GPU). "
+             f"R's last good check, at output 1: "
+             + ("KVMend's check after every prefill (KVMEND_CHECK_AFTER_PREFILL=all; every run gets it, the reference "
+                "runs and the retries' resubmissions too)" if hook else "the test's own check")
+             + f", passed on every GPU in {sum(n == s['tp'] for n in checks.values())} of the {len(checks)} runs "
+             f"that start from it"
+             + (f"; it took {check_s:.3f} s (median)" if check_s is not None else "") + ".", "",
              "| Fault | No checks | Scrub finds it | Reader check finds it | KVMend repair | KVMend text right "
              "| KVMend extra | Abort and retry text right | Retry extra | Retry from the damaged page extra |",
              "|---|---|---|---|---|---|---|---|---|---|"]
@@ -289,8 +353,11 @@ def main():
     os.environ.update(KVMEND_ENABLE="1", KVMEND_PLAN=plan_path, KVMEND_OUT=out,
                       PYTHONPATH=os.pathsep.join(p for p in (os.path.join(HERE, "hook_site"), HERE,
                                                              os.environ.get("PYTHONPATH", "")) if p))
-    for k in ("KVMEND_ENCODE_EVERY", "KVMEND_SCRUB_PIECES", "KVMEND_CTRL", "KVMEND_TAGS", "KVMEND_FENCE"):
+    for k in ("KVMEND_ENCODE_EVERY", "KVMEND_SCRUB_PIECES", "KVMEND_CTRL", "KVMEND_TAGS", "KVMEND_FENCE",
+              "KVMEND_CHECK_AFTER_PREFILL"):
         os.environ.pop(k, None)
+    if a.last_good == "hook":
+        os.environ["KVMEND_CHECK_AFTER_PREFILL"] = "all"
 
     import sglang as sgl
     from transformers import AutoTokenizer
