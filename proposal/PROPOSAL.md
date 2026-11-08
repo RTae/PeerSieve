@@ -20,6 +20,8 @@ Nothing watches whether the KV cache is still correct, so silent damage reaches 
 
 **Evidence.** A proof of concept on SGLang catches or drops four kinds of damage modelled on the incident. On Llama-3.1-8B at TP=8 it repaired a 32K-token request in 0.5 to 1.3 s; aborting and recomputing it took 14 s.
 
+A retry that keeps the undamaged part of the prompt cached is as cheap when the damage is near its end; the repair pays off when the damage is early in a long prompt.
+
 Keeping its tags cost 0.3% of Llama-3.1-8B's fault-free throughput. With the guard, a streaming client received none of the 78 wrong tokens that fast release sent.
 
 ## 1 Introduction
@@ -42,7 +44,7 @@ Bugs can also let one request write into memory that was already given to anothe
 
 Such damage is rare. The incident touched 155 responses in two weeks, all to prompts longer than 681,280 tokens [1]. On GPUs with ECC, memory errors are reported, not silent [3].
 
-But when it happens it is silent, and it grows more likely as servers move KV between GPUs, host memory and machines. So a watchdog for it must cost almost nothing while nothing is wrong.
+But when it happens it is silent, and every path that moves KV between GPUs, host memory and machines is one more place for it. So a watchdog for it must cost almost nothing while nothing is wrong.
 
 ### 1.2 The gap: what today's systems cannot do
 
@@ -141,7 +143,11 @@ This project makes four contributions:
 
 A proof of concept on our server catches or drops four kinds of damage modelled on the incident, each by the part of the check built for it; its tags cost 0.3% of Llama-3.1-8B's throughput (§7).
 
-It repaired a 32K-token request in 0.5 to 1.3 s, where aborting and recomputing the request took 14 s. On both models, strict release sent none of the 78 wrong tokens that fast release streamed.
+It repaired a 32K-token request in 0.5 to 1.3 s, where aborting and recomputing the request took 14 s; a retry that keeps the clean prefix is as cheap only for damage near the end of the prompt.
+
+On both models, strict release sent none of the 78 wrong tokens that fast release streamed.
+
+Section 9 answers the question we expect most: why not a simpler fix, such as ECC, a checksum on transfers, or abort and retry.
 
 ## 2 Background
 
@@ -658,13 +664,15 @@ The runs of §7.2 to §7.4 used an earlier version that had only the tags, the s
 
 Most of them ran before every layer was checked in one launch: they checked layer by layer, or, in §7.5, with PyTorch operations. Section 7.3, §7.6 and the repeat in §7.8 use the one-launch check.
 
-Some parts are simplified. The token key mixes each token's id and position, not the hash of its whole prefix, and generations are kept in each request's record rather than mixed into the tag.
+Some parts are simplified. The token key mixes each token's id and position, not the hash of its whole prefix, so a page with the same tokens at the same positions after another prefix would pass.
+
+Generations are kept in each request's record rather than mixed into the tag.
 
 The release rule checks a strict request's pages in a separate pass, right after its prefill and then every few tokens, so its tokens leave one step later than with a check inside attention.
 
 A check that fails at a request's last token aborts it instead of regenerating.
 
-The tags are computed by re-reading the stored bytes right after each store, and Reed–Solomon parity is not built.
+The tags are computed by re-reading the stored bytes right after each store, so a store that writes wrong bytes into its own slot would be certified.
 
 The rollback returns R to its cached prompt. Under fast release it re-prefills the tokens decoded since then (§7.2); under strict release it keeps the first output token, re-prefills it and regenerates the rest (§7.4).
 
@@ -983,31 +991,74 @@ Table 16 lists the main risks and how we handle them.
 
 *Table 16. Risks and mitigations.*
 
-| Risk                                                                           | Effect                                                              | Mitigation                                                                                                                                               |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Per-page parity takes longer to build than planned                             | less time for experiments                                           | parity is an option; XOR parity across GPUs and within one GPU already works (§7.5, §7.7); Reed–Solomon only if time allows                              |
-| Tag work costs more than the 3% target                                         | lower fault-free throughput                                         | fused Triton kernels inside SGLang's decode CUDA graphs: 0.3% for tags alone on 8B at TP=8 and 1.6% on TinyLlama (§7.3); the 32B setup is next           |
-| The guard's checks take a large share of a decode step                         | strict requests stream more slowly                                  | one launch over all layers (0.4–1.1 ms per check, §7.6), a check every few tokens, checks on read inside attention; the guard stays a per-request option |
-| Checks inside the attention kernel slow decode                                 | higher time per output token                                        | measure the kernel; fall back to targeted checks before release and a rate-limited scrub                                                                 |
-| Damage during a long prefill taints the rest of the prompt                     | the repair set grows to the whole suffix                            | fall back to re-prefilling from the damaged page, and report how often this happens                                                                      |
-| Recompute is not bit for bit                                                   | a repaired request can give another text where tokens are near-tied | compare with a fault-free run on the same recompute path; parity where an exact repair matters (§7.5)                                                    |
-| Most real corruption hits every GPU                                            | parity rebuild is rarely used                                       | recompute is the default and covers that case; we report the split between the two paths                                                                 |
-| ECC corrects or reports memory errors on our A100s                             | silent hardware faults are rare here                                | software injection of the incident's kinds of damage, and results for GPUs without ECC [11]                                                              |
-| One server, without RDMA                                                       | we cannot reproduce the incident's transfers between machines       | inject their effects, such as pages never written or misplaced, directly into the KV (§5.4, §7.5)                                                        |
-| Run times vary between identical runs, on a shared server and even alone on it | noisy costs                                                         | report the median of repeated runs, and price the guard by its checks rather than run times (§7.8)                                                       |
-| A tag certifies wrong values if the computation itself was wrong               | compute errors are missed                                           | stated as out of scope in §4.1                                                                                                                           |
-| Scrubbing slows serving                                                        | lower throughput                                                    | a rate limit and a staggered order [23]; we measure the trade-off                                                                                        |
-| PCIe-only server                                                               | absolute repair times differ from NVLink servers                    | we report tokens recomputed and data read as well as time                                                                                                |
+| Risk                                                                           | Effect                                                                                     | Mitigation                                                                                                                                               |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Per-page parity takes longer to build than planned                             | less time for experiments                                                                  | parity is an option; XOR parity across GPUs and within one GPU already works (§7.5, §7.7); Reed–Solomon only if time allows                              |
+| Tag work costs more than the 3% target                                         | lower fault-free throughput                                                                | fused Triton kernels inside SGLang's decode CUDA graphs: 0.3% for tags alone on 8B at TP=8 and 1.6% on TinyLlama (§7.3); the 32B setup is next           |
+| The guard's checks take a large share of a decode step                         | strict requests stream more slowly                                                         | one launch over all layers (0.4–1.1 ms per check, §7.6), a check every few tokens, checks on read inside attention; the guard stays a per-request option |
+| Checks inside the attention kernel slow decode                                 | higher time per output token                                                               | measure the kernel; fall back to targeted checks before release and a rate-limited scrub                                                                 |
+| Damage during a long prefill taints the rest of the prompt                     | the repair set grows to the whole suffix                                                   | fall back to re-prefilling from the damaged page, and report how often this happens                                                                      |
+| Recompute is not bit for bit                                                   | a repaired request can give another text where tokens are near-tied                        | compare with a fault-free run on the same recompute path; parity where an exact repair matters (§7.5)                                                    |
+| Most real corruption hits every GPU                                            | parity rebuild is rarely used                                                              | recompute is the default and covers that case; we report the split between the two paths                                                                 |
+| ECC corrects or reports memory errors on our A100s                             | silent hardware faults are rare here                                                       | software injection of the incident's kinds of damage, and results for GPUs without ECC [11]                                                              |
+| One server, without RDMA                                                       | we cannot reproduce the incident's transfers between machines                              | inject their effects, such as pages never written or misplaced, directly into the KV (§5.4, §7.5)                                                        |
+| Run times vary between identical runs, on a shared server and even alone on it | noisy costs                                                                                | report the median of repeated runs, and price the guard by its checks rather than run times (§7.8)                                                       |
+| Every run turned off SGLang's overlap scheduler                                | checks and rollbacks between steps may not fit an engine that launches the next step early | move the checks into the step's own stream, and measure with the overlap scheduler on                                                                    |
+| A damaged page under a popular shared prefix                                   | all its readers hold back or regenerate at once: a repair storm                            | repair the page once, regenerate its readers in one batch, and measure under arriving requests                                                           |
+| A tag certifies wrong values if the computation itself was wrong               | compute errors are missed                                                                  | stated as out of scope in §4.1                                                                                                                           |
+| Scrubbing slows serving                                                        | lower throughput                                                                           | a rate limit and a staggered order [23]; we measure the trade-off                                                                                        |
+| PCIe-only server                                                               | absolute repair times differ from NVLink servers                                           | we report tokens recomputed and data read as well as time                                                                                                |
 
-## 9 Timeline
+## 9 Why not something simpler?
 
-Table 17 gives an eight-week plan, to be adjusted to the course deadline.
+Simpler tools come to mind for silent KV damage. Table 17 sets each against KVMend, and says where the simpler tool is the better choice.
+
+*Table 17. Simpler alternatives: what each misses, and where it is the better choice.*
+
+| Alternative                                         | What it does well                                 | What it misses                                                                                                        | Where it is the better choice                                       |
+| --------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| ECC on GPU memory                                   | corrects or reports memory errors                 | damage from software: pages never written, late writes, misplaced pages, as in the incident                           | memory errors on GPUs with ECC                                      |
+| A checksum on each KV transfer, as SGLang added [2] | catches damage in transit, then aborts            | damage after the transfer: late writes into reused slots, reuse from the prefix cache, loads from host memory         | a server whose only risk is the transfer                            |
+| Fixing and fuzzing the engine                       | removes known bugs; the write fence is such a fix | the next unknown bug: 7 of the 13 bugs in one fuzzer's table were cross-request KV corruption [19]                    | always, next to KVMend                                              |
+| Abort and retry                                     | right text, with no repair code                   | finding the damage, which it needs first; it recomputes the request from the first page it cannot trust               | damage near the end of a prompt (§7.5)                              |
+| A NaN check or another monitor of the output        | cheap, and independent of the engine              | fluent but wrong text, which damage of the incident's kinds gave in §7.5; it cannot name or repair the damage         | bit flips that make a NaN (§7.4)                                    |
+| Parity alone, as in GhostServe [10]                 | rebuilds damage on one GPU exactly                | finding the damage; pages never written or misplaced; damage on every GPU                                             | none: parity is KVMend's option for bursts                          |
+| A full copy of the KV in host memory                | exact repair, even of damage on every GPU         | a second copy of all cached KV in host memory, against 12.5% for XOR parity and 0.05% for tags, plus the copy traffic | a server with spare host memory; KVMend can repair from such a copy |
+| Running each request twice and comparing            | also catches wrong computation                    | twice the compute; 11 of 24 fault-free requests already differ between runs on Llama-3.1-8B (§7.8)                    | faults in computation, which KVMend leaves out (§4.1)               |
+| Turning off the prefix cache                        | damaged shared KV no longer spreads               | the cache's savings; damage to a request's own KV                                                                     | none                                                                |
+| A standard hash such as CRC32C                      | stronger guarantees for some patterns of damage   | parts that add in any order: a CRC part must be shifted for its position first (§4.2)                                 | blocks checked whole, as in storage                                 |
+
+**Is the damage common enough to care?** No, and the design follows from that. Only the tags are kept all the time, at 0.3% of Llama-3.1-8B's throughput in our setup. Checks run when KV is reused or released; the rest, after a check fails.
+
+What earns even that cost is how this failure looks: wrong answers with HTTP 200, and in the incident, KV from other requests [1]. Fuzzers keep finding this class of bug in vLLM and SGLang [19, 20].
+
+**Why hash the bytes, if metadata catches most of it?** Three of the four kinds in §7.5 could be caught from metadata alone: which slots were written, their generation, and the token each slot was written for.
+
+A write around the store path changes only the bytes, and that is the incident's own path: a network transfer that writes straight into the KV pool. Memory errors change only the bytes too.
+
+Mixing the token key into the byte tag lets one check cover all of these.
+
+**Is 0.3% realistic?** It was measured where a step is slow next to tag work: Llama-3.1-8B over PCIe at TP=8, with SGLang's overlap scheduler off, on a mostly prefill workload. On TinyLlama, tags alone cost 1.6%.
+
+Faster servers, a decode-heavy workload with tags alone, and the overlap scheduler are still to measure (§8).
+
+**When is a plain retry enough?** When the damage is near the end of the prompt, a retry that keeps the clean prefix recomputes little, and costs about as much as KVMend's repair (§7.5).
+
+KVMend's repair pays off when the damage is early in a long prompt. In §7.4, with damage at token 1,030 of 32,768, KVMend added 0.93 s and abort and retry 15.86 s; keeping the first 1,024 tokens cached would save the retry about 3%.
+
+**What does deploying it take?** A patch on every path that writes or frees KV in the engine: the store path, loads from host memory, eviction and rollback. A writer that skips its tags causes false alarms, so each new path needs a test.
+
+A first deployment can run the tags and checks alone, and add repair, the guard and parity later. Operators also need an alert for each detection and a limit on repeated repairs of one slot (§4.6).
+
+## 10 Timeline
+
+Table 18 gives an eight-week plan, to be adjusted to the course deadline.
 
 The proof of concept of §7 already covers much of weeks 1–5: fused tags with generations, fences and token keys; XOR parity; recompute and rebuild in place; the release rule with a one-launch check.
 
 What remains in those weeks: checks on read inside attention, Reed–Solomon parity, partial loads, damaged parity or tags, and the 32B setup.
 
-*Table 17. Eight-week plan.*
+*Table 18. Eight-week plan.*
 
 | Week | Work                                                                                                                                            | Output                                        |
 | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
