@@ -13,6 +13,9 @@ It changes these places and nothing else:
   gives the new device pages those tags before the load thread copies a byte, MHATokenToKVPoolHost
   .load_to_device_per_layer checks each loaded layer on arrival (before the forward reads it) and copies a piece that
   fails again from the host copy, and HostKVCache.free drops the records of freed host pages.
+- with KVMEND_CHECK_IN_ATTN=1, TritonAttnBackend's decode attention: copies of its stage-1 kernels also add up the tag
+  of every piece they read (kvmend/attn_check.py), and after every decode step, before SGLang frees what finished
+  requests held, the scheduler compares those sums with the stored tags (checks on read).
 
 Every tensor-parallel rank runs the actions at the same point of the same iteration, so their collectives line up.
 The plan (KVMEND_PLAN) maps a request id to actions, each due when the request has produced `at` output tokens:
@@ -77,6 +80,11 @@ ON_FAIL_DEFAULT = os.environ.get("KVMEND_ON_FAIL", "mend")
 if ON_FAIL_DEFAULT not in ON_FAIL_ACTIONS:
     raise ValueError(f"KVMEND_ON_FAIL must be one of {ON_FAIL_ACTIONS}, not {ON_FAIL_DEFAULT!r}")
 LOAD_CHECK_ON = os.environ.get("KVMEND_LOAD_CHECK", "1") == "1"  # HiCache: check loaded pages on arrival
+# Checks on read: the decode attention kernel adds up the tags of the pieces it reads (kvmend/attn_check.py). With
+# KVMEND_ATTN_RELOAD=1 the kernel reads the words again from memory instead of reusing the attention's tiles.
+CHECK_IN_ATTN = os.environ.get("KVMEND_CHECK_IN_ATTN", "0") == "1"
+ATTN_RELOAD = os.environ.get("KVMEND_ATTN_RELOAD", "0") == "1"
+ATTN_LOG_MAX = int(os.environ.get("KVMEND_ATTN_LOG_MAX", "200"))  # attn_found lines per flush; later ones are counted
 _FB = [None]  # the forward batch whose attention layers run now (RadixAttention.forward sets it)
 _STATES = []  # the pool states of this process (one per KV pool), for patches that have no scheduler at hand
 
@@ -143,6 +151,10 @@ class PoolState:
         self.fused = FUSED_ON and self.device.type == "cuda"
         if self.fused:
             self.use_fused()
+        self.attn = None        # the check on read inside the decode attention (attn_check.AttnCheck)
+        self.attn_found = []    # [(step, rank, layer, page, reason)] that check found, this rank, since the last flush
+        if CHECK_IN_ATTN and TAGS_ON and self.device.type == "cuda":
+            self.use_attn_check()
         self.step = 0
         self.last_good = None
         # background work (overhead benchmark): the same settings and step count on every rank
@@ -161,6 +173,12 @@ class PoolState:
         self.fused, self.kern = True, tag_kernels
         self.kptrs = torch.tensor([b.data_ptr() for b in self.pool.k_buffer], dtype=torch.int64, device=self.device)
         self.vptrs = torch.tensor([b.data_ptr() for b in self.pool.v_buffer], dtype=torch.int64, device=self.device)
+
+    def use_attn_check(self, reuse=None):
+        """Checks on read: accumulators for the decode attention's tag sums, allocated once, before SGLang captures
+        its CUDA graphs. reuse: form the words from the attention's own tiles (default: unless KVMEND_ATTN_RELOAD)."""
+        from kvmend import attn_check
+        self.attn = attn_check.AttnCheck(self, reuse=not ATTN_RELOAD if reuse is None else reuse)
 
     # Views of one layer: pages as [pages, PAGE, heads, dim]
     def kp(self, layer):
@@ -204,6 +222,9 @@ class PoolState:
             self.hrec.valid.zero_()
         self.src_slot.fill_(-1)
         self.partial = self.partial_target = self.load_batch = None
+        if self.attn is not None:
+            self.attn.reset()
+        self.attn_found = []
 
     def drop(self, pages: torch.Tensor):
         """Freed pages lose their tags and parity, and start a new generation: a late write that still carries the
@@ -1674,6 +1695,76 @@ def held_back(st, reqs):
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# Checks on read inside the decode attention (KVMEND_CHECK_IN_ATTN=1)
+
+def attn_verdict(st, sched, batch):
+    """After a decode step, before SGLang frees the KV of the requests that finished in it: compare what the step's
+    attention read with the stored tags and coverage (attn_check.AttnCheck.verdict), record this rank's failures as
+    _reader_failures does, (rank, layer, page, reason), and zero the accumulators. The record's step is this
+    scheduler iteration's (on_step increments st.step later in the same iteration). Waits for the GPU once."""
+    t0 = time.perf_counter()
+    found, read, layout = st.attn.verdict()
+    me = sched.tp_rank
+    fails = [(me, l, p, why) for l, p, why in found] + ([(me, -1, -1, "layout")] if layout else [])
+    st.attn.stats["seconds"] += time.perf_counter() - t0
+    if not fails:
+        return fails
+    step = st.step + 1
+    st.attn_found += [(step,) + f for f in fails]
+    del st.attn_found[:-10000]  # keep the newest
+    if st.attn.stats["logged"] < ATTN_LOG_MAX:
+        st.attn.stats["logged"] += 1
+        _log(sched, dict(op="attn_found", step=step, t0=time.time(), pieces_read=read, layout_anomalies=layout,
+                         found_pieces=len(fails), found=fails[:64], summary=_summary(fails),
+                         rids=_readers_of(st, sched, batch, {p for _, _, p, _ in fails if p >= 0})))
+    return fails
+
+
+def _readers_of(st, sched, batch, pages):
+    """The requests of the batch whose KV includes one of `pages` (for the log only; None if it cannot tell)."""
+    if not pages:
+        return []
+    try:
+        want = torch.tensor(sorted(pages), dtype=torch.int64, device=st.device)
+        out = []
+        for req in batch.reqs:
+            n = len(req.origin_input_ids) + len(req.output_ids)  # what the step read: the new token's KV included
+            slots = sched.req_to_token_pool.req_to_token[req.req_pool_idx, :n].to(torch.int64)
+            if bool(torch.isin(torch.div(slots, PAGE, rounding_mode="floor"), want).any()):
+                out.append(req.rid)
+        return out
+    except Exception:
+        return None
+
+
+def _attn_target(q, k_buffer, v_buffer):
+    """The pool state and layer whose KV buffers these are, if the check on read covers them; else None."""
+    for st in reversed(_STATES):
+        if st.attn is not None and k_buffer.data_ptr() in st.attn.layer_of:
+            layer = st.attn.target(q, k_buffer, v_buffer)
+            return None if layer is None else (st, layer)
+    return None
+
+
+def _attn_decode(orig):
+    """TritonAttnBackend.decode_attention_fwd with the check on read for the KV pools KVMend watches. It runs at
+    capture time inside CUDA graphs: it only launches kernels on fixed buffers."""
+    def decode_attention_fwd(q, k_buffer, v_buffer, o, kv_indptr, kv_indices, attn_logits, attn_lse, num_kv_splits,
+                             max_kv_splits, sm_scale, logit_cap=0.0, sinks=None, xai_temperature_len=-1):
+        hit = _attn_target(q, k_buffer, v_buffer)
+        if hit is None:
+            return orig(q, k_buffer, v_buffer, o, kv_indptr, kv_indices, attn_logits, attn_lse, num_kv_splits,
+                        max_kv_splits, sm_scale, logit_cap=logit_cap, sinks=sinks,
+                        xai_temperature_len=xai_temperature_len)
+        st, layer = hit
+        st.attn.decode(layer, q, k_buffer, v_buffer, o, kv_indptr, kv_indices, attn_logits, attn_lse, num_kv_splits,
+                       max_kv_splits, sm_scale, logit_cap=logit_cap, sinks=sinks,
+                       xai_temperature_len=xai_temperature_len)
+
+    return decode_attention_fwd
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # Background work for the overhead benchmark
 
 def scrub_slice(st, sched, n):
@@ -1880,6 +1971,15 @@ def patch_scheduler(mod):
     orig_result, orig_idle, orig_flush = cls.process_batch_result, cls.self_check_during_idle, cls.flush_cache
 
     def process_batch_result(self, batch, result, *args, **kwargs):
+        st = _state(self)
+        if st is not None and st.attn is not None and batch.forward_mode.is_decode():
+            # Checks on read: before SGLang's own processing, which frees the tail pages of finished requests (and
+            # with them their tags), so every page this step read still holds the tag it was read against.
+            try:
+                attn_verdict(st, self, batch)
+            except Exception:
+                _log(self, dict(op="error", trace=traceback.format_exc()), now=True)
+                raise
         out = orig_result(self, batch, result, *args, **kwargs)
         try:
             if PLAN.items and batch.forward_mode.is_extend():
@@ -1911,6 +2011,9 @@ def patch_scheduler(mod):
                 _log(self, dict(op="periodic", label=st.ctrl.get("label", ""), tags=TAGS_ON,
                                 encode_every=st.ctrl["encode_every"], scrub_pieces_per_step=st.ctrl["scrub_pieces"],
                                 piece_bytes=st.piece_bytes(), pool_pages=st.pages - 1, layers=st.layers, **st.stats))
+            if st.attn is not None and st.attn.stats["steps"]:
+                _log(self, dict(op="attn_check", label=st.ctrl.get("label", ""), reuse=st.attn.reuse,
+                                unsupported=dict(st.attn.unsupported), piece_bytes=st.piece_bytes(), **st.attn.stats))
             st.reset()
             _read_ctrl(st)
         _flush_log(self)
@@ -2031,6 +2134,25 @@ def patch_memory_pool_host(mod):
     cls.load_to_device_per_layer, base.free = load_to_device_per_layer, free
 
 
+def patch_triton_backend(mod):
+    """Checks on read (KVMEND_CHECK_IN_ATTN=1): each TritonAttnBackend's decode attention also adds up the tags of the
+    pieces it reads. SGLang's forward_decode stores the new token's K and V, then calls self.decode_attention_fwd,
+    which __init__ sets; the patch wraps that attribute, so forward_decode itself is SGLang's. A backend with sliding
+    windows reads part of a page, which the coverage test would flag, so it keeps SGLang's kernel."""
+    if not CHECK_IN_ATTN:
+        return
+    cls = mod.TritonAttnBackend
+    orig_init = cls.__init__
+
+    def __init__(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        window = getattr(self, "sliding_window_size", None)
+        if window is None or window <= 0:
+            self.decode_attention_fwd = torch.compiler.disable(_attn_decode(self.decode_attention_fwd))
+
+    cls.__init__ = __init__
+
+
 PATCHES = {
     "sglang.srt.mem_cache.memory_pool": patch_memory_pool,
     "sglang.srt.mem_cache.allocator": patch_allocator,
@@ -2040,4 +2162,5 @@ PATCHES = {
     "sglang.srt.managers.schedule_batch": patch_schedule_batch,
     "sglang.srt.managers.cache_controller": patch_cache_controller,
     "sglang.srt.mem_cache.memory_pool_host": patch_memory_pool_host,
+    "sglang.srt.layers.attention.triton_backend": patch_triton_backend,
 }

@@ -18,9 +18,11 @@
 #                    fast release, strict release and abort-and-retry, with and without the four faults
 #   checker          bench_checker.py on the job's first GPU
 #   overhead         bench_overhead.py, modes $OVERHEAD_MODES, then the decode-heavy workload, modes $DECODE_MODES
+#   attn             checks on read: bench_overhead.py on the decode-heavy workload, modes $ATTN_MODES, in $RUN/attn;
+#                    the attn modes exit 3 unless their self-check passes (no false alarm, the probe found)
 # Environment: MODEL TP PROMPT_LEN [MAX_TOTAL] [LOCAL_MODEL LOCAL_PROMPT_LEN] [BURST_SIZES BURST_PROMPT_LEN]
 #              [LOAD_SHARED LOAD_CLEAN_RUNS] [RELEASE_KIND RELEASE_LATE_AT] [OVERHEAD_MODES DECODE_MODES]
-#              [EARLY_POS EARLY_PAGES] [COMMIT: the local git commit the copied files match]
+#              [ATTN_MODES] [EARLY_POS EARLY_PAGES] [COMMIT: the local git commit the copied files match]
 #              [REQUIRE_OK_FROM] [LOCAL_PAGES] [HICACHE_PROMPT_LEN HICACHE_PAGES HICACHE_MODE]
 #              [ARRIVALS_SHARED ARRIVALS_REQUESTS ARRIVALS_RATE ARRIVALS_SEED ARRIVALS_EVERY ARRIVALS_REPLAYS]
 # Each step that exits 0 is listed in $RUN/steps_ok. With REQUIRE_OK_FROM=<an earlier run folder>, a step other than
@@ -35,7 +37,8 @@ mkdir -p "$RUN" "$ROOT/.cache"
 export TRITON_CACHE_DIR=$ROOT/.cache/triton XDG_CACHE_HOME=$ROOT/.cache TORCH_EXTENSIONS_DIR=$ROOT/.cache/torch_ext
 export HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
 unset PYTHONPATH KVMEND_ENABLE KVMEND_PLAN KVMEND_TAGS KVMEND_CTRL KVMEND_ENCODE_EVERY KVMEND_SCRUB_PIECES KVMEND_FENCE \
-  KVMEND_FUSED KVMEND_STRICT KVMEND_STRICT_EVERY KVMEND_STRIPE KVMEND_ON_FAIL KVMEND_LOAD_CHECK
+  KVMEND_FUSED KVMEND_STRICT KVMEND_STRICT_EVERY KVMEND_STRIPE KVMEND_ON_FAIL KVMEND_LOAD_CHECK KVMEND_CHECK_IN_ATTN \
+  KVMEND_ATTN_RELOAD KVMEND_ATTN_LOG_MAX
 MAX_TOTAL=${MAX_TOTAL:-65536}
 FIRST_GPU=$(echo "${CUDA_VISIBLE_DEVICES:-0}" | cut -d, -f1)
 
@@ -70,7 +73,7 @@ for S in $STEPS; do
       step tests 420 1 env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 $PY -m pytest -v -p no:cacheprovider \
         -o faulthandler_timeout=150 --durations=0 tests || { echo "== CPU tests failed: stopping"; exit 2; } ;;
     gputests)
-      step gputests 300 0 $PY -m pytest -v -p no:cacheprovider tests_gpu ;;
+      step gputests 600 0 $PY -m pytest -v -p no:cacheprovider --durations=0 tests_gpu ;;
     incident)
       step incident 1200 1 $PY run_incident.py --model "$MODEL" --tp "$TP" --prompt-len "$PROMPT_LEN" \
         --max-total-tokens "$MAX_TOTAL" --require-pass --out "$RUN/incident" ;;
@@ -116,6 +119,14 @@ for S in $STEPS; do
       done
       step decode:report 120 0 $PY bench_overhead.py --report --out "$RUN/decode" || OK=0
       if [ $OK = 1 ]; then echo overhead >> "$RUN/steps_ok"; fi ;;
+    attn)
+      OK=1
+      for M in ${ATTN_MODES:-plain tags_fused attn attn_reload}; do
+        step "attn:$M" 900 0 $PY bench_overhead.py --model "$MODEL" --tp "$TP" --mode "$M" --repeats 3 \
+          --scrub 0 --requests 32 --prompt-len 128 --max-new 512 --out "$RUN/attn" || OK=0
+      done
+      step attn:report 120 0 $PY bench_overhead.py --report --out "$RUN/attn" || OK=0
+      if [ $OK = 1 ]; then echo attn >> "$RUN/steps_ok"; fi ;;
     *) echo "== unknown step $S" ;;
   esac
 done

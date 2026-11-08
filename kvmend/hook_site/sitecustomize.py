@@ -8,8 +8,8 @@ if os.environ.get("KVMEND_ENABLE") == "1":
 
     _TARGETS = ("sglang.srt.mem_cache.memory_pool", "sglang.srt.mem_cache.allocator", "sglang.srt.managers.scheduler",
                 "sglang.srt.layers.radix_attention", "sglang.srt.mem_cache.radix_cache",
-                "sglang.srt.managers.schedule_batch", "sglang.srt.managers.cache_controller",
-                "sglang.srt.mem_cache.memory_pool_host")
+                 "sglang.srt.managers.schedule_batch", "sglang.srt.managers.cache_controller",
+                 "sglang.srt.mem_cache.memory_pool_host", "sglang.srt.layers.attention.triton_backend")
 
     class _KVMendFinder(importlib.abc.MetaPathFinder):
         def find_spec(self, name, path, target=None):
