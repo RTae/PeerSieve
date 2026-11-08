@@ -41,3 +41,10 @@ Owner replies, quoted exactly, with the row text of the question each one answer
   - "34 a". Decision 34, option a: commit the four changed files (kvmend/hook.py, run_incident.py, tests/test_incident_gloo.py, slurm/suite.sh) as one commit, "Add a fair retry, damaged tags and parity, and a damage position to the incident test"; the runs name that commit.
   - Next free number: 35.
 - 2026-11-08 12:58 CST. OWNER: "a". Decision 37 (the decision my last message laid out; 35 and 36 were also open), option a: commit proposal/PROPOSAL.md and kvmend/decisions.md as one commit, "Answer 'why not something simpler?' in the proposal". Next free number: 38.
+- 2026-11-08 13:38 CST. OWNER: "35 a, 36 a, 38 a, 39 keep".
+  - "35 a". Decision 35, option a: commit the incident test's change (19 lines in run_incident.py) as one commit, "Give the fair retry a fault-free control on its own path"; the rerun names that commit.
+  - "36 a". Decision 36, option a: copy the fixed incident test and resubmit the open-parts chain: a 2-GPU TinyLlama check (at most 25 minutes, 0.83 GPU-hours), chained to it, only if its incident test passes, the 8-GPU Llama-3.1-8B run with damage at the end of the prompt and at page 64, each with the fair retry and damaged tags and parity (at most 45 minutes, 6.0 GPU-hours); total at most 6.8 GPU-hours, about 4 expected.
+  - "38 a". Decision 38, option a: rewrite the message of commit 77cc09c to list only what it holds (local only; no remote).
+  - "39 keep". Decision 39: the open parts not built yet (checks inside the attention kernel, loads from host memory that land on only some GPUs, requests that arrive over time); suggestion: keep them in the proposal as planned evaluation work.
+  - Next free number: 40.
+- 2026-11-08 13:38 CST. OWNER (mid-turn message): "39 i change my mind we can do it now". Decision 39: the open parts not built yet (checks inside the attention kernel, loads from host memory that land on only some GPUs, requests that arrive over time); this replaces the earlier "39 keep".
