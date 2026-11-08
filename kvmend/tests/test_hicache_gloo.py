@@ -414,3 +414,136 @@ def test_offload_waits_for_the_trees_backups_then_evicts_the_device_copy():
 def test_offload_without_hierarchical_cache_does_nothing():
     rec = hook.act_offload(None, types.SimpleNamespace(tree_cache=types.SimpleNamespace()), {}, None)
     assert rec == dict(offloaded=False, reason="no hierarchical cache")
+
+
+class _Node:  # a node of SGLang's radix tree: its tokens, its device slots, its host slots (HiCache), its locks
+    def __init__(self, nid, key, value, host_value, parent):
+        self.id, self.key, self.value, self.host_value, self.parent = nid, key, value, host_value, parent
+        self.children, self.lock_ref = {}, 0
+        if parent is not None:
+            parent.children[tuple(key[:PAGE])] = self
+
+
+class _Tree:
+    """The parts of SGLang 0.5.1's RadixCache, and with hicache of its HiRadixCache, that a rollback touches, with the
+    same lock and size accounting."""
+
+    def __init__(self, hicache, freed, host_freed):
+        self.root_node, self.evictable_size_, self.ongoing_write_through = _Node(0, [], None, None, None), 0, {}
+        self.token_to_kv_pool_allocator = types.SimpleNamespace(free=lambda idx: freed.append(idx.clone()))
+        if hicache:
+            self.cache_controller = types.SimpleNamespace(
+                ack_write_queue=queue.Queue(),
+                mem_pool_host=types.SimpleNamespace(free=lambda idx: host_freed.append(idx.clone())),
+                evict_device=lambda dev, host: (freed.append(dev.clone()), len(dev))[1])
+
+    def add(self, nid, key, value, host_value, parent):
+        node = _Node(nid, key, value, host_value, parent)
+        self.evictable_size_ += len(value) if value is not None else 0
+        return node
+
+    def inc_lock_ref(self, node):
+        while node is not self.root_node:
+            if node.lock_ref == 0:
+                self.evictable_size_ -= len(node.key)
+            node.lock_ref += 1
+            node = node.parent
+
+    def dec_lock_ref(self, node):
+        while node is not self.root_node:
+            if node.lock_ref == 1:
+                self.evictable_size_ += len(node.key)
+            node.lock_ref -= 1
+            node = node.parent
+
+    def _delete_leaf(self, node):
+        for k, v in node.parent.children.items():
+            if v is node:
+                break
+        del node.parent.children[k]
+        self.evictable_size_ -= len(node.key)
+
+    def _evict_backuped(self, node):
+        n = self.cache_controller.evict_device(node.value, node.host_value)
+        self.evictable_size_ -= n
+        node.value = None
+        return n
+
+    def writing_check(self):  # releases the nodes whose backups landed
+        q = self.cache_controller.ack_write_queue
+        for _ in range(q.qsize()):
+            self.dec_lock_ref(self.ongoing_write_through.pop(q.get()))
+
+
+def _slots(*pages):
+    return torch.cat([torch.arange(p * PAGE, (p + 1) * PAGE) for p in pages])
+
+
+def _rolled_back_prefill(case):
+    """Request R loaded tokens 0-31 (pages 1-2) from host memory, and its prefill computed tokens 32-47 into page 3
+    from them, after the load struck. SGLang cached that prefill right after it (cache_unfinished_req), before any
+    check ran. case "adopted": a fill request had cached tokens 32-47 too, evicted since with a clean host copy, so
+    SGLang's insert gave R's page to that node (job 326443's case); "no_host": a plain radix cache, which made a new
+    node; "new_backup": HiCache made a new node and backed it up from R's page (the backup has landed, not yet
+    released). R's reader check then found the damage, and R is rolled back from its prefill."""
+    pool = types.SimpleNamespace(page_size=PAGE, start_layer=0,
+                                 k_buffer=[torch.zeros(POOL_PAGES * PAGE, HEADS, DIM, dtype=torch.bfloat16)],
+                                 v_buffer=[torch.zeros(POOL_PAGES * PAGE, HEADS, DIM, dtype=torch.bfloat16)])
+    st = hook.PoolState(pool)
+    st.reset()
+    st.wstep[torch.tensor([1, 2])] = 3  # written by the fill request at step 3 (the load restored that step)
+    st.wstep[3] = 7  # R's prefill, at step 7
+    st.hrec = hook.HostRecord(st, HOST_PAGES * PAGE)
+    st.hrec.valid[torch.tensor([3, 4, 5, 6])] = True
+    st.hrec.wstep[torch.tensor([3, 4, 5])] = 3  # the fill's backups
+    st.hrec.wstep[6] = 7  # a backup made from R's page 3
+    freed, host_freed = [], []
+    tree = _Tree(case != "no_host", freed, host_freed)
+    a = tree.add(1, list(range(32)), _slots(1, 2), _slots(3, 4) if case != "no_host" else None, tree.root_node)
+    b = tree.add(2, list(range(32, 48)), _slots(3), {"adopted": _slots(5), "new_backup": _slots(6)}.get(case), a)
+    tree.inc_lock_ref(a)  # load_back's lock, released when the load is acknowledged
+    tree.inc_lock_ref(b)  # R's own lock on its last node
+    if case == "new_backup":
+        tree.inc_lock_ref(b)  # the backup's lock
+        tree.ongoing_write_through[b.id] = b
+        tree.cache_controller.ack_write_queue.put(b.id)
+    calls = {}
+    req = types.SimpleNamespace(rid="R", req_pool_idx=0, fill_ids=list(range(48)), extend_input_len=16,
+                                prefix_indices=list(range(48)), last_node=b, output_ids=[9], send_token_offset=0,
+                                reset_for_retract=lambda: calls.setdefault("reset", True))
+    prefill = types.SimpleNamespace(reqs=[req], seq_lens=torch.tensor([48]),
+                                    forward_mode=types.SimpleNamespace(is_extend=lambda: True),
+                                    filter_batch=lambda keep_indices: calls.setdefault("kept", keep_indices))
+    row = torch.cat([_slots(1, 2, 3), torch.zeros(208, dtype=torch.int64)]).view(1, 256)
+    sched = types.SimpleNamespace(
+        page_size=PAGE, running_batch=types.SimpleNamespace(reqs=[]), cur_batch=prefill, tree_cache=tree,
+        token_to_kv_pool_allocator=tree.token_to_kv_pool_allocator,
+        req_to_token_pool=types.SimpleNamespace(req_to_token=row, free=lambda i: calls.setdefault("slot", i)),
+        _extend_requests_to_queue=lambda reqs, is_retracted: calls.setdefault("queued", (len(reqs), is_retracted)))
+    rec = hook.act_retract(st, sched, dict(keep=0, from_prefill=True), req)
+    return rec, tree, a, b, freed, host_freed, calls, req
+
+
+def test_a_rollback_from_the_prefill_drops_what_the_prefill_cached():
+    """Everything the prefill computed after the damage struck is suspect: R goes back to the prefix it loaded (32),
+    and its page 3 leaves the prefix cache. Kept on the GPU, it would serve R's second prefill: SGLang's insert would
+    free the page that prefill computes and point R at the cached one, computed from the damage (job 326443)."""
+    for case in ("adopted", "no_host", "new_backup"):
+        rec, tree, a, b, freed, host_freed, calls, req = _rolled_back_prefill(case)
+        assert rec["retracted"] and (rec["kept_prefix"], rec["freed_tokens"]) == (32, 16), (case, rec)
+        assert rec["regenerated"] == 1 and req.output_ids == [] and calls["queued"] == (1, True), case
+        dropped = [x for x in freed if x.numel()]
+        assert len(dropped) == 1 and torch.equal(dropped[0], _slots(3)), (case, freed)  # page 3, from the cache
+        assert a.value is not None and torch.equal(a.value, _slots(1, 2)) and a.lock_ref == 1, case  # the load stays
+        d = rec["dropped_from_cache"]
+        if case == "adopted":  # the node keeps the fill's clean host copy; the next prefill's page replaces R's
+            assert b.value is None and torch.equal(b.host_value, _slots(5)) and a.children == {tuple(range(32, 48)): b}
+            assert host_freed == [] and d == dict(nodes=1, device_tokens=16, host_tokens=0, host_kept_tokens=16,
+                                                  locked_tokens=0)
+        else:  # no clean host copy: the node goes, and a host copy made from R's page goes with it
+            assert a.children == {}, case
+            assert [x.tolist() for x in host_freed] == ([_slots(6).tolist()] if case == "new_backup" else []), case
+            assert d == dict(nodes=1, device_tokens=16, host_tokens=16 if case == "new_backup" else 0,
+                             host_kept_tokens=0, locked_tokens=0), (case, d)
+            assert tree.ongoing_write_through == {}, case
+        assert tree.evictable_size_ == 0, (case, tree.evictable_size_)  # a is still locked by the load

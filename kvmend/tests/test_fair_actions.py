@@ -47,6 +47,7 @@ def test_rollback_right_after_the_prefill_takes_the_request_out_of_the_current_b
     """A request that has just finished its prefill is only in the current batch: only from_prefill rolls it back,
     and then it leaves that batch (which the scheduler would merge into the running batch) and is queued again."""
     req = _req(1)
+    req.fill_ids, req.extend_input_len = list(range(20)), 4  # its prefill computed tokens 16-19; nothing was cached
     sched, calls = _sched_with(req)
     prefill = types.SimpleNamespace(reqs=[req], seq_lens=torch.tensor([20]), forward_mode=types.SimpleNamespace(
         is_extend=lambda: True), filter_batch=lambda keep_indices: calls.setdefault("prefill_kept", keep_indices))
