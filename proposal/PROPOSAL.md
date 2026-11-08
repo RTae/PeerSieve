@@ -28,6 +28,8 @@ A page never written early in the prompt cost about as much as that retry, 8.96 
 
 On one A100, keeping its tags cost 1.5% of Llama-3.1-8B's fault-free throughput, and 3.2% on decode-heavy work. Checking them inside decode attention cost at most 1.2% more, on 8 GPUs.
 
+Such a check found a late write at the next decode step and repaired it in 89 ms on Llama-3.1-8B; with the check only logging, the text went wrong.
+
 With the guard, a streaming client received none of the 78 wrong tokens that a server with no checks sent. With 64 requests arriving over time and four faults, 56 outputs were right, against 36 with no checks.
 
 ## 1 Introduction
@@ -640,17 +642,17 @@ Figure 11 plots the expected work per repair and the expected scrub trade-off, a
 
 *Table 9. Hypotheses and expected results.*
 
-| #  | Part                 | Hypothesis                                         | Expected result and basis                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| -- | -------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| H1 | watch                | The checks find every injected change              | damage to pieces that running requests read found at the next read; idle pieces within one scrub pass or before reuse; stale writes, reads after free, misplaced and never-written pages caught before use; proof of concept: three of the incident's four kinds found, and the fourth dropped by a fence modelled in the test, where the scrub alone found one (§7.5); checks on read in decode attention found a probe's bit flip at the next step (§7.3); a load from host memory that missed one GPU found on arrival (§7.10); with requests arriving over time, every unfenced fault found (§7.9)                                   |
-| H2 | mend (parity option) | With parity, a rebuild is exact                    | every single-GPU fault rebuilt bit for bit against the fault-free copy, reading 64 KiB; proof of concept: bit for bit across GPUs, reading 64 KiB (§7.2), from a stripe within one GPU (§7.5), and for every burst of §7.7                                                                                                                                                                                                                                                                                                                                                                                                               |
-| H3 | mend                 | KVMend recomputes far fewer tokens than re-prefill | 56 tokens instead of 32,808 in the running example (40 with parity), and 16 when caught before reuse; the last-good-check bound gives most of the saving; proof of concept: 41 instead of 32,809, with the window set by the test (§7.2); with a late write at page 64 on every GPU, 16 recomputed and 40 regenerated, about 12 times faster than a retry that keeps the clean prefix; a page never written in the first prompt chunk cost nearly as much as that retry, since the later chunks are recomputed too (§7.5)                                                                                                                |
-| H4 | mend                 | Damage on every GPU needs no abort                 | the page's 16 tokens and the suspect tokens are recomputed: 56 in the example; proof of concept: four pages damaged on every GPU repaired with no abort, and the right text (§7.5)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| H5 | mend                 | The repair set follows detection latency           | one step of tokens per reader with checks on read; with the scrub alone, in proportion to the pass time (Figure 11b); proof of concept: checks on read found a probe's bit flip at the next decode step, but do not yet start the repair (§7.3)                                                                                                                                                                                                                                                                                                                                                                                          |
-| H6 | timing               | Lazy repair saves work                             | pieces whose owners finish before their next read are never repaired; the share is measured per workload                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| H7 | cost                 | Protection is cheap                                | targets: tags within 3% of plain SGLang's fault-free throughput, and KVMend with parity within 3% of parity alone; proof of concept on 8B: fused tags alone cost 1.5% on one A100, and 3.2% on a decode-heavy workload, just above the target; at TP=8, 0.3%, and less than plain SGLang varies between runs when the two took turns; checks on read within 1.2% of tags alone; KVMend with parity +0.2% against parity alone on the mixed workload, −1.8% on a decode-heavy one (§7.3)                                                                                                                                                  |
-| H8 | mend (parity option) | Parity pays off for bursts                         | 100 damaged pieces rebuilt by reading 6.25 MiB, instead of recomputing their pages' 1,600 tokens (1,640 with the suspect tokens, Table 5); proof of concept: on 8B at TP=8 a rebuild beat recompute at every size tried, 1 to 1,024 pieces, by 8 to 110 times; on TinyLlama it lost at 512 pieces (§7.7)                                                                                                                                                                                                                                                                                                                                 |
-| H9 | guard                | No unchecked token reaches a strict request's user | with strict release, no unchecked token is released; with checks on read, holding tokens back adds less than one step; proof of concept on both models: strict release sent none of the 78 wrong tokens that a server with no checks streamed; a check costs 0.4–1.1 ms, and checking before every token lengthened 8B's gap between tokens by 12% (§7.6); with 64 requests arriving over time and four faults on 8B, no strict request with a stable text released a wrong token after the damage struck, and 56 of 64 outputs were right, against 36 with no checks; without faults, strict release cost about 7% of throughput (§7.9) |
+| #  | Part                 | Hypothesis                                         | Expected result and basis                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| -- | -------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| H1 | watch                | The checks find every injected change              | damage to pieces that running requests read found at the next read; idle pieces within one scrub pass or before reuse; stale writes, reads after free, misplaced and never-written pages caught before use; proof of concept: three of the incident's four kinds found, and the fourth dropped by a fence modelled in the test, where the scrub alone found one (§7.5); checks on read in decode attention found a probe's bit flip at the next step (§7.3); a load from host memory that missed one GPU found on arrival (§7.10); with requests arriving over time, every unfenced fault found (§7.9)                                                                                                                  |
+| H2 | mend (parity option) | With parity, a rebuild is exact                    | every single-GPU fault rebuilt bit for bit against the fault-free copy, reading 64 KiB; proof of concept: bit for bit across GPUs, reading 64 KiB (§7.2), from a stripe within one GPU (§7.5), and for every burst of §7.7                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| H3 | mend                 | KVMend recomputes far fewer tokens than re-prefill | 56 tokens instead of 32,808 in the running example (40 with parity), and 16 when caught before reuse; the last-good-check bound gives most of the saving; proof of concept: 41 instead of 32,809, with the window set by the test (§7.2); with a late write at page 64 on every GPU, 16 recomputed and 40 regenerated, about 12 times faster than a retry that keeps the clean prefix; a page never written in the first prompt chunk cost nearly as much as that retry, since the later chunks are recomputed too (§7.5)                                                                                                                                                                                               |
+| H4 | mend                 | Damage on every GPU needs no abort                 | the page's 16 tokens and the suspect tokens are recomputed: 56 in the example; proof of concept: four pages damaged on every GPU repaired with no abort, and the right text (§7.5)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| H5 | mend                 | The repair set follows detection latency           | one step of tokens per reader with checks on read; with the scrub alone, in proportion to the pass time (Figure 11b); proof of concept: checks on read found a probe's bit flip at the next decode step, but do not yet start the repair (§7.3)                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| H6 | timing               | Lazy repair saves work                             | pieces whose owners finish before their next read are never repaired; the share is measured per workload                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| H7 | cost                 | Protection is cheap                                | targets: tags within 3% of plain SGLang's fault-free throughput, and KVMend with parity within 3% of parity alone; proof of concept on 8B: fused tags alone cost 1.5% on one A100, and 3.2% on a decode-heavy workload, just above the target; at TP=8, 0.3%, and less than plain SGLang varies between runs when the two took turns; checks on read within 1.2% of tags alone; KVMend with parity +0.2% against parity alone on the mixed workload, −1.8% on a decode-heavy one (§7.3)                                                                                                                                                                                                                                 |
+| H8 | mend (parity option) | Parity pays off for bursts                         | 100 damaged pieces rebuilt by reading 6.25 MiB, instead of recomputing their pages' 1,600 tokens (1,640 with the suspect tokens, Table 5); proof of concept: on 8B at TP=8 a rebuild beat recompute at every size tried, 1 to 1,024 pieces, by 8 to 110 times; on TinyLlama it lost at 512 pieces (§7.7)                                                                                                                                                                                                                                                                                                                                                                                                                |
+| H9 | guard                | No unchecked token reaches a strict request's user | with strict release, no unchecked token is released; with checks on read, holding tokens back adds less than one step, and a failed check withholds that step's token and generates it again (§7.12); proof of concept on both models: strict release sent none of the 78 wrong tokens that a server with no checks streamed; a check costs 0.4–1.1 ms, and checking before every token lengthened 8B's gap between tokens by 12% (§7.6); with 64 requests arriving over time and four faults on 8B, no strict request with a stable text released a wrong token after the damage struck, and 56 of 64 outputs were right, against 36 with no checks; without faults, strict release cost about 7% of throughput (§7.9) |
 
 ## 7 Preliminary Results
 
@@ -684,7 +686,9 @@ It does not yet build a fence in the store path, checks for fast-release request
 
 Nor does it build slot retirement or the repair and watch lists, and its scrub has not yet run at its design rate.
 
-A failed check on read is logged, but it does not yet start a repair or hold tokens back. These checks compare the bytes and their coverage, so another sequence's KV with matching tags is left to the reader's check.
+With the repair setting on, a failed check on read withholds that step's token from every reader of the damaged page, mends the page, and the readers generate the token again (§7.12).
+
+These checks compare the bytes and their coverage, so another sequence's KV with matching tags is left to the reader's check.
 
 Only strict requests are checked as they run. With the setting on, a fast-release request is checked once, right after its prefill; a failure mends its pages and reports that its first token, already sent, may be wrong.
 
@@ -1175,11 +1179,32 @@ Nor does the KV tell the two repairs apart: after either one, the later chunks' 
 
 The proof of concept runs this recompute inside a scheduler step, so any other request in the batch would wait as long (§4.4).
 
-### 7.12 What the results mean for the plan
+### 7.12 Checks on read that repair
+
+A check on read finds damage while attention reads it. With the repair setting on, a failure withholds that step's token from every reader of the damaged page, mends the page, and the readers generate the token again.
+
+We tested two kinds of damage on a 1,536-token prompt: one flipped bit on one GPU, and a late write into four pages on every GPU (Table 22). Each repaired text equals a fault-free run on the same repair path.
+
+*Table 22. Checks on read that repair (1,536-token prompt, 80 output tokens; one run each).*
+
+| Model                  | Damage                | Found                   | Repair                                        | Repair time | With the check only logging              |
+| ---------------------- | --------------------- | ----------------------- | --------------------------------------------- | ----------- | ---------------------------------------- |
+| TinyLlama-1.1B at TP=2 | one bit, one GPU      | at the next decode step | rebuilt from parity                           | 22 ms       |                                          |
+| TinyLlama-1.1B at TP=2 | late write, every GPU | at the next decode step | recomputed 64 tokens; 1 token generated again | 24 ms       | fluent but different text from output 10 |
+| Llama-3.1-8B at TP=8   | one bit, one GPU      | at the next decode step | rebuilt from parity                           | 206 ms      |                                          |
+| Llama-3.1-8B at TP=8   | late write, every GPU | at the next decode step | recomputed 64 tokens; 1 token generated again | 89 ms       | fluent but different text from output 10 |
+
+On both models the late write turned the text wrong from output 10 when the check only logged. With the repair on, the text equalled its fault-free run on the same path.
+
+Every GPU must agree on a finding before the step's tokens are processed, which adds one collective per decode step. Its cost is not yet measured.
+
+### 7.13 What the results mean for the plan
 
 The current version supports H1 for the incident's kinds of damage: the checks found three, each by the part built for it, and the modelled fence dropped the fourth. The scrub alone found one of four.
 
 It also found a load from host memory that missed one GPU, on arrival, and a probe's bit flip at the next decode step, by checks on read inside attention.
+
+With the repair on, a late write that a check on read found was mended at the next decode step, and the text stayed right (§7.12).
 
 It supports H3 and H4 for whole pages damaged on every GPU, with no abort.
 
@@ -1207,13 +1232,13 @@ The results also bound what mending can promise. Without the guard, it repairs t
 
 The chunk rule is costly as well: a page never written early in a 32K-token prompt makes KVMend recompute three quarters of it, and no run has yet shown the wrong text that this prevents (§7.11).
 
-Still open: checks on read that start a repair, and checks in prefill attention; host copies in the cleanup paths of the release rule and the abort rule (§8); and a second engine.
+Still open: checks on read in prefill attention; host copies in the cleanup paths of the release rule and the abort rule (§8); and a second engine.
 
 ## 8 Risks and Threats to Validity
 
-Table 22 lists the main risks and how we handle them.
+Table 23 lists the main risks and how we handle them.
 
-*Table 22. Risks and mitigations.*
+*Table 23. Risks and mitigations.*
 
 | Risk                                                                                                        | Effect                                                                                                                     | Mitigation                                                                                                                                                                                                                                                                |
 | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1237,9 +1262,9 @@ Table 22 lists the main risks and how we handle them.
 
 ## 9 Why not something simpler?
 
-Simpler tools come to mind for silent KV damage. Table 23 sets each against KVMend, and says where the simpler tool is the better choice.
+Simpler tools come to mind for silent KV damage. Table 24 sets each against KVMend, and says where the simpler tool is the better choice.
 
-*Table 23. Simpler alternatives: what each misses, and where it is the better choice.*
+*Table 24. Simpler alternatives: what each misses, and where it is the better choice.*
 
 | Alternative                                                        | What it does well                                                              | What it misses                                                                                                                                                                          | Where it is the better choice                                                                                             |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
@@ -1313,17 +1338,17 @@ Every result so far is on one engine, SGLang 0.5.1. A port to vLLM would need ta
 
 ## 10 Timeline
 
-Table 24 gives an eight-week plan, to be adjusted to the course deadline.
+Table 25 gives an eight-week plan, to be adjusted to the course deadline.
 
 The proof of concept of §7 already covers much of weeks 1–5: fused tags with generations and token keys; a fence modelled in the test; XOR parity; recompute and rebuild in place; the release rule with a one-launch check.
 
 It also covers checks on read in decode attention, checks of loads from host memory, the check right after every prefill with the chunk rule, and abort and retry as a baseline. A first test with requests arriving over time ran too.
 
-What remains in those weeks: checks on read that hold tokens back and start a repair, also in prefill attention; checks before a cached prefix is reused and after risky events; a fence in the store path.
+What remains in those weeks: checks on read in prefill attention; checks before a cached prefix is reused and after risky events; a fence in the store path.
 
 Also: later checks for fast-release requests, Reed–Solomon parity, host copies in the cleanup paths, the scrub at its design rate, and the 32B setup. Weeks 6–8 are still ahead.
 
-*Table 24. Eight-week plan.*
+*Table 25. Eight-week plan.*
 
 | Week | Work                                                                                                                                                       | Output                                        |
 | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
