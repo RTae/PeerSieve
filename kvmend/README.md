@@ -122,7 +122,7 @@ SGLang's hierarchical cache copies KV pages to a host pool (`HiCacheController.w
 - **backup:** the tags, coverage and token keys of each copied page are recorded under its host page (`PoolState.carry_out`);
 - **load:** the new device pages get that record before the load thread copies a byte (`carry_in`), never tags recomputed from the bytes that land;
 - **check on arrival:** in the load thread, each loaded layer is tested against those tags before attention reads it (`load_layer`); a piece that fails is copied again from the host copy, which must then pass;
-- **backstop:** what still fails (a damaged host copy, or a load not checked on arrival) fails the reader's check, and `mend` copies it again from the host copy or recomputes it in place.
+- **backstop:** what still fails (a damaged host copy, or a load not checked on arrival) fails the reader's check, and `mend` copies it again from the host copy or recomputes it in place. The prefill that read the damage is then undone whole (`retract` with `from_prefill`): SGLang cached its pages right after it, so they leave the prefix cache too, or the next prefill of the same tokens would be pointed at them.
 
 `run_hicache.py` evicts the prompt's device copy (op `offload`) and lets a request load it back with one GPU's copy of some pages left as zeros (fault `partial_load`), then compares the text with a fault-free load.
 

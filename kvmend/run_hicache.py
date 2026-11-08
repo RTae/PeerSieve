@@ -144,6 +144,9 @@ def summarize(out, a, res, meta, engine):
         return [x for x in logs if x["op"] == op and rid in x.get("rids", []) and (rank is None or x["rank"] == rank)]
 
     loaded, ref = loaded_tokens(a), res["control_load"]
+
+    def cached(x):  # the prefix a prefill started from; prefix_len is read after SGLang cached that prefill
+        return x.get("cached_prefix", a.prompt_len - x["extend_input_len"])  # R's prefills start from the prompt
     rows, layers = {}, None
     for v in VARIANTS:
         if v not in res:
@@ -164,8 +167,8 @@ def summarize(out, a, res, meta, engine):
             loaded_tokens=issue[0]["tokens"] if issue else 0,
             carried_pages=issue[0].get("carried_pages") if issue else None,
             fault=issue[0].get("fault") if issue else None,
-            prefix_len=extends[0]["prefix_len"] if extends else None,
-            prefills=[dict(prefix_len=x["prefix_len"], tokens=x["extend_input_len"]) for x in extends],
+            cached_prefix=cached(extends[0]) if extends else None,
+            prefills=[dict(cached_prefix=cached(x), tokens=x["extend_input_len"]) for x in extends],
             arrival={str(r): {k: x.get(k) for k in ARRIVAL_KEYS} for r, x in sorted(arrival.items())},
             reader_check=check[0]["found"] if check else None,
             reader_check_seconds=check[0]["seconds"] if check else None,
@@ -176,7 +179,8 @@ def summarize(out, a, res, meta, engine):
                       recopy_failed_pages=m0[0].get("recopy_failed_pages"),
                       still_failing=sum(m.get("still_failing_here", 0) for m in mends),
                       seconds=m0[0].get("mend_seconds")) if m0 and m0[0].get("mended") else None,
-            retract={k: retract[0].get(k) for k in ("retracted", "regenerated", "freed_tokens", "reason")}
+            retract={k: retract[0].get(k) for k in ("retracted", "regenerated", "kept_prefix", "freed_tokens",
+                                                     "dropped_from_cache", "reason")}
             if retract else None,
             equals_control_load=res[v]["ids"] == ref["ids"],
             first_diff_vs_control_load=first_diff(res[v]["ids"], ref["ids"]),
@@ -200,9 +204,9 @@ def summarize(out, a, res, meta, engine):
         "offload_left_the_prompt_in_host_memory_only": all(
             (rows[v]["offload"] or {}).get("host_only_tokens", 0) >= loaded for v in LOADS),
         "every_load_variant_loaded_its_prefix_from_host": all(
-            rows[v]["loaded_tokens"] == loaded and rows[v]["prefix_len"] == loaded for v in LOADS),
+            rows[v]["loaded_tokens"] == loaded and rows[v]["cached_prefix"] == loaded for v in LOADS),
         "control_device_reused_the_gpu_copy": rows["control_device"]["loaded_tokens"] == 0
-        and rows["control_device"]["prefix_len"] == loaded,
+        and rows["control_device"]["cached_prefix"] == loaded,
         "tags_travel_no_false_alarm_after_a_load": rows["control_load"]["carried_pages"] == loaded // PAGE
         and len(rows["control_load"]["arrival"]) == a.tp
         and all(x["checked"] and x["found_pieces"] == 0 and x["uncovered_pieces"] == 0
@@ -226,6 +230,14 @@ def summarize(out, a, res, meta, engine):
         "recompute_path_recomputes_the_struck_pages": bool(rc["mend"]) and rc["mend"]["recomputed_tokens"] == a.pages * PAGE
         and rc["mend"]["recopied_pieces"] == 0 and rc["mend"]["still_failing"] == 0
         and (rc["retract"] or {}).get("regenerated") == 1,
+        # a rollback from the prefill undoes it whole: back to the loaded prefix, the prefill's cached page dropped
+        # (SGLang cached it right after the prefill), and the second prefill computes it again
+        "rollback_recomputes_the_whole_prefill": all(
+            (rows[v]["retract"] or {}).get("kept_prefix") == loaded
+            and (rows[v]["retract"] or {}).get("freed_tokens") == a.prompt_len - loaded
+            and ((rows[v]["retract"] or {}).get("dropped_from_cache") or {}).get("device_tokens") == a.prompt_len - loaded
+            and rows[v]["prefills"][1:] == [dict(cached_prefix=loaded, tokens=a.prompt_len - loaded)]
+            for v in ("kvmend_reader", "kvmend_recompute", "control_recompute")),
         "kvmend_recompute_text_equals_its_control": res["kvmend_recompute"]["ids"] == res["control_recompute"]["ids"],
         "retry_first_attempt_aborted": retry["first"]["finish"] == "abort",
         "retry_text_is_clean": rows["retry"]["equals_clean"],

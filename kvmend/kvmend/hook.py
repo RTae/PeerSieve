@@ -760,25 +760,36 @@ def act_retract(st, sched, a, req):
     tokens that the radix cache does not hold. With only_if_found, only when the last check found damage. With
     from_prefill, a request that has just finished its prefill, and so is still only in the current batch (the
     scheduler merges that batch into the running batch at its next step), is taken out of the current batch instead,
-    which keeps it out of that merge. Without it such a request is left alone (the release rule retries it a step
-    later)."""
+    which keeps it out of that merge, and that prefill is undone whole: the damage struck before it, so everything it
+    computed is suspect. The request goes back to the prefix its prefill started from, and what SGLang cached of the
+    prefill right after it (cache_unfinished_req) leaves the prefix cache (_drop_cached), so the next prefill computes
+    it again. Without from_prefill such a request is left alone (the release rule retries it a step later)."""
     if a.get("only_if_found") and not st.alarm_found:
         return dict(retracted=False, reason="the last check found nothing")
     batch = sched.running_batch
     i = next((j for j, r in enumerate(batch.reqs) if r.rid == req.rid), None)
-    cur = getattr(sched, "cur_batch", None)
+    cur, prefill = getattr(sched, "cur_batch", None), False
     if i is None and a.get("from_prefill") and cur is not None and cur is not batch and cur.forward_mode.is_extend():
-        batch = cur
+        batch, prefill = cur, True
         i = next((j for j, r in enumerate(batch.reqs) if r.rid == req.rid), None)
     if i is None:
         return dict(retracted=False, reason="request is not in the running batch")
     seq_len = int(batch.seq_lens[i].item())
-    start = (len(req.prefix_indices) // sched.page_size) * sched.page_size
-    sched.token_to_kv_pool_allocator.free(sched.req_to_token_pool.req_to_token[req.req_pool_idx, start:seq_len])
+    row = sched.req_to_token_pool.req_to_token[req.req_pool_idx]
+    held = (len(req.prefix_indices) // sched.page_size) * sched.page_size  # held by the prefix cache, the rest by R
+    start = held
+    if prefill:  # the prefix the prefill started from (SGLang has set prefix_indices to all it cached since)
+        start = min(held, max(len(req.fill_ids) - int(req.extend_input_len), 0) // sched.page_size * sched.page_size)
+    cached = (torch.unique(torch.div(row[start:held].to(torch.int64), PAGE, rounding_mode="floor")).tolist()
+              if start < held else [])
+    last = req.last_node
+    sched.token_to_kv_pool_allocator.free(row[held:seq_len])
     sched.req_to_token_pool.free(req.req_pool_idx)
-    sched.tree_cache.dec_lock_ref(req.last_node)
-    req.reset_for_retract()
+    sched.tree_cache.dec_lock_ref(last)
     rec = dict(retracted=True, kept_prefix=start, freed_tokens=seq_len - start, seq_len=seq_len)
+    if prefill:
+        rec["dropped_from_cache"] = _drop_cached(st, sched.tree_cache, cached, last)
+    req.reset_for_retract()
     if "keep" in a:
         # Strict release: output tokens after the last good check were never released, so drop them and let the
         # engine generate them again. Only allowed while no token past `keep` has been sent to the client.
@@ -1245,22 +1256,16 @@ def _tree_nodes(tree):
     return out
 
 
-def act_offload(st, sched, a, req):
-    """Leave the prefix cache's KV in host memory only (HiCache): wait until the backup of every node of the tree that
-    is still being written has landed, let SGLang release those nodes on every GPU together (its writing_check agrees
-    on the count across GPUs), then evict the device copy of every unlocked node. A node with a host copy keeps it,
-    so the next request with that prefix loads it back into new device pages; a node without one is dropped.
-    Only nodes of the current tree are waited for: SGLang's reset (every cache flush) clears the queue of finished
-    backups but not its list of backups in flight, so that list can hold nodes of an earlier tree for ever."""
-    tree = sched.tree_cache
-    ctl = getattr(tree, "cache_controller", None)
-    if ctl is None:
-        return dict(offloaded=False, reason="no hierarchical cache")
+def _settle_backups(tree, timeout=120.0):
+    """HiCache: wait until the backup of every node of the current tree that is still being written has landed, then
+    let SGLang release those nodes on every GPU together (its writing_check agrees on the count across GPUs); called
+    at the same point on every GPU. Only nodes of the current tree are waited for: SGLang's reset (every cache flush)
+    clears the queue of finished backups but not its list of backups in flight, so that list can hold nodes of an
+    earlier tree for ever. Returns the seconds waited, the nodes waited for and those still pending."""
     t0 = time.perf_counter()
-    deadline = t0 + float(a.get("timeout", 120))
     writing = {n.id for n in _tree_nodes(tree) if tree.ongoing_write_through.get(n.id) is n}
-    acks = ctl.ack_write_queue
-    while time.perf_counter() < deadline:
+    acks = tree.cache_controller.ack_write_queue
+    while time.perf_counter() < t0 + timeout:
         with acks.mutex:  # the write thread adds to the queue; read it under its lock
             landed = set(acks.queue)
         if writing <= landed:
@@ -1268,14 +1273,106 @@ def act_offload(st, sched, a, req):
         time.sleep(0.001)
     waited = time.perf_counter() - t0
     tree.writing_check()
-    pending = sum(1 for i in writing if i in tree.ongoing_write_through)
+    return waited, len(writing), sum(1 for i in writing if i in tree.ongoing_write_through)
+
+
+def act_offload(st, sched, a, req):
+    """Leave the prefix cache's KV in host memory only (HiCache): once every backup in flight has landed and SGLang
+    has released those nodes (_settle_backups), evict the device copy of every unlocked node. A node with a host copy
+    keeps it, so the next request with that prefix loads it back into new device pages; a node without one is
+    dropped."""
+    tree = sched.tree_cache
+    if getattr(tree, "cache_controller", None) is None:
+        return dict(offloaded=False, reason="no hierarchical cache")
+    t0 = time.perf_counter()
+    waited, writing, pending = _settle_backups(tree, float(a.get("timeout", 120)))
     before = int(tree.evictable_size())
     tree.evict(before)
     host_only = sum(len(n.host_value) for n in _tree_nodes(tree)  # tokens now held in host memory only
                     if n is not tree.root_node and n.value is None and getattr(n, "host_value", None) is not None)
-    return dict(offloaded=True, waited_s=waited, writes_waited_for=len(writing), pending_writes=pending,
+    return dict(offloaded=True, waited_s=waited, writes_waited_for=writing, pending_writes=pending,
                 evictable_before=before, evictable_after=int(tree.evictable_size()), host_only_tokens=host_only,
                 seconds=time.perf_counter() - t0)
+
+
+def _locked_below(node):
+    return node.lock_ref > 0 or any(_locked_below(c) for c in node.children.values())
+
+
+def _on_gpu_below(node):
+    return any(c.value is not None or _on_gpu_below(c) for c in node.children.values())
+
+
+def _clean_host_copy(st, node):
+    """A node's host copy (HiCache) is clean if its record is valid and older than every device page of the node:
+    it was made before those pages were written, so it does not hold what they hold."""
+    hv = getattr(node, "host_value", None)
+    if hv is None or st is None or st.hrec is None:
+        return False
+    hp, dp = _whole_pages(hv.cpu().to(torch.int64)), _whole_pages(node.value.cpu().to(torch.int64))
+    if hp is None or dp is None or len(hp) != len(dp):
+        return False
+    hp, dp = hp.to(st.device), dp.to(st.device)
+    return bool(st.hrec.valid[hp].all()) and bool((st.hrec.wstep[hp] < st.wstep[dp]).all())
+
+
+def _remove_subtree(tree, node, hicache, out):
+    """A node of the prefix cache and everything below it, leaves first, with their device and host copies."""
+    for child in list(node.children.values()):
+        _remove_subtree(tree, child, hicache, out)
+    on_gpu = node.value is not None
+    if on_gpu:
+        tree.token_to_kv_pool_allocator.free(node.value)
+        out["device_tokens"] += len(node.value)
+    hv = getattr(node, "host_value", None)
+    if hicache and hv is not None:
+        tree.cache_controller.mem_pool_host.free(hv)
+        out["host_tokens"] += len(hv)
+    if on_gpu:
+        tree._delete_leaf(node)  # also leaves the evictable count, as in RadixCache's own eviction
+    else:  # an evicted node is not in the evictable count
+        for k, v in list(node.parent.children.items()):
+            if v is node:
+                del node.parent.children[k]
+
+
+def _drop_cached(st, tree, pages, last_node=None):
+    """Drop from the prefix cache the KV of `pages`: device pages that a rolled-back prefill wrote, and that SGLang
+    cached right after that prefill (cache_unfinished_req), before any check ran. Kept on the GPU, such a page would
+    serve the next prefill of the same tokens: SGLang's insert frees the page that prefill computes and points the
+    request at the cached one. Each node holding one of the pages (on the request's own path when last_node is given)
+    goes once nothing holds it, nor anything below it. A HiCache node whose host copy is clean (_clean_host_copy) and
+    which has nothing on the GPU below it loses only its device copy, as in SGLang's own eviction; the next prefill
+    then computes the KV again, and the node takes that. Any other node goes with everything below it and its host
+    copies, which were made from the dropped pages or on top of them."""
+    out = dict(nodes=0, device_tokens=0, host_tokens=0, host_kept_tokens=0, locked_tokens=0)
+    if not pages or tree is None or not hasattr(tree, "root_node"):
+        return out
+    hicache = getattr(tree, "cache_controller", None) is not None
+    if hicache:
+        _settle_backups(tree)  # a node locked only by its own backup is released once that backup has landed
+    bad = torch.tensor(sorted(pages), dtype=torch.int64)
+    if last_node is not None:  # the request's path, deepest node first
+        nodes, node = [], last_node
+        while node is not None and node is not tree.root_node:
+            nodes.append(node)
+            node = node.parent
+    else:  # the whole tree, children before their parents
+        nodes = list(reversed(_tree_nodes(tree)))
+    for node in nodes:
+        if (node is tree.root_node or node.value is None or not len(node.value) or not bool(torch.isin(
+                torch.div(node.value.cpu().to(torch.int64), PAGE, rounding_mode="floor"), bad).any())):
+            continue
+        if _locked_below(node):
+            out["locked_tokens"] += len(node.value)
+            continue
+        out["nodes"] += 1
+        if hicache and _clean_host_copy(st, node) and not _on_gpu_below(node):
+            out["host_kept_tokens"] += len(node.host_value)
+            out["device_tokens"] += tree._evict_backuped(node)
+        else:
+            _remove_subtree(tree, node, hicache, out)
+    return out
 
 
 def _recopy(st, host, me, items):
@@ -1985,8 +2082,11 @@ def patch_scheduler(mod):
             if PLAN.items and batch.forward_mode.is_extend():
                 for r in batch.reqs:
                     if r.rid in PLAN.items:
+                        # prefix_len is read after SGLang cached the prefill (cache_unfinished_req sets prefix_indices
+                        # to all it cached); cached_prefix is the prefix the prefill started from
                         _log(self, dict(op="extend", rid=r.rid, extend_input_len=int(r.extend_input_len),
                                         prefix_len=len(r.prefix_indices), n_out=len(r.output_ids),
+                                        cached_prefix=len(r.fill_ids) - int(r.extend_input_len),
                                         retracted=bool(getattr(r, "is_retracted", False))))
             on_step(self)
             st = _state(self)
