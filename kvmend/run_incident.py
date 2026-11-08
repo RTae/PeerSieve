@@ -21,6 +21,9 @@ Responses:
   retry_keep_* a fair retry: the same abort, but the prompt before the damaged page stays cached (the tags locate
                the damage), so the resubmitted R recomputes from the damaged page on; its time counts the aborted
                attempt and the resubmission only
+  control_keep no damage, the fair retry's path: the prompt before that page cached, the rest computed on top of
+               it. Two passes are not bit for bit with one, so the fair retry is right when it equals this text or
+               the clean text (a near-tie can flip, as on TinyLlama at output 73)
   kvmend_bad_tag, kvmend_bad_parity   damage to what KVMend keeps, on one GPU in one layer (with parity across the
                GPUs): a stored tag, or the KV with the parity that would rebuild it; the rebuild fails its tag, so the
                pages are recomputed
@@ -101,6 +104,7 @@ def make_plan(a):
         "retry2_unwritten": [],
         "retry2_late": [],
     }
+    plans["control_keep"] = []  # no damage: only the cached prefix differs from the clean run
     plans["retry_keep_unwritten"] = list(plans["retry_unwritten"])  # the fair retry's first attempt: the same abort
     plans["retry_keep_late"] = list(plans["retry_late"])
     for kind in ("bad_tag", "bad_parity"):
@@ -177,6 +181,7 @@ def summarize(out, a, res, meta):
                            retry_seconds=retry["seconds"], retry_extra_s=retry["seconds"] - ref)
         keep = res.get({"unwritten": "retry_keep_unwritten", "late_bypass": "retry_keep_late"}.get(f, ""))
         if keep:
+            rows[f].update(retry_keep_equals_control=("control_keep" in res and keep["ids"] == res["control_keep"]["ids"]))
             rows[f].update(retry_keep_first_finish=keep["first"]["finish"], retry_keep_text_right=keep["ids"] == clean,
                            retry_keep_seconds=keep["seconds"], retry_keep_extra_s=keep["seconds"] - ref,
                            retry_keep_cached_prefix=keep["cached_prefix"])
@@ -193,7 +198,7 @@ def summarize(out, a, res, meta):
         reference_runs={r: res[r]["seconds"] for r in ("clean", "silent_unwritten", "silent_late")},
         controls={c: dict(equals_clean=res[c]["ids"] == clean, first_diff=classify(res[c]["ids"], clean)[1],
                           seconds=res[c]["seconds"])
-                  for c in ("control_mend1", "control_mend41", "control_retract41")},
+                  for c in ("control_mend1", "control_mend41", "control_retract41", "control_keep") if c in res},
         control_recompute=[dict(rank=m["rank"], max_abs_diff=m.get("max_abs_diff_vs_clean"),
                                 bit_equal_share=m.get("bit_equal_share_vs_clean"))
                            for m in every_rank("control_mend1", "mend", at=1)],
@@ -225,7 +230,8 @@ def summarize(out, a, res, meta):
         summary["verdict"].update(
             retry_keep_first_attempt_aborted=all(fr[f]["retry_keep_first_finish"] == "abort"
                                                  for f in ("unwritten", "late_bypass")),
-            retry_keep_final_text_is_clean=all(fr[f]["retry_keep_text_right"] for f in ("unwritten", "late_bypass")))
+            retry_keep_final_text_right=all(fr[f]["retry_keep_text_right"] or fr[f]["retry_keep_equals_control"]
+                                            for f in ("unwritten", "late_bypass")))
     for m in META:
         if m in fr:  # the rebuild from parity fails its tag on the damaged pages, which are then recomputed
             summary["verdict"][f"{m}_rebuild_failed_then_recomputed"] = (
@@ -258,8 +264,8 @@ def incident_md(s):
                   + (f", regenerate {r['regenerated']}" if r["regenerated"] else ""))
         retry = (f"{yes(r.get('retry_text_right'))} | {r['retry_extra_s']:+.2f} s" if "retry_seconds" in r
                  else "not run | ")
-        retry += (f" | {r['retry_keep_extra_s']:+.2f} s (text right: {yes(r['retry_keep_text_right'])})"
-                  if "retry_keep_seconds" in r else " | ")
+        retry += (f" | {r['retry_keep_extra_s']:+.2f} s (text right: {yes(r['retry_keep_text_right'])}, "
+                  f"control: {yes(r['retry_keep_equals_control'])})" if "retry_keep_seconds" in r else " | ")
         lines.append(f"| {f} | {r['silent_outcome']} | {yes(r['scrub_found_pages'])} | "
                      f"{', '.join(reasons) or 'nothing'} | {repair} | {yes(r['kvmend_text_right'])} "
                      f"(control: {yes(r['kvmend_equals_control'])}) | {r['kvmend_extra_s']:+.2f} s | {retry} |")
@@ -343,6 +349,11 @@ def main():
         retry("late")
         retry_keep("unwritten")
         retry_keep("late")
+        flush(engine)  # the fair retry's fault-free control: the same cached prefix, then R on top of it
+        run(engine, prompt[:start], "control_keep_warm", 1, a.variant_timeout)
+        res["control_keep"] = run(engine, prompt, "control_keep", a.max_new, a.variant_timeout)
+        print(f"control_keep         {len(res['control_keep']['ids'])} tokens in {res['control_keep']['seconds']:.2f} s",
+              flush=True)
     finally:
         faulthandler.cancel_dump_traceback_later()
         faulthandler.dump_traceback_later(120, exit=True)
