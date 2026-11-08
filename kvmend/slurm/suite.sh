@@ -1,14 +1,17 @@
 #!/bin/bash
 # Decision 20's tests on octave, one Slurm job: the steps named in STEPS, in this order, each with its own cap.
-# Gates for the job's exit code (what an afterok chain waits for): the CPU tests, the incident test and the HiCache
-# test. Every other step is logged with its exit code and does not stop the job.
+# Gates for the job's exit code (what an afterok chain waits for): the CPU tests, the incident test, the skipped store
+# during the prefill and the HiCache test. Every other step is logged with its exit code and does not stop the job.
 #   tests            CPU tests (one thread per process, at most 7 minutes)
 #   gputests         the fused Triton kernels against the PyTorch tags, in CUDA graphs too
 #   incident         run_incident.py at TP=$TP (the incident's faults; gate)
 #   incident_local   run_incident.py at TP=1 on the job's first GPU with stripes within the GPU ($LOCAL_MODEL)
 #   incident_early   run_incident.py at TP=$TP with the damage early in the prompt ($EARLY_PAGES pages from
 #                    position $EARLY_POS), where KVMend's saving over a retry from the damaged page is largest
-#                    (the three incident steps take R's last good check from $LAST_GOOD: plan, the default, the
+#   incident_prefill run_incident.py --set prefill at TP=$TP: a store skipped during the prefill ($PREFILL_PAGES pages
+#                    from position $PREFILL_POS, the prompt in chunks of $PREFILL_CHUNK tokens): the later chunks read
+#                    the stale pages, and the check after the prefill must recompute them too (gate)
+#                    (the four incident steps take R's last good check from $LAST_GOOD: plan, the default, the
 #                    test's own check after the prefill; hook, KVMend's check after every prefill,
 #                    KVMEND_CHECK_AFTER_PREFILL=all)
 #   hicache          run_hicache.py at TP=$TP: SGLang's hierarchical cache (write_through) backs the prompt up to host
@@ -26,6 +29,7 @@
 # Environment: MODEL TP PROMPT_LEN [MAX_TOTAL] [LOCAL_MODEL LOCAL_PROMPT_LEN] [BURST_SIZES BURST_PROMPT_LEN]
 #              [LOAD_SHARED LOAD_CLEAN_RUNS] [RELEASE_KIND RELEASE_LATE_AT] [OVERHEAD_MODES DECODE_MODES]
 #              [ATTN_MODES] [EARLY_POS EARLY_PAGES] [LAST_GOOD] [COMMIT: the local git commit the copied files match]
+#              [PREFILL_CHUNK PREFILL_POS PREFILL_PAGES]
 #              [REQUIRE_OK_FROM] [LOCAL_PAGES] [HICACHE_PROMPT_LEN HICACHE_PAGES HICACHE_MODE]
 #              [ARRIVALS_SHARED ARRIVALS_REQUESTS ARRIVALS_RATE ARRIVALS_SEED ARRIVALS_EVERY ARRIVALS_REPLAYS]
 # Each step that exits 0 is listed in $RUN/steps_ok. With REQUIRE_OK_FROM=<an earlier run folder>, a step other than
@@ -90,6 +94,11 @@ for S in $STEPS; do
       step incident_early 1500 0 $PY run_incident.py --model "$MODEL" --tp "$TP" --prompt-len "$PROMPT_LEN" \
         --pos "${EARLY_POS:-1024}" --pages "${EARLY_PAGES:-1}" --last-good "$LAST_GOOD" \
         --max-total-tokens "$MAX_TOTAL" --require-pass --out "$RUN/incident_early" ;;
+    incident_prefill)
+      step incident_prefill 1200 1 $PY run_incident.py --set prefill --model "$MODEL" --tp "$TP" \
+        --prompt-len "$PROMPT_LEN" --chunk "${PREFILL_CHUNK:-256}" --pos "${PREFILL_POS:-1024}" \
+        --pages "${PREFILL_PAGES:-1}" --last-good "$LAST_GOOD" --max-total-tokens "$MAX_TOTAL" --require-pass \
+        --out "$RUN/incident_prefill" ;;
     hicache)
       step hicache 1200 1 $PY run_hicache.py --model "$MODEL" --tp "$TP" \
         --prompt-len "${HICACHE_PROMPT_LEN:-$PROMPT_LEN}" --pages "${HICACHE_PAGES:-4}" --mode "${HICACHE_MODE:-zeros}" \

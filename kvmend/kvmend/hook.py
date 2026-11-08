@@ -7,7 +7,10 @@ It changes these places and nothing else:
 - RadixAttention.forward: remembers the forward batch, so that set_kv_buffer knows the ids and positions it stores;
 - PagedTokenToKVPoolAllocator.free: drops the tags of freed pages and moves them to a new generation;
 - Scheduler: after every iteration (process_batch_result, self_check_during_idle), runs the actions of a JSON plan,
-  and, when KVMEND_ENCODE_EVERY or KVMEND_SCRUB_PIECES is set, encodes parity and scrubs in the background;
+  and, when KVMEND_ENCODE_EVERY or KVMEND_SCRUB_PIECES is set, encodes parity and scrubs in the background; after
+  every prefill forward, records the positions it computed for each request (one entry per chunk, note_fills), so a
+  failed check can tell what read the damage; right before a prefill forward (run_batch), arms the plan's test fault
+  skipped_store;
 - HiCache (--enable-hierarchical-cache), whose copies to and from host memory bypass set_kv_buffer:
   HiCacheController.write records the tags of the pages it backs up under their host pages, HiCacheController.load
   gives the new device pages those tags before the load thread copies a byte, MHATokenToKVPoolHost
@@ -21,15 +24,20 @@ Every tensor-parallel rank runs the actions at the same point of the same iterat
 The plan (KVMEND_PLAN) maps a request id to actions, each due when the request has produced `at` output tokens:
 encode, scrub, inject, repair, retract, dump, and, for the comparison with GhostServe, repair_share and evict; for
 the incident's faults, fault (a never-written page, a late write through or around the store path, a page holding
-another sequence's KV), check (the reader's check of one request's pages) and mend (parity rebuild where one GPU is
-damaged, recompute in place otherwise); for HiCache, offload (evict the device copy of what is backed up to host
-memory) and fault kind partial_load (the next load from host memory does not land on one GPU).
+another sequence's KV, a store skipped during the prefill), check (the reader's check of one request's pages), mend
+(parity rebuild where one GPU is damaged, recompute in place otherwise) and digest (fingerprints of a request's KV, to
+compare runs); for HiCache, offload (evict the device copy of what is backed up to host memory) and fault kind
+partial_load (the next load from host memory does not land on one GPU).
 The release rule (KVMEND_STRICT) checks strict requests as they run. A failed check mends the pages and regenerates
 the unreleased tokens, or, with on_fail "abort" (KVMEND_ON_FAIL, or an entry rid:every:abort), aborts the request and
 every other reader of the damaged pages and drops those pages from the prefix cache, for a client that resubmits.
 With KVMEND_CHECK_AFTER_PREFILL=all, every other request is checked once, right after its prefill, in the same batched
 check: a pass is its last good check; a failure mends the pages and reports that its first token, already released,
 may be wrong (op released_suspect).
+A check right after a prefill bounds nothing, and a chunked prefill's later chunks read the earlier chunks' KV from the
+pool. So when it fails, both mends also recompute every position the prefill computed in a later forward than the one
+that wrote the first damaged page (all it computed, if that page came from the prefix cache or a host load), before
+any decode step reads them (act_mend with suffix, suspect_suffix).
 Each rank keeps one JSON line per action in memory and appends them to KVMEND_OUT/rank<r>.jsonl when the scheduler
 is idle or flushes its cache, so slow file writes (the cluster's /home is NFS) never fall inside a timed step.
 Run SGLang with page_size=16 and disable_overlap_schedule=True.
@@ -154,6 +162,10 @@ class PoolState:
         self.read_since = {}    # rid -> wall time of its first check, right after its prefill (KVMEND_LOG_READS)
         self.checked_upto = {}  # rid -> output tokens covered by the request's last passing check (releasable)
         self.prefill_checked = set()  # rids outside the release rule whose one check, after the prefill, has run
+        # rid -> the forwards of the request's current prefill, [(step, first, end)]: the positions [first, end) each
+        # computed (one per chunk), so that a failed check can tell what read the damage (note_fills, suspect_suffix)
+        self.fills = {}
+        self.skip = None        # a skipped store armed for the forward that runs now (test fault, _arm_skip)
         self.view_cache = {}    # rid -> token keys of the request's stored tokens, for the reader's check
         self.sched = None       # the scheduler, for checks that run outside on_step (the finish check)
         # HiCache: what each host page left this GPU with (made at the first backup), the host slot each device slot
@@ -230,6 +242,7 @@ class PoolState:
         self.damaged, self.saved, self.last_good = [], {}, None
         self.req_gen, self.found, self.alarm_found, self.saved_span = {}, [], False, None
         self.checked_upto, self.view_cache, self.prefill_checked = {}, {}, set()
+        self.fills, self.skip = {}, None
         self.stripe_of, self.stripe_pages, self.lparity = {}, {}, {}
         self.wstep.zero_()
         self.good_step, self.pending_redo, self.pending_suspect, self.poisoned = {}, {}, {}, {}
@@ -780,9 +793,10 @@ def act_retract(st, sched, a, req):
     from_prefill, a request that has just finished its prefill, and so is still only in the current batch (the
     scheduler merges that batch into the running batch at its next step), is taken out of the current batch instead,
     which keeps it out of that merge, and that prefill is undone whole: the damage struck before it, so everything it
-    computed is suspect. The request goes back to the prefix its prefill started from, and what SGLang cached of the
-    prefill right after it (cache_unfinished_req) leaves the prefix cache (_drop_cached), so the next prefill computes
-    it again. Without from_prefill such a request is left alone (the release rule retries it a step later)."""
+    computed is suspect. The request goes back to the prefix its prefill started from (its first chunk's, for a
+    chunked prefill: _prefill_start), and what SGLang cached of the prefill (cache_unfinished_req, after every chunk)
+    leaves the prefix cache (_drop_cached), so the next prefill computes it again. Without from_prefill such a request
+    is left alone (the release rule retries it a step later)."""
     if a.get("only_if_found") and not st.alarm_found:
         return dict(retracted=False, reason="the last check found nothing")
     batch = sched.running_batch
@@ -798,7 +812,7 @@ def act_retract(st, sched, a, req):
     held = (len(req.prefix_indices) // sched.page_size) * sched.page_size  # held by the prefix cache, the rest by R
     start = held
     if prefill:  # the prefix the prefill started from (SGLang has set prefix_indices to all it cached since)
-        start = min(held, max(len(req.fill_ids) - int(req.extend_input_len), 0) // sched.page_size * sched.page_size)
+        start = min(held, _prefill_start(st, req) // sched.page_size * sched.page_size)
     cached = (torch.unique(torch.div(row[start:held].to(torch.int64), PAGE, rounding_mode="floor")).tolist()
               if start < held else [])
     last = req.last_node
@@ -824,6 +838,17 @@ def act_retract(st, sched, a, req):
     batch.filter_batch(keep_indices=[j for j in range(len(batch.reqs)) if j != i])
     sched._extend_requests_to_queue([req], is_retracted=True)
     return rec
+
+
+def _prefill_start(st, req):
+    """The first position of the request's current prefill: its first forward's, from the record of its forwards
+    (note_fills) when that record reaches what it fills now, else its last forward's, which is all SGLang keeps
+    (fill_ids and extend_input_len of the last chunk)."""
+    end = len(req.fill_ids)
+    fills = getattr(st, "fills", {}).get(req.rid) if st is not None else None
+    if fills and fills[-1][2] == end:
+        return fills[0][1]
+    return max(end - int(req.extend_input_len), 0)
 
 
 def act_abort(st, sched, a, req):
@@ -858,6 +883,38 @@ def act_dump(st, sched, a, req):
     os.makedirs(OUT, exist_ok=True)
     torch.save(dict(k=k, v=v, start=a["from"], output_ids=list(req.output_ids)), path)
     return dict(path=path, positions=[a["from"], hi])
+
+
+def _kv_digest(st, slots):
+    """A fingerprint of this rank's K and V at `slots`, every layer: the sum of every 32-bit word mixed with its place
+    (layer, K or V, token, word), so that a change in any word changes it, but for a chance of about 2^-32."""
+    total, idx = 0, None
+    for layer in range(st.layers if slots.numel() else 0):
+        for kv, buf in enumerate((st.pool.k_buffer[layer], st.pool.v_buffer[layer])):
+            w = T.as_words(buf[slots])
+            if idx is None:
+                idx = torch.arange(w.numel(), dtype=torch.int64, device=w.device).view_as(w)
+            key = T.fmix32((idx * 0x9E3779B1 + (2 * layer + kv) * 0x85EBCA77) & T.M32)
+            total += int(T.fmix32(w ^ key).sum())
+    return total & ((1 << 63) - 1)
+
+
+def act_digest(st, sched, a, req):
+    """Fingerprints of this rank's K and V of R's prompt (_kv_digest), to compare runs bit for bit without saving any
+    KV: the whole prompt; before the span `pages`/`pos`; the span; the rest of the prefill forward that computed the
+    span's first position (its own chunk), up to the page that holds the next forward's first position; and from that
+    page on (the later chunks; R's record of its prefill forwards, note_fills)."""
+    start, n = _span(req, a)
+    P = len(req.origin_input_ids)
+    fills = st.fills.get(req.rid) or []
+    row = sched.req_to_token_pool.req_to_token[req.req_pool_idx, :P].to(torch.int64).to(st.device)
+    parts = dict(whole=(0, P), before=(0, start), span=(start, min(start + n, P)))
+    c = next((f for f in fills if f[1] <= start < f[2]), None)
+    if c is not None:
+        b = min(max(c[2] // PAGE * PAGE, start + n), P)
+        parts.update(same_chunk=(min(start + n, P), b), later=(b, P))
+    return dict(positions={k: [x, y] for k, (x, y) in parts.items()}, forwards=[[f[1], f[2]] for f in fills],
+                digest={k: _kv_digest(st, row[x:y]) for k, (x, y) in parts.items()})
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -986,9 +1043,11 @@ def read_record(st, tree, req):
 
 
 def forget(st, rid):
-    """A request rolled back (by KVMend or by SGLang under memory pressure) will read new pages: drop its records."""
+    """A request rolled back (by KVMend or by SGLang under memory pressure) will read new pages: drop its records. Its
+    next prefill starts a new record of forwards (note_fills)."""
     st.req_gen.pop(rid, None)
     st.view_cache.pop(rid, None)
+    st.fills.pop(rid, None)
 
 
 def act_check(st, sched, a, req, mark_good=True):
@@ -1037,9 +1096,14 @@ def act_fault(st, sched, a, req):
       foreign      the pages hold another sequence's KV with tags that match it: what R reads when its token table
                    points at another live page.
       partial_load (HiCache) arms the next load from host memory to land on every GPU but one (see _arm_partial).
+      skipped_store  during R's prefill: the forward that computes the span stores none of it (_arm_skip), so its
+                   pages keep an earlier owner's bytes, and every later chunk of the prefill reads them. It runs right
+                   before that forward (before_forward), not after a step, and its `at` is 0.
     The clean K and V of the span are kept, to measure how close a recompute comes."""
     if a["kind"] == "partial_load":
         return _arm_partial(st, sched, a)
+    if a["kind"] == "skipped_store":
+        return _arm_skip(st, sched, a, req)
     start, n = _span(req, a)
     donor = a.get("donor", 512)
     row = sched.req_to_token_pool.req_to_token[req.req_pool_idx]
@@ -1135,6 +1199,93 @@ def _burst(st, sched, a, tgt, pages, rec):
     return rec
 
 
+def _arm_skip(st, sched, a, req):
+    """A store skipped during R's prefill, armed right before the forward that is about to run (before_forward): of
+    the span `pages`/`pos`, the positions this forward computes are not stored, on every GPU, neither their K and V
+    nor their tags. Their pages keep the bytes an earlier owner left there, with no tags. The forward itself reads the
+    span's K and V from its own tensors, not from the pool, so only the later chunks of the prefill (and every decode
+    step) read the stale bytes. With keep_bytes (the fault-free control of this path), the K and V land and only their
+    tags are skipped: the check after the prefill fails the same way, and the same repair runs, on undamaged KV."""
+    start, n = _span(req, a)
+    end = len(req.fill_ids)
+    first = end - int(req.extend_input_len)
+    lo, hi = max(first, start), min(end, start + n)
+    keep_bytes = bool(a.get("keep_bytes", False))
+    rec = dict(kind=a["kind"], start=start, tokens=n, keep_bytes=keep_bytes, forward=[first, end],
+               prompt=len(req.origin_input_ids), layers=st.layers)
+    if lo >= hi:
+        return dict(rec, armed=False, reason="this forward computes none of the span")
+    slots = sched.req_to_token_pool.req_to_token[req.req_pool_idx, lo:hi].to(torch.int64).to(st.device)
+    if st.skip is None:
+        empty = torch.zeros(0, dtype=torch.int64, device=st.device)
+        st.skip = dict(drop=empty, untag=empty, stores=0, stale_same=0)
+    key = "untag" if keep_bytes else "drop"
+    st.skip[key] = torch.cat([st.skip[key], slots])
+    return dict(rec, armed=True, positions=[lo, hi], skipped_tokens=hi - lo,
+                pages=torch.unique(torch.div(slots, PAGE, rounding_mode="floor")).tolist(),
+                later_forwards=end < len(req.origin_input_ids))
+
+
+def _store_with_skip(st, pool, orig_set, layer, loc, cache_k, cache_v, k_scale, v_scale, override):
+    """set_kv_buffer while a skipped store is armed (_arm_skip): the armed slots are not stored (K, V and tags), or,
+    for keep_bytes, only their tags are not. Each store that drops K and V compares the stale bytes it leaves with
+    those it would have written (stale_same counts the stores where they agree, so the fault changed nothing there)."""
+    sk = st.skip
+    lid = (override if override is not None else layer.layer_id) - pool.start_layer
+    tk = store_keys(loc, first_layer=lid == 0) if TAGS_ON else None  # first: it matches the store by `loc` itself
+    loc64 = loc.to(torch.int64)
+    drop = torch.isin(loc64, sk["drop"])
+    untag = drop | torch.isin(loc64, sk["untag"])
+    if bool(drop.any()):
+        keep = ~drop
+        stale_k, stale_v = pool.k_buffer[lid][loc64[drop]], pool.v_buffer[lid][loc64[drop]]
+        new_k, new_v = cache_k[drop], cache_v[drop]
+        sk["stores"] += 1
+        sk["stale_same"] += int(new_k.dtype == stale_k.dtype and new_v.dtype == stale_v.dtype
+                                and torch.equal(new_k.reshape(stale_k.shape), stale_k)
+                                and torch.equal(new_v.reshape(stale_v.shape), stale_v))
+        if bool(keep.any()):
+            orig_set(pool, layer, loc[keep], cache_k[keep], cache_v[keep], k_scale, v_scale, override)
+    else:
+        orig_set(pool, layer, loc, cache_k, cache_v, k_scale, v_scale, override)
+    tagged = ~untag
+    if not bool(tagged.any()):
+        return
+    if TAGS_ON:
+        if tk is None:
+            st.unkeyed += 1
+        st.update(lid, loc[tagged], tk[tagged] if tk is not None else None)
+    elif lid == st.layers - 1:
+        st.seal(loc[tagged])
+
+
+def before_forward(st, sched, batch):
+    """Right before a prefill forward (Scheduler.run_batch): arm the plan's skipped stores due in it, for this forward
+    only. An action waits while its span lies beyond this forward (a later chunk computes it), and is done once a
+    forward has reached the end of its span. Returns their records, which after_forward completes and logs once the
+    forward has run."""
+    out = []
+    for rid, i, a, req in list(PLAN.before_forward(batch)):
+        start, n = _span(req, a)
+        if start >= len(req.fill_ids):
+            continue
+        rec = dict(step=st.step, rid=rid, at=a["at"], op=a["op"], n_out=len(req.output_ids), t0=time.time())
+        rec.update(act_fault(st, sched, a, req))
+        if len(req.fill_ids) >= start + n:
+            PLAN.done.add((rid, i))
+        out.append(rec)
+    return out
+
+
+def after_forward(st, sched, recs):
+    """After the forward that a skipped store struck: disarm it and log what it did."""
+    sk, st.skip = st.skip, None
+    for rec in recs:
+        if rec.get("armed") and sk is not None:
+            rec.update(stores_dropped=sk["stores"], stale_same_stores=sk["stale_same"])
+        _log(sched, rec)
+
+
 def _recompute_range(st, sched, req, s, e):
     """Recompute R's KV of positions [s, e) in place, in every layer: one extend forward of a side request that holds
     R's tokens up to e, whose token table maps [0, s) to R's cached slots (the prefix) and [s, e) to R's slots of the
@@ -1164,6 +1315,100 @@ def _recompute_range(st, sched, req, s, e):
         sched.req_to_token_pool.free(side.req_pool_idx)
 
 
+def note_fills(st, batch):
+    """After a prefill forward (an extend batch), before the step's checks: record, for each request it extended, the
+    positions it computed, [first, end) (SGLang's fill_ids and extend_input_len of this chunk), with the step its
+    stores were stamped with (st.step, which on_step advances after). A forward that starts where the request's last
+    one ended continues its prefill (the next chunk); any other starts a new record. Decode tokens of a mixed batch
+    are not prefill and are left out."""
+    decoding = {id(r) for r in (getattr(batch, "decoding_reqs", None) or [])}
+    for req in batch.reqs:
+        if id(req) in decoding or getattr(req, "is_retracted", False) or req.finished():
+            continue
+        end = len(req.fill_ids)
+        first = end - int(req.extend_input_len)
+        if first >= end:
+            continue
+        rec = st.fills.get(req.rid)
+        if rec and rec[-1][2] == first:
+            rec.append((st.step, first, end))
+        else:
+            st.fills[req.rid] = [(st.step, first, end)]
+
+
+def suspect_suffix(st, req, blocks, n, use_last_good=True):
+    """What else read damage found in R's 16-token `blocks` (pages that failed a check, or a forced span), beyond
+    those pages: every position of R's prefill computed in a forward after the one that computed the first damaged
+    block, up to the n positions R stores. A forward reads the KV of earlier forwards from the pool but its own from
+    its own tensors, so the other positions of that same forward did not read the damage; a page that two forwards
+    share counts as the earlier one's, the safe side. A first damaged block before the prefill's first position
+    came from the prefix cache or a host load, and the prefill's every forward read it. One after the prefill (a
+    decode page) was read by no forward of it. A passing check bounds it too (use_last_good): damage in a page it
+    covered struck after it, so only forwards after R's last good check can have read it, and a forward that ran
+    after the check carries its step (good_step) or a later one. None when nothing else is suspect, or R has no
+    record of its prefill; else the record of the suffix, from the page holding its first position (start) to n."""
+    fills = st.fills.get(req.rid) if blocks else None
+    if not fills:
+        return None
+    lo = min(blocks) * PAGE
+    if lo >= fills[-1][2]:
+        return None
+    if lo < fills[0][1]:
+        after, where = None, "prefix"
+    else:
+        c0 = next(f for f in fills if f[1] < lo + PAGE and f[2] > lo)
+        after, where = c0[0], [c0[1], c0[2]]
+    good = st.good_step.get(req.rid) if use_last_good else None
+    later = [f for f in fills if (after is None or f[0] > after) and (good is None or f[0] >= good)]
+    if not later or later[0][1] >= n:
+        return None
+    first = later[0][1]
+    start = first // PAGE * PAGE
+    return dict(first=first, start=start, end=n, tokens=n - start, forwards=len(later), damage_in=where,
+                after_last_good=good is not None and (after is None or good > after))
+
+
+def _recompute_piece(sched):
+    """The most tokens one in-place recompute computes: the engine's prefill chunk, in whole pages (None: no limit)."""
+    c = getattr(sched, "chunked_prefill_size", None)
+    return c // PAGE * PAGE if isinstance(c, int) and c >= PAGE else None
+
+
+def _suspect_backups(st, tree, req, pages):
+    """HiCache: the nodes of R's path in the prefix cache that hold one of `pages` on the GPU and a host copy that is
+    not older than them (_clean_host_copy), so made from the bytes about to be recomputed. Taken before the recompute,
+    which moves the pages to a newer write step."""
+    if getattr(tree, "cache_controller", None) is None or st.hrec is None or not pages:
+        return []
+    want = torch.tensor(sorted(pages), dtype=torch.int64)
+    out, node = [], getattr(req, "last_node", None)
+    while node is not None and node is not getattr(tree, "root_node", None) and hasattr(node, "parent"):
+        if (getattr(node, "host_value", None) is not None and node.value is not None and len(node.value)
+                and bool(torch.isin(torch.div(node.value.cpu().to(torch.int64), PAGE, rounding_mode="floor"),
+                                    want).any()) and not _clean_host_copy(st, node)):
+            out.append(node)
+        node = node.parent
+    return out
+
+
+def _drop_backups(tree, nodes):
+    """Free the host copies of `nodes` (HiCache), once every backup in flight has landed: they hold KV computed from
+    the damage, with tags that match it, so a later load would bring it back unseen. Each node keeps its device
+    copy, now recomputed; HiCache backs it up again at its next hit (write_through) or evicts it as a node with no
+    host copy. Returns the host tokens freed."""
+    if not nodes:
+        return 0
+    _settle_backups(tree)
+    freed = 0
+    for node in nodes:
+        hv = node.host_value
+        if hv is not None:
+            tree.cache_controller.mem_pool_host.free(hv)
+            node.host_value = None
+            freed += len(hv)
+    return freed
+
+
 def act_mend(st, sched, a, req):
     """Repair what the last check found. A page loaded from host memory (HiCache) whose host copy is still there is
     copied again from it, on each GPU whose piece failed, bit for bit (recopy=False skips this path). A page damaged on
@@ -1171,7 +1416,16 @@ def act_mend(st, sched, a, req):
     this path). Every other page (damage on several GPUs, a skipped write, another sequence's KV, a new generation,
     a copy or rebuild that still fails) is recomputed in place from R's tokens, with R's cached KV before it as the
     prefix. With force, the span of `pages`/`pos` is recomputed whatever the check found: the fault-free control of
-    this path."""
+    this path.
+    With suffix (the release rule's mend, and the check right after the prefill for every request), the repair also
+    covers what read the damage: the positions of R's prefill computed in a later forward than the one that computed
+    the first damaged page, or all it computed if that page came from the prefix cache or a host load
+    (suspect_suffix; with force, as if R had no last good check). Every page from the suffix's first one to the end is
+    recomputed in place, after the damaged pages before it, in pieces of at most one prefill chunk: their bytes and
+    tags agree, so neither a rebuild from parity nor a copy from host memory would undo what the damage did. Host
+    copies (HiCache) made from those bytes are freed (_drop_backups). `read`: pages that failed an earlier check of R
+    in this step but that another request's repair has mended since; they repair nothing more, but what read them is
+    found and recomputed all the same."""
     g, n, me = _group(sched)
     pages, expected, tk = _reader_view(st, sched, req)
     block_of = {int(p): j for j, p in enumerate(pages.tolist())}
@@ -1182,7 +1436,7 @@ def act_mend(st, sched, a, req):
         tgt = sched.req_to_token_pool.req_to_token[req.req_pool_idx, start:start + length].to(torch.int64).to(st.device)
         st.saved_span = (tgt.clone(), torch.stack([torch.stack([st.pool.k_buffer[l][tgt], st.pool.v_buffer[l][tgt]])
                                                    for l in range(st.layers)]).clone())
-    elif not st.found:
+    elif not st.found and not a.get("read"):
         return dict(mended=False, reason="the last check found nothing")
     else:
         by_page = {}
@@ -1210,7 +1464,22 @@ def act_mend(st, sched, a, req):
         crowded = {p for ps in crowd.values() if len(ps) > 1 for p in ps}
         rebuild = [x for x in rebuild if x[2] not in crowded]
         redo |= crowded
+    stored = len(req.origin_input_ids) + max(len(req.output_ids) - 1, 0)
     rec = dict(mended=True, rebuilt=[], recomputed=[], recopied=[])
+    backups = []
+    if a.get("suffix"):
+        bad = {block_of[p] for p in redo | {x[2] for x in rebuild} | {x[2] for x in recopy} | set(a.get("read", ()))
+               if p in block_of}
+        rec["suffix"] = suspect_suffix(st, req, bad, stored, use_last_good=not a.get("force"))
+        if rec["suffix"] is not None:
+            later = {int(p) for p in pages[rec["suffix"]["start"] // PAGE:].tolist()}
+            rebuild = [x for x in rebuild if x[2] not in later]
+            recopy = [x for x in recopy if x[2] not in later]
+            redo |= later
+            backups = _suspect_backups(st, getattr(sched, "tree_cache", None), req, redo)
+    if not (rebuild or redo or recopy):  # only `read` pages, and nothing R computed after them: nothing to repair
+        return dict(mended=False, reason="nothing to repair: the pages were mended by another request's repair, and "
+                                         "nothing R computed read them", suffix=rec.get("suffix"))
     t_mend = _start(st, g)
     if recopy:
         rec["recopied"] = _recopy(st, host, me, recopy)
@@ -1232,7 +1501,7 @@ def act_mend(st, sched, a, req):
             rec["rebuild_failed_pages"] = sorted({p for _, _, p, _ in failed})
             redo |= set(rec["rebuild_failed_pages"])
     blocks = sorted(block_of[p] for p in redo if p in block_of)
-    spans, stored = [], len(req.origin_input_ids) + max(len(req.output_ids) - 1, 0)
+    spans, piece = [], _recompute_piece(sched)
     for j in blocks:
         if spans and spans[-1][1] == j:
             spans[-1][1] = j + 1
@@ -1240,10 +1509,14 @@ def act_mend(st, sched, a, req):
             spans.append([j, j + 1])
     for j0, j1 in spans:
         s, e = j0 * PAGE, min(j1 * PAGE, stored)
-        t0 = _start(st, g)
-        _recompute_range(st, sched, req, s, e)
-        st.sync()
-        rec["recomputed"].append(dict(start=s, end=e, tokens=e - s, seconds=time.perf_counter() - t0))
+        for p0 in range(s, e, piece or e - s):  # each piece reads the ones before it, recomputed, from the pool
+            p1 = min(p0 + (piece or e - s), e)
+            t0 = _start(st, g)
+            _recompute_range(st, sched, req, p0, p1)
+            st.sync()
+            rec["recomputed"].append(dict(start=p0, end=p1, tokens=p1 - p0, seconds=time.perf_counter() - t0))
+    if backups:
+        rec["host_copies_dropped"] = _drop_backups(sched.tree_cache, backups)
     st.sync()
     rec["mend_seconds"] = time.perf_counter() - t_mend  # the whole repair, before the test's own checks below
     rec["mended_pages"] = sorted({p for _, _, p in rebuild} | {p for _, _, p in recopy} | redo)
@@ -1558,7 +1831,7 @@ def drain_load_events(st, sched):
 
 ACTIONS = dict(encode=act_encode, scrub=act_scrub, inject=act_inject, repair=act_repair, retract=act_retract,
                dump=act_dump, repair_share=act_repair_share, evict=act_evict, abort=act_abort,
-               check=act_check, fault=act_fault, mend=act_mend, offload=act_offload)
+               check=act_check, fault=act_fault, mend=act_mend, offload=act_offload, digest=act_digest)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1599,10 +1872,12 @@ def _may_read(other, req):
 
 def release_check(st, sched, req, finishing=False):
     """Check a strict request's pages before its next tokens leave. On a pass, every output token so far may be
-    released. On a failure, the pages are mended, and the tokens chosen since the last pass, which were never
-    released, are dropped and generated again. A request that is finishing is ended with an abort instead, which
-    releases only its checked tokens (the proof of concept does not regenerate at finish). With on_fail "abort",
-    nothing is mended: the request is aborted (abort_on_fail)."""
+    released. On a failure, the pages are mended, with what read the damage: a check right after the prefill bounds
+    nothing, so the positions the prefill computed in a later forward than the one that wrote the first damaged page
+    are recomputed too (act_mend with suffix; suffix_tokens). Then the tokens chosen since the last pass, which were
+    never released, are dropped and generated again. A request that is finishing is ended with an abort instead,
+    which releases only its checked tokens (the proof of concept does not regenerate at finish). With on_fail
+    "abort", nothing is mended: the request is aborted (abort_on_fail)."""
     rec = dict(op="release_check", rid=req.rid, n_out=len(req.output_ids), finishing=finishing)
     rec.update(act_check(st, sched, {}, req))
     if not st.found:
@@ -1614,7 +1889,8 @@ def release_check(st, sched, req, finishing=False):
         return rec
     keep = st.checked_upto.get(req.rid, 0)
     since = st.good_step.get(req.rid, 0)  # the damage struck after this request's last passing check
-    rec["mend"] = act_mend(st, sched, {}, req)
+    rec["mend"] = act_mend(st, sched, dict(suffix=True), req)
+    rec["suffix_tokens"] = (rec["mend"].get("suffix") or {}).get("tokens", 0)
     mended = set(rec["mend"].get("mended_pages", []))
     if finishing:
         from sglang.srt.managers.schedule_batch import FINISH_ABORT
@@ -1627,23 +1903,33 @@ def release_check(st, sched, req, finishing=False):
     return rec
 
 
-def released_suspect(st, sched, req):
+def released_suspect(st, sched, req, read=()):
     """The check right after the prefill (KVMEND_CHECK_AFTER_PREFILL=all) found damage in pages that a request outside
-    the release rule reads. Its first token, chosen by the prefill, has left already and may have read the damage: the
-    record (op released_suspect) reports it. What the request's own check still finds is mended as for a strict request
-    (copied again from host memory, rebuilt from parity, or recomputed), and the strict readers of a mended page and the
-    cached KV that may have read the damage are handled as release_check handles them. Nothing of this request is held
-    back, generated again or aborted, and this check is not its last good check: its own check may pass because another
-    request's repair in this step has mended the page already, and its prefill read the damage all the same."""
+    the release rule reads (`read`: those pages, as the batched check found them). Its first token, chosen by the
+    prefill, has left already and may have read the damage: the record (op released_suspect) reports it. What the
+    request's own check still finds is mended as for a strict request (copied again from host memory, rebuilt from
+    parity, or recomputed), with what read the damage: the positions its
+    prefill computed in a later forward than the one that wrote the first damaged page (act_mend with suffix; the
+    record's suffix_tokens and suffix give the size and place of that suffix), so that the tokens it chooses from now
+    on read none of it. The strict readers of a mended page and the cached KV that may have read the damage are
+    handled as release_check handles them. Nothing of this request is held back, generated again or aborted, and this
+    check is not its last good check: its own check may pass because another request's repair in this step has
+    mended the page already, and its prefill read the damage all the same, so what it computed after that page is
+    recomputed even then."""
     rec = dict(op="released_suspect", rid=req.rid, n_out=len(req.output_ids), released_tokens=len(req.output_ids),
                reason="damage found right after the prefill: the released tokens were chosen before this check")
     since = st.good_step.get(req.rid, 0)
     rec.update(act_check(st, sched, {}, req, mark_good=False))
-    if not st.found:
+    rec["mend"] = act_mend(st, sched, dict(suffix=True, read=sorted(read)), req)
+    if not rec["mend"].get("mended"):
         rec["mend"] = dict(mended=False, reason="its own check passes: another request's repair in this step mended "
-                                                "the page, or the page failed only another reader's check")
+                                                "the page, or the page failed only another reader's check; nothing "
+                                                "its prefill computed after that page is suspect")
+        rec.update(suffix_tokens=0, suffix=None)
         return rec
-    rec["mend"] = act_mend(st, sched, {}, req)
+    suffix = rec["mend"].get("suffix")
+    rec.update(suffix_tokens=suffix["tokens"] if suffix else 0,
+               suffix={k: suffix[k] for k in ("first", "start", "end", "damage_in")} if suffix else None)
     rec.update(_after_mend(st, sched, req, set(rec["mend"].get("mended_pages", [])), since))
     return rec
 
@@ -1861,7 +2147,8 @@ def release_checks(st, sched):
             not_strict.append(req.rid)
             st.prefill_checked.add(req.rid)
         if bad and bad & set(pages.tolist()):
-            rec = release_check(st, sched, req) if strict else released_suspect(st, sched, req)
+            rec = (release_check(st, sched, req) if strict
+                   else released_suspect(st, sched, req, read=bad & set(pages.tolist())))
             redone |= {req.rid} | {o["rid"] for o in rec.get("other_readers", [])}
             _log(sched, dict(step=st.step, t0=time.time(), **rec))
         else:
@@ -2026,11 +2313,24 @@ class Plan:
             if req is None or req.req_pool_idx is None:
                 continue
             for i, a in enumerate(acts):
-                if (rid, i) in self.done:
+                if (rid, i) in self.done or _before_forward(a):
                     continue
                 if len(req.output_ids) < a["at"]:
                     break
                 yield rid, i, a, req
+
+    def before_forward(self, batch):
+        """The actions due right before this prefill forward (_before_forward): those of the requests it extends."""
+        for req in batch.reqs:
+            for i, a in enumerate(self.items.get(req.rid, ())):
+                if ((req.rid, i) not in self.done and _before_forward(a) and len(req.output_ids) >= a["at"]
+                        and req.req_pool_idx is not None):
+                    yield req.rid, i, a, req
+
+
+def _before_forward(a):
+    """A plan action that runs right before a prefill forward of its request, not after a step: a skipped store."""
+    return a.get("op") == "fault" and a.get("kind") == "skipped_store"
 
 
 PLAN = Plan(os.environ.get("KVMEND_PLAN", ""))
@@ -2104,8 +2404,11 @@ def patch_memory_pool(mod):
         self._kvm = PoolState(self) if self.page_size == PAGE else None
 
     def set_kv_buffer(self, layer, loc, cache_k, cache_v, k_scale=None, v_scale=None, layer_id_override=None):
-        orig_set(self, layer, loc, cache_k, cache_v, k_scale, v_scale, layer_id_override)
         st = getattr(self, "_kvm", None)
+        if st is not None and st.skip is not None:  # a test fault armed for this forward only (_arm_skip)
+            return _store_with_skip(st, self, orig_set, layer, loc, cache_k, cache_v, k_scale, v_scale,
+                                    layer_id_override)
+        orig_set(self, layer, loc, cache_k, cache_v, k_scale, v_scale, layer_id_override)
         if st is not None:
             lid = (layer_id_override if layer_id_override is not None else layer.layer_id) - self.start_layer
             if TAGS_ON:
@@ -2178,6 +2481,8 @@ def patch_scheduler(mod):
                 raise
         out = orig_result(self, batch, result, *args, **kwargs)
         try:
+            if st is not None and batch.forward_mode.is_extend():
+                note_fills(st, batch)  # before this step's checks, which read it
             if PLAN.items and batch.forward_mode.is_extend():
                 for r in batch.reqs:
                     if r.rid in PLAN.items:
@@ -2218,6 +2523,25 @@ def patch_scheduler(mod):
         _flush_log(self)
         return ok
 
+    orig_run = cls.run_batch
+
+    def run_batch(self, batch, *args, **kwargs):
+        """Right before a prefill forward, the plan's skipped stores due in it are armed (before_forward); right after
+        it, they are disarmed and logged (after_forward)."""
+        st = _state(self) if PLAN.items and batch is not None and batch.forward_mode.is_extend() else None
+        armed = []
+        if st is not None:
+            try:
+                armed = before_forward(st, self, batch)
+            except Exception:
+                _log(self, dict(op="error", trace=traceback.format_exc()), now=True)
+                raise
+        try:
+            return orig_run(self, batch, *args, **kwargs)
+        finally:
+            if st is not None and (armed or st.skip is not None):
+                after_forward(st, self, armed)
+
     orig_stream = cls.stream_output_generation
 
     def stream_output_generation(self, reqs, return_logprob, skip_req=None, *args, **kwargs):
@@ -2231,6 +2555,7 @@ def patch_scheduler(mod):
     cls.process_batch_result = process_batch_result
     cls.self_check_during_idle = self_check_during_idle
     cls.flush_cache = flush_cache
+    cls.run_batch = run_batch
     cls.stream_output_generation = stream_output_generation
 
 
@@ -2251,6 +2576,8 @@ def patch_radix_cache(mod):
         if LOG_READS and st is not None and st.sched is not None and req.req_pool_idx is not None:
             _log(st.sched, dict(step=st.step, **read_record(st, self, req)))
         out = orig_finished(self, req, *args, **kwargs)
+        for state in _STATES:  # the request has ended: its record of prefill forwards goes
+            getattr(state, "fills", {}).pop(req.rid, None)
         if st is not None and st.sched is not None and st.poisoned:
             _drop_and_log(st, st.sched, self, req.rid)
         return out

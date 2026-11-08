@@ -150,6 +150,35 @@ for every request, in the same batched check; `strict`, the default, keeps it fo
 
 `run_incident.py --last-good hook` (suite.sh: `LAST_GOOD=hook`) relies on this check instead of scheduling its own.
 
+## Damage during a chunked prefill
+
+SGLang computes a long prompt in chunks (`chunked_prefill_size`; the first chunk is 15 tokens shorter with 16-token
+pages, so chunk ends fall inside pages). A chunk reads the earlier chunks' K and V from the pool and its own from the
+forward. So damage to a page that chunk k wrote is read by every later chunk, and by nothing else of chunk k. The check
+right after the prefill bounds nothing, so when it fails, both mends (the release rule's, and `released_suspect`'s)
+recompute in place, after the damaged pages:
+
+- every position computed in a later forward than the one that wrote the first damaged page, from the page that holds
+  that forward's first position to the end; all the prefill computed if that page came from the prefix cache or a host
+  load; nothing more if it was in the last chunk, or if a passing check came after the prefill (`suspect_suffix`);
+- in pieces of at most one prefill chunk, each reading the ones before it from the pool.
+
+The hook records each request's forwards as they run (`note_fills`, from `fill_ids` and `extend_input_len` of every
+chunk). The mended set then includes the suffix pages, so other strict readers of them generate their tokens again, and
+cached KV computed on top of them leaves the prefix cache. HiCache host copies made from the recomputed bytes are
+freed. A strict request then generates its first token again, as before. `released_suspect` adds `suffix_tokens`, the
+size of the recomputed suffix. A plan's `mend` applies the rule only with `suffix: true`, and a rollback with
+`from_prefill` goes back to the first chunk's start.
+
+Test fault `skipped_store` (plan op `fault`, `at: 0`): armed right before the forward that computes the span, it drops
+the span's stores on every GPU. Its pages keep an earlier owner's bytes, with no tags. With `keep_bytes` only the tags
+are skipped: the fault-free control of the same repair. `run_incident.py --set prefill` (suite.sh step
+`incident_prefill`, with `PREFILL_CHUNK`, `PREFILL_POS` and `PREFILL_PAGES`) runs it. Its verdict compares KV
+fingerprints (op `digest`) with fault-free runs, rank by rank.
+
+Cost: a skipped store at page 64 of a 32K prompt with 8,192-token chunks recomputes 16 + 24,592 tokens (positions
+8,176-32,767), against 16 before.
+
 ## Loads from host memory (HiCache)
 
 SGLang's hierarchical cache copies KV pages to a host pool (`HiCacheController.write`, on a write thread) and back into new device pages on a prefix hit (`HiCacheController.load`, on a load thread, layer by layer). Neither copy goes through `set_kv_buffer`, so the patch carries the tags along:
@@ -157,7 +186,7 @@ SGLang's hierarchical cache copies KV pages to a host pool (`HiCacheController.w
 - **backup:** the tags, coverage and token keys of each copied page are recorded under its host page (`PoolState.carry_out`);
 - **load:** the new device pages get that record before the load thread copies a byte (`carry_in`), never tags recomputed from the bytes that land;
 - **check on arrival:** in the load thread, each loaded layer is tested against those tags before attention reads it (`load_layer`); a piece that fails is copied again from the host copy, which must then pass;
-- **backstop:** what still fails (a damaged host copy, or a load not checked on arrival) fails the reader's check, and `mend` copies it again from the host copy or recomputes it in place. The prefill that read the damage is then undone whole (`retract` with `from_prefill`): SGLang cached its pages right after it, so they leave the prefix cache too, or the next prefill of the same tokens would be pointed at them.
+- **backstop:** what still fails (a damaged host copy, or a load not checked on arrival) fails the reader's check, and `mend` copies it again from the host copy or recomputes it in place. The prefill that read the damage is then undone whole (`retract` with `from_prefill`, back to its first chunk's start): SGLang cached its pages as it went, so they leave the prefix cache too, or the next prefill of the same tokens would be pointed at them.
 
 `run_hicache.py` evicts the prompt's device copy (op `offload`) and lets a request load it back with one GPU's copy of some pages left as zeros (fault `partial_load`), then compares the text with a fault-free load.
 

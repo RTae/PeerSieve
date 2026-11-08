@@ -35,8 +35,28 @@ it (op check). With --last-good hook it does not: KVMend makes it itself, for ev
 (KVMEND_CHECK_AFTER_PREFILL=all), and each rollback keeps the tokens KVMend's last passing check covered (retract keep
 "last_good"). Every run then gets that check, the no-check rows too: silent_unwritten's damage, which strikes at output
 1, is found by it and mended, and its report says that R's first token may be wrong (released_suspect).
+A check right after the prefill bounds nothing, so KVMend's mend after it (kvmend_unwritten, and released_suspect)
+also recomputes every position the prefill computed in a later chunk than the damaged page (only the damaged pages when
+the prompt fits in one --chunk, or the damage is in its last chunk); control_mend1 forces the same repair.
+
+--set prefill runs a store skipped during the prefill instead (choose a --chunk small enough for several chunks):
+  owner_*           first, another prompt of the same length, so that R gets its very pages after the flush and the
+                    skipped pages hold that earlier owner's KV
+  kvmend_prefill    strict release: the chunk that computes --pages pages from --pos stores none of them, and every
+                    later chunk reads the stale pages; the check right after the prefill finds them (coverage), and
+                    KVMend recomputes them and every position of the later chunks, then generates the first token again
+  control_prefill   no damage, the same path: that chunk stores the K and V but not their tags, so the same check
+                    fails and the same repair runs (the text and every KV bit must equal kvmend_prefill's)
+  pagesonly_prefill the skip, then the repair of the damaged pages only (as before this rule): its later chunks keep
+                    KV computed from the stale pages
+  suspect_prefill   the skip, outside the release rule: the check after the prefill (KVMend's with --last-good hook,
+                    the plan's otherwise) mends the pages and the later chunks; the first token has left already
+  clean             no fault: the fault-free copy of the text and of the KV
+Every run takes fingerprints of R's prompt KV at output 2 (op digest): the whole prompt, before the damaged pages, the
+rest of their chunk, and the later chunks.
 
   uv run python run_incident.py --model /home/tae/models/TinyLlama-1.1B-Chat-v1.0 --tp 4 --out runs/incident-check
+  uv run python run_incident.py --set prefill --chunk 256 --pos 1024 --pages 1 --model ... --tp 2 --out runs/prefill
 """
 import argparse
 import faulthandler
@@ -48,10 +68,16 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FAULTS = ("unwritten", "late_bypass", "late_store", "foreign")
+PREFILL_RUNS = ("clean", "control_prefill", "kvmend_prefill", "pagesonly_prefill", "suspect_prefill")
+PREFILL_STRICT = ("kvmend_prefill", "control_prefill")  # the release rule's path, a check every PREFILL_EVERY tokens
+PREFILL_EVERY = 8
+OWNED = ("kvmend_prefill", "pagesonly_prefill", "suspect_prefill")  # an earlier owner's KV in R's pages first
 
 
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--set", default="incident", choices=("incident", "prefill"),
+                   help="the incident's faults, or a store skipped during the prefill (see above)")
     p.add_argument("--model", required=True)
     p.add_argument("--tp", type=int, default=4)
     p.add_argument("--prompt-len", type=int, default=1536)
@@ -79,6 +105,10 @@ def parse():
     a = p.parse_args()
     if a.last_good == "hook" and a.keep != 1:
         p.error("--keep: KVMend's check after the prefill covers output 1, so --last-good hook keeps 1")
+    if a.set == "prefill":
+        a.pos = 1024 if a.pos < 0 else a.pos  # page 64, the running example
+        if a.pos % 16 or a.pos + a.pages * 16 > a.prompt_len:
+            p.error("--pos must be a page boundary with --pages pages inside the prompt")
     return a
 
 
@@ -97,7 +127,9 @@ def make_plan(a):
 
     detect = [dict(op="scrub", at=a.detect_at), dict(op="check", at=a.detect_at)]
     fix = [dict(op="mend", at=a.detect_at), dict(op="retract", at=a.detect_at, keep=keep, only_if_found=True)]
-    forced1 = dict(op="mend", at=1, force=True, **span)
+    # found right after the prefill, which no check bounds: KVMend's rule also recomputes what later chunks computed
+    # (suffix); its fault-free control forces the same repair, as if that check had failed
+    forced1 = dict(op="mend", at=1, force=True, suffix=True, **span)
     plans = {
         "warmup": last_good + [forced1],
         "clean": list(last_good),
@@ -108,7 +140,7 @@ def make_plan(a):
         "silent_unwritten": ghost + [unwritten],
         "silent_late": ghost + [late("late_store", fence=False)],  # plain SGLang has no fence: the write lands
         "kvmend_unwritten": [enc, unwritten, dict(op="scrub", at=1), dict(op="check", at=1),
-                             dict(op="mend", at=1)],
+                             dict(op="mend", at=1, suffix=True)],
         "kvmend_late_bypass": last_good + [late("late_bypass")] + detect + fix,
         "kvmend_late_store": last_good + [late("late_store")] + detect + fix,
         "kvmend_foreign": last_good + [late("foreign")] + detect + fix,
@@ -129,6 +161,63 @@ def make_plan(a):
         for rid in ("parity_late", "kvmend_bad_tag", "kvmend_bad_parity"):
             del plans[rid]
     return plans
+
+
+def make_prefill_plan(a):
+    """--set prefill: the plans of the skipped store during the prefill (see the top of this file). The skip is armed
+    right before the chunk that computes the span (at 0: during the prefill); the strict runs are checked right after
+    the prefill by the release rule (KVMEND_STRICT), the others by the plan (op check) or, with --last-good hook,
+    suspect_prefill by KVMend's own check after every prefill."""
+    span = dict(pos=a.pos, pages=a.pages)
+    skip = dict(op="fault", at=0, kind="skipped_store", **span)
+    digest = dict(op="digest", at=2, **span)
+    check = [dict(op="check", at=1)]
+    return {
+        "warmup": [],
+        "clean": [digest],
+        "control_prefill": [dict(skip, keep_bytes=True), digest],
+        "kvmend_prefill": [skip, digest],
+        "pagesonly_prefill": [skip] + check + [dict(op="mend", at=1, suffix=False), digest],
+        "suspect_prefill": [skip] + ([] if a.last_good == "hook" else check + [dict(op="mend", at=1, suffix=True)])
+        + [digest],
+    }
+
+
+def rule_blocks(forwards, start, n, prompt_len):
+    """The 16-token blocks KVMend's rule recomputes for damage in positions [start, start + n) found right after a
+    prefill made of `forwards` ([first, end) of each, in order): the damaged blocks, and every block from the one
+    that holds the first position of a later forward than the one that computed the first damaged block (of every
+    forward, if that block lies before the prefill) to the end of the prompt. As hook.suspect_suffix."""
+    blocks = set(range(start // 16, -(-(start + n) // 16)))
+    lo = start // 16 * 16
+    if forwards and lo < forwards[0][0]:
+        nxt = forwards[0][0]
+    else:
+        c = next((i for i, (s, e) in enumerate(forwards) if s < lo + 16 and e > lo), None)
+        nxt = forwards[c + 1][0] if c is not None and c + 1 < len(forwards) else None
+    if nxt is not None:
+        blocks |= set(range(nxt // 16, -(-prompt_len // 16)))
+    return blocks
+
+
+def block_tokens(blocks, prompt_len):
+    return sum(min(16, prompt_len - 16 * j) for j in blocks)
+
+
+def first_forwards(extends):
+    """The forwards of a request's first prefill, [first, end) each, from its extend records (rank 0, in order).
+    Records older than cached_prefix have prefix_len, which is the chunk's start for every chunk but the last."""
+    out = []
+    for x in extends:
+        s = x.get("cached_prefix", x.get("prefix_len", 0))
+        if out and out[-1][1] != s:
+            break
+        out.append((s, s + x["extend_input_len"]))
+    return out
+
+
+def recomputed_blocks(mend):
+    return {j for x in (mend or {}).get("recomputed") or [] for j in range(x["start"] // 16, -(-x["end"] // 16))}
 
 
 CONTROL = {"unwritten": "control_mend1", "late_bypass": "control_mend41", "late_store": "clean",
@@ -233,11 +322,21 @@ def summarize(out, a, res, meta):
     suspect = [dict(rid=x["rid"], rank=x["rank"], n_out=x["n_out"], found=x.get("found"),
                     mended_pages=x["mend"].get("mended_pages"),
                     recomputed_tokens=sum(t["tokens"] for t in x["mend"].get("recomputed", [])),
-                    still_failing_here=x["mend"].get("still_failing_here"))
+                    suffix_tokens=x.get("suffix_tokens"), still_failing_here=x["mend"].get("still_failing_here"))
                for x in logs if x["op"] == "released_suspect"]
+    unwritten_start = (rows["unwritten"]["fault"] or {}).get("start")
+
+    def rule_tokens(rid):
+        """What KVMend's rule recomputes for the unwritten pages, found right after rid's prefill: the pages, and
+        the later chunks of that prefill (from its extend records)."""
+        if unwritten_start is None:
+            return None
+        forwards = first_forwards(pick(rid, "extend"))
+        return block_tokens(rule_blocks(forwards, unwritten_start, a.pages * 16, a.prompt_len), a.prompt_len)
     summary = dict(
         meta=meta, model=a.model, tp=a.tp, prompt_len=a.prompt_len, max_new=a.max_new, late_at=a.late_at,
-        detect_at=a.detect_at, keep=a.keep, pages=a.pages, pos=a.pos, donor=a.donor,
+        detect_at=a.detect_at, keep=a.keep, pages=a.pages, pos=a.pos, donor=a.donor, chunk=a.chunk,
+        prefill_forwards=first_forwards(pick("clean", "extend")),
         last_good=a.last_good, last_good_checks={r: passed_at_1(r) for r in relying},
         last_good_check_seconds=statistics.median(check_times) if check_times else None, released_suspect=suspect,
         reference_seconds=ref,
@@ -266,6 +365,9 @@ def summarize(out, a, res, meta):
         "foreign_missed_by_the_scrub": fr["foreign"]["scrub_found_pages"] == [],
         "foreign_found_by_the_token_keys": caught(fr["foreign"]["check_found"], "tag"),
         "mended_pages_pass_the_check": all(fr[f]["still_failing"] == 0 for f in ("unwritten", "late_bypass", "foreign")),
+        # found right after the prefill: the unwritten pages and every later chunk of the prefill are recomputed
+        "unwritten_recompute_follows_the_rule": sum(x["tokens"] for x in fr["unwritten"]["recomputed"] or [])
+        == rule_tokens("kvmend_unwritten"),
         "suspect_tokens_regenerated": all(fr[f]["regenerated"] == a.detect_at - a.keep
                                           for f in ("late_bypass", "foreign")),
         "kvmend_equals_its_control": all(fr[f]["kvmend_equals_control"] for f in FAULTS),
@@ -285,7 +387,8 @@ def summarize(out, a, res, meta):
             last_good_by_the_check_after_the_prefill=all(n == a.tp for n in summary["last_good_checks"].values()),
             unwritten_after_the_prefill_found_mended_and_reported=(
                 len(mine) == a.tp and len(first) == 1 and caught(first[0]["found"], "coverage")
-                and first[0]["recomputed_tokens"] == a.pages * 16 and all(x["still_failing_here"] == 0 for x in mine)
+                and first[0]["recomputed_tokens"] == rule_tokens("silent_unwritten")
+                and all(x["still_failing_here"] == 0 for x in mine)
                 and res["silent_unwritten"]["ids"] in (clean, res["control_mend1"]["ids"])))
     for m in META:
         if m in fr:  # the rebuild from parity fails its tag on the damaged pages, which are then recomputed
@@ -341,23 +444,165 @@ def incident_md(s):
     return "\n".join(lines) + "\n"
 
 
+def summarize_prefill(out, a, res, meta):
+    """--set prefill: what the skip struck, what the check after the prefill found, what each run recomputed, and
+    the fingerprints of R's prompt KV against the fault-free runs, rank by rank."""
+    from run_fair import classify
+
+    logs = []
+    for path in sorted(glob.glob(os.path.join(out, "rank*.jsonl"))):
+        with open(path) as fh:
+            logs += [json.loads(line) for line in fh]
+
+    def every_rank(rid, op):
+        return [x for x in logs if x.get("rid") == rid and x["op"] == op]
+
+    def rank0(rid, op):
+        return [x for x in every_rank(rid, op) if x["rank"] == 0]
+
+    P, start, n, ranks, hook = a.prompt_len, a.pos, a.pages * 16, list(range(a.tp)), a.last_good == "hook"
+    clean = res["clean"]["ids"]
+    forwards = first_forwards(rank0("clean", "extend"))
+    want = rule_blocks(forwards, start, n, P)
+    span_blocks = set(range(start // 16, -(-(start + n) // 16)))
+    digests = {rid: {x["rank"]: x["digest"] for x in every_rank(rid, "digest")} for rid in PREFILL_RUNS}
+
+    def kv(rid1, rid2, part):  # per rank: the two runs' fingerprints of `part` agree (None: one is missing)
+        d1, d2 = digests.get(rid1, {}), digests.get(rid2, {})
+        return [None if r not in d1 or r not in d2 or d1[r].get(part) is None else d1[r][part] == d2[r][part]
+                for r in ranks]
+
+    def skips(rid):
+        return [x for x in every_rank(rid, "fault") if x.get("kind") == "skipped_store" and x.get("armed")]
+
+    def checks(rid):  # the check right after the prefill that found the skip: its record and its repair, per rank
+        if rid in PREFILL_STRICT:
+            return [(x, x.get("mend")) for x in every_rank(rid, "release_check") if x.get("n_out") == 1]
+        if rid == "suspect_prefill" and hook:
+            return [(x, x.get("mend")) for x in every_rank(rid, "released_suspect")]
+        found = {x["rank"]: x for x in every_rank(rid, "check") if x.get("at") == 1}
+        return [(found.get(m["rank"]), m) for m in every_rank(rid, "mend") if m.get("at") == 1]
+
+    rows = {}
+    for rid in PREFILL_RUNS:
+        sk, ch = skips(rid), checks(rid)
+        sk0 = [x for x in sk if x["rank"] == 0]
+        c0 = [(c, m) for c, m in ch if (c or m or {}).get("rank") == 0]
+        mend = c0[0][1] if c0 else None
+        redo = rank0(rid, "pending_redo")
+        rows[rid] = dict(
+            struck_forwards=[x["forward"] for x in sk0], struck_pages=sk0[0]["pages"] if sk0 else None,
+            skips=[{k: x.get(k) for k in ("rank", "n_out", "positions", "forward", "later_forwards", "stores_dropped",
+                                          "stale_same_stores", "keep_bytes", "layers")} for x in sk],
+            found=(c0[0][0] or {}).get("found") if c0 else None,
+            recomputed=(mend or {}).get("recomputed"), recomputed_tokens=block_tokens(recomputed_blocks(mend), P),
+            recomputed_blocks=sorted(recomputed_blocks(mend)), suffix=(mend or {}).get("suffix"),
+            suffix_tokens=(c0[0][0] or {}).get("suffix_tokens") if c0 and c0[0][0] else None,
+            reported=(c0[0][0] or {}).get("suffix") if c0 and rid == "suspect_prefill" and hook else None,
+            released_tokens=(c0[0][0] or {}).get("released_tokens") if c0 and c0[0][0] else None,
+            still_failing=sum((m or {}).get("still_failing_here", 0) for _, m in ch) if ch else None,
+            mend_seconds=(mend or {}).get("mend_seconds"),
+            regenerated=[(x.get("retracted"), x.get("regenerated")) for x in redo],
+            text_equals_clean=res[rid]["ids"] == clean, first_diff_vs_clean=classify(res[rid]["ids"], clean)[1],
+            kv_vs_clean={p: kv(rid, "clean", p) for p in ("whole", "before", "span", "same_chunk", "later")},
+            seconds=res[rid]["seconds"], extra_s=res[rid]["seconds"] - res["clean"]["seconds"])
+    kvm, ctl, pages_only, sus = (rows[r] for r in ("kvmend_prefill", "control_prefill", "pagesonly_prefill",
+                                                   "suspect_prefill"))
+    later = sorted(want - span_blocks)
+    later_tokens = P - later[0] * 16 if later else 0
+    every = dict(ranks=ranks)
+
+    def struck_right(row):  # the skip struck, during the prefill, the forward that computes the span, on every GPU
+        return (len(row["skips"]) >= a.tp and {x["rank"] for x in row["skips"]} == set(ranks)
+                and all(x["n_out"] == 0 and x["forward"][0] <= start and x["stores_dropped"] == x["layers"]
+                        and x["stale_same_stores"] == 0 for x in row["skips"] if not x["keep_bytes"])
+                and any(x["later_forwards"] for x in row["skips"]))
+
+    def found_right(row):  # the check right after the prefill found the span's pages by coverage on every GPU
+        return bool(row["found"]) and bool(row["struck_pages"]) and all(
+            row["found"].get(str(p), {}).get("coverage", {}).get("ranks") == every["ranks"]
+            for p in row["struck_pages"])
+
+    errors = [x for x in logs if x["op"] == "error"]
+    verdict = {
+        "no_errors": not errors,
+        "the_skip_struck_a_chunk_that_later_chunks_read": all(struck_right(rows[r]) for r in OWNED)
+        and bool(later),
+        "found_by_the_check_right_after_the_prefill": all(found_right(rows[r]) for r in OWNED + ("control_prefill",)),
+        # KVMend's repair: the damaged pages and every later chunk, from the page holding its first position; the
+        # rest of the damaged chunk is not recomputed
+        "later_chunks_recomputed": all(set(rows[r]["recomputed_blocks"]) == want and rows[r]["still_failing"] == 0
+                                       for r in ("kvmend_prefill", "control_prefill", "suspect_prefill")),
+        "suffix_size_reported": kvm["suffix_tokens"] == later_tokens and ctl["suffix_tokens"] == later_tokens
+        and (not hook or (sus["suffix_tokens"] == later_tokens and sus["released_tokens"] == 1
+                          and (sus["reported"] or {}).get("start") == (later[0] * 16 if later else None))),
+        "first_token_generated_again": all(rows[r]["regenerated"][:1] and rows[r]["regenerated"][0][0]
+                                           and rows[r]["regenerated"][0][1] >= 1 for r in PREFILL_STRICT),
+        "kvmend_kv_equals_its_control": all(x is True for x in kv("kvmend_prefill", "control_prefill", "whole")),
+        "kvmend_text_equals_its_control": res["kvmend_prefill"]["ids"] == res["control_prefill"]["ids"],
+        # the rule's premise: a chunk reads its own K and V from the forward, so the rest of the damaged chunk did not
+        # read the skipped pages
+        "the_damaged_chunk_did_not_read_the_skip": all(
+            x is True for r in ("kvmend_prefill", "pagesonly_prefill") for x in kv(r, "clean", "same_chunk")),
+        "without_the_fix_later_chunks_differ_or_the_text_is_wrong": all(
+            x is False for x in kv("pagesonly_prefill", "clean", "later")) or not pages_only["text_equals_clean"],
+        "outside_the_rule_the_later_chunks_are_recomputed_too": all(
+            x is True for x in kv("suspect_prefill", "control_prefill", "whole")),
+    }
+    summary = dict(meta=meta, set="prefill", model=a.model, tp=a.tp, prompt_len=P, chunk=a.chunk, pos=start,
+                   pages=a.pages, max_new=a.max_new, last_good=a.last_good, prefill_forwards=forwards,
+                   rule_blocks=sorted(want), later_tokens=later_tokens, rule_tokens=block_tokens(want, P), runs=rows,
+                   texts={k: v["text"][:200] for k, v in res.items()}, errors=errors, verdict=verdict)
+    with open(os.path.join(out, "summary.json"), "w") as fh:
+        json.dump(summary, fh, indent=1, default=str)
+    with open(os.path.join(out, "incident.md"), "w") as fh:
+        fh.write(prefill_md(summary))
+    return summary
+
+
+def prefill_md(s):
+    def yes(x):
+        return "yes" if x else "no"
+
+    def kv(xs):
+        return "/".join("=" if x else ("missing" if x is None else "differs") for x in xs)
+
+    fw = ", ".join(f"[{x}, {y})" for x, y in s["prefill_forwards"])
+    lines = [f"A store skipped during the prefill: {s['pages']} page(s) from position {s['pos']} of a "
+             f"{s['prompt_len']}-token prompt, computed in chunks of {s['chunk']} tokens: {fw}. KVMend's rule "
+             f"recomputes {s['rule_tokens']} tokens ({s['later_tokens']} of them in later chunks). KV fingerprints at "
+             f"output 2, per GPU, against clean (= equal).", "",
+             "| Run | Skip struck forward | Check found | Recomputed tokens | Text equals clean | Before | Damaged "
+             "chunk, after the pages | Later chunks | Extra |", "|---|---|---|---|---|---|---|---|---|"]
+    for rid, r in s["runs"].items():
+        found = ", ".join(f"page {p}: {', '.join(w)}" for p, w in (r["found"] or {}).items()) or "-"
+        lines.append(f"| {rid} | {r['struck_forwards'] or '-'} | {found} | {r['recomputed_tokens']} | "
+                     f"{yes(r['text_equals_clean'])} | {kv(r['kv_vs_clean']['before'])} | "
+                     f"{kv(r['kv_vs_clean']['same_chunk'])} | {kv(r['kv_vs_clean']['later'])} | "
+                     f"{r['extra_s']:+.2f} s |")
+    return "\n".join(lines) + "\n"
+
+
 def main():
     a = parse()
     a.rank = min(a.rank, a.tp - 1)  # the GPU the oracle names must exist (a TP=2 check has GPUs 0 and 1)
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     plan_path = os.path.join(out, "plan.json")
-    plan = make_plan(a)
+    prefill = a.set == "prefill"
+    plan = make_prefill_plan(a) if prefill else make_plan(a)
     with open(plan_path, "w") as fh:
         json.dump(plan, fh, indent=1)
     os.environ.update(KVMEND_ENABLE="1", KVMEND_PLAN=plan_path, KVMEND_OUT=out,
                       PYTHONPATH=os.pathsep.join(p for p in (os.path.join(HERE, "hook_site"), HERE,
                                                              os.environ.get("PYTHONPATH", "")) if p))
     for k in ("KVMEND_ENCODE_EVERY", "KVMEND_SCRUB_PIECES", "KVMEND_CTRL", "KVMEND_TAGS", "KVMEND_FENCE",
-              "KVMEND_CHECK_AFTER_PREFILL"):
+              "KVMEND_CHECK_AFTER_PREFILL", "KVMEND_STRICT", "KVMEND_STRICT_EVERY", "KVMEND_ON_FAIL"):
         os.environ.pop(k, None)
     if a.last_good == "hook":
         os.environ["KVMEND_CHECK_AFTER_PREFILL"] = "all"
+    if prefill:  # the release rule's path for kvmend_prefill and its control
+        os.environ["KVMEND_STRICT"] = ",".join(f"{rid}:{PREFILL_EVERY}" for rid in PREFILL_STRICT)
 
     import sglang as sgl
     from transformers import AutoTokenizer
@@ -405,8 +650,16 @@ def main():
         print(f"retry_{name:14s} first {len(first['ids'])} tokens ({first['finish']}); retry {len(second['ids'])} "
               f"tokens; {res[f'retry_{name}']['seconds']:.2f} s in all", flush=True)
 
-    try:
-        go("warmup", n=8)
+    def owned(rid):
+        """An earlier owner of R's pages: another prompt of the same length (the prompt's halves swapped), so that
+        after the flush R gets its very pages, chunk by chunk, and a page whose store is skipped keeps its KV."""
+        flush(engine)
+        owner = run(engine, prompt[len(prompt) // 2:] + prompt[:len(prompt) // 2], f"owner_{rid}", 1,
+                    a.variant_timeout)
+        print(f"owner_{rid:14s} {len(owner['ids'])} token in {owner['seconds']:.2f} s", flush=True)
+        go(rid)
+
+    def incident():
         for rid in ("clean", "control_mend1", "control_mend41", "control_retract41", "silent_unwritten",
                     "silent_late", "kvmend_unwritten", "kvmend_late_bypass", "kvmend_late_store", "kvmend_foreign",
                     "parity_late", "kvmend_bad_tag", "kvmend_bad_parity"):
@@ -421,6 +674,14 @@ def main():
         res["control_keep"] = run(engine, prompt, "control_keep", a.max_new, a.variant_timeout)
         print(f"control_keep         {len(res['control_keep']['ids'])} tokens in {res['control_keep']['seconds']:.2f} s",
               flush=True)
+
+    try:
+        go("warmup", n=8)
+        if prefill:
+            for rid in PREFILL_RUNS:
+                (owned if rid in OWNED else go)(rid)
+        else:
+            incident()
     finally:
         faulthandler.cancel_dump_traceback_later()
         faulthandler.dump_traceback_later(120, exit=True)
@@ -432,9 +693,9 @@ def main():
         engine.shutdown()
     with open(os.path.join(out, "outputs.json"), "w") as fh:
         json.dump(res, fh, indent=1, default=str)
-    s = summarize(out, a, res, meta)
+    s = summarize_prefill(out, a, res, meta) if prefill else summarize(out, a, res, meta)
     print(json.dumps(s["verdict"], indent=1))
-    print(incident_md(s), flush=True)
+    print(prefill_md(s) if prefill else incident_md(s), flush=True)
     if a.require_pass and not all(s["verdict"].values()):
         print("PASS CHECKS FAILED:", [k for k, ok in s["verdict"].items() if not ok], flush=True)
         raise SystemExit(3)

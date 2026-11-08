@@ -23,7 +23,8 @@ def test_patches_apply_in_a_fresh_interpreter():
             "s.Scheduler.stream_output_generation.__module__, r.RadixAttention.forward.__module__, "
             "c.RadixCache.cache_finished_req.__module__, b.Req.reset_for_retract.__module__, "
             "cc.HiCacheController.write.__module__, cc.HiCacheController.load.__module__, "
-            "h.MHATokenToKVPoolHost.load_to_device_per_layer.__module__, h.HostKVCache.free.__module__)")
+            "h.MHATokenToKVPoolHost.load_to_device_per_layer.__module__, h.HostKVCache.free.__module__, "
+            "s.Scheduler.run_batch.__module__)")
     # A new session, so that a timeout kills every process the import started, not only the interpreter (a child
     # left holding the output pipes would make the test wait for ever).
     proc = subprocess.Popen([sys.executable, "-c", code], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -35,4 +36,4 @@ def test_patches_apply_in_a_fresh_interpreter():
         stdout, stderr = proc.communicate()
         pytest.fail(f"importing SGLang with the hook took over 300 s:\n{stderr[-3000:]}")
     assert proc.returncode == 0, stderr[-3000:]
-    assert stdout.split()[-14:] == ["kvmend.hook"] * 14, stdout[-2000:]
+    assert stdout.split()[-15:] == ["kvmend.hook"] * 15, stdout[-2000:]
