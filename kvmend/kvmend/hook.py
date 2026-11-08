@@ -15,6 +15,9 @@ encode, scrub, inject, repair, retract, dump, and, for the comparison with Ghost
 the incident's faults, fault (a never-written page, a late write through or around the store path, a page holding
 another sequence's KV), check (the reader's check of one request's pages) and mend (parity rebuild where one GPU is
 damaged, recompute in place otherwise).
+The release rule (KVMEND_STRICT) checks strict requests as they run. A failed check mends the pages and regenerates
+the unreleased tokens, or, with on_fail "abort" (KVMEND_ON_FAIL, or an entry rid:every:abort), aborts the request and
+every other reader of the damaged pages and drops those pages from the prefix cache, for a client that resubmits.
 Each rank keeps one JSON line per action in memory and appends them to KVMEND_OUT/rank<r>.jsonl when the scheduler
 is idle or flushes its cache, so slow file writes (the cluster's /home is NFS) never fall inside a timed step.
 Run SGLang with page_size=16 and disable_overlap_schedule=True.
@@ -39,11 +42,34 @@ CTRL = os.environ.get("KVMEND_CTRL", "")  # JSON file read at every cache flush:
 FENCE_ON = os.environ.get("KVMEND_FENCE", "1") == "1"  # stores that carry a stale generation are dropped
 FUSED_ON = os.environ.get("KVMEND_FUSED", "0") == "1"  # tags by the fused Triton kernels (kvmend/tag_kernels.py)
 STRIPE = os.environ.get("KVMEND_STRIPE", "gpus")  # parity stripes across the GPUs, or "local": within each GPU
-# The release rule: request ids under strict release, as "rid" or "rid:every" ("*" for all). Their tokens leave only
-# after a check covers them; a check runs every `every` output tokens (default KVMEND_STRICT_EVERY) and at finish.
-STRICT = {rid: int(every) if every else None for rid, _, every in
-          (x.partition(":") for x in os.environ.get("KVMEND_STRICT", "").split(",") if x)}
+# The release rule: request ids under strict release, as "rid", "rid:every" or "rid:every:on_fail" ("*" for all; an
+# id ending in "*" names every id that starts with what comes before the "*"). Their tokens leave only after a check
+# covers them; a check runs every `every` output tokens (default KVMEND_STRICT_EVERY) and at finish. on_fail is what a
+# failed check does (default KVMEND_ON_FAIL): "mend" repairs the pages and generates the unreleased tokens again;
+# "abort" ends the request with an abort, which the client answers by resubmitting it (abort_on_fail).
+ON_FAIL_ACTIONS = ("mend", "abort")
+
+
+def _rules(spec):
+    """KVMEND_STRICT as ({rid: every or None}, {rid: on_fail}), the second only for entries that name an action."""
+    every, on_fail = {}, {}
+    for x in spec.split(","):
+        if x:
+            rid, ev, act = (x.split(":") + ["", ""])[:3]
+            if act and act not in ON_FAIL_ACTIONS:
+                raise ValueError(f"KVMEND_STRICT entry {x!r}: the action after the second ':' must be one of "
+                                 f"{ON_FAIL_ACTIONS}")
+            every[rid] = int(ev) if ev else None
+            if act:
+                on_fail[rid] = act
+    return every, on_fail
+
+
+STRICT, ON_FAIL = _rules(os.environ.get("KVMEND_STRICT", ""))
 STRICT_EVERY = int(os.environ.get("KVMEND_STRICT_EVERY", "1"))
+ON_FAIL_DEFAULT = os.environ.get("KVMEND_ON_FAIL", "mend")
+if ON_FAIL_DEFAULT not in ON_FAIL_ACTIONS:
+    raise ValueError(f"KVMEND_ON_FAIL must be one of {ON_FAIL_ACTIONS}, not {ON_FAIL_DEFAULT!r}")
 _FB = [None]  # the forward batch whose attention layers run now (RadixAttention.forward sets it)
 _STATES = []  # the pool states of this process (one per KV pool), for patches that have no scheduler at hand
 
@@ -92,6 +118,8 @@ class PoolState:
         self.step_t = torch.zeros(1, dtype=torch.int64, device=self.device)  # the step, readable inside CUDA graphs
         self.good_step = {}     # rid -> step of the request's last passing check
         self.pending_redo = {}  # rid -> tokens to keep: a reader of a mended page that must regenerate the rest
+        self.pending_suspect = {}  # rid -> (mended pages, since) for evict_suspect when that rollback happens
+        self.poisoned = {}      # page -> its generation: damaged pages of aborted requests, to leave the prefix cache
         self.checked_upto = {}  # rid -> output tokens covered by the request's last passing check (releasable)
         self.view_cache = {}    # rid -> token keys of the request's stored tokens, for the reader's check
         self.sched = None       # the scheduler, for checks that run outside on_step (the finish check)
@@ -151,7 +179,7 @@ class PoolState:
         self.checked_upto, self.view_cache = {}, {}
         self.stripe_of, self.stripe_pages, self.lparity = {}, {}, {}
         self.wstep.zero_()
-        self.good_step, self.pending_redo = {}, {}
+        self.good_step, self.pending_redo, self.pending_suspect, self.poisoned = {}, {}, {}, {}
         self.batch_steps = 0
         self.alarm.zero_()
         self.stats = new_stats()
@@ -978,60 +1006,165 @@ ACTIONS = dict(encode=act_encode, scrub=act_scrub, inject=act_inject, repair=act
 # ---------------------------------------------------------------------------------------------------------------
 # The release rule: a strict request's tokens leave only after a check covers what they read
 
+_PATTERNS = [None, []]  # the STRICT table the list below was made from, and its "prefix*" ids, longest first
+
+
+def _rule_id(rid):
+    """The KVMEND_STRICT id that names request `rid`: the rid itself, else the longest "prefix*" it starts with."""
+    rid = str(rid)
+    if rid in STRICT:
+        return rid
+    if _PATTERNS[0] is not STRICT:
+        _PATTERNS[:] = [STRICT, sorted((k for k in STRICT if k.endswith("*")), key=len, reverse=True)]
+    return next((k for k in _PATTERNS[1] if rid.startswith(k[:-1])), None)
+
+
 def is_strict(req):
-    return bool(STRICT) and ("*" in STRICT or req.rid in STRICT) and not str(req.rid).startswith("kvmend-")
+    return bool(STRICT) and not str(req.rid).startswith("kvmend-") and _rule_id(req.rid) is not None
 
 
 def strict_every(req):
-    every = STRICT.get(req.rid)
-    return every or STRICT.get("*") or STRICT_EVERY
+    return STRICT.get(_rule_id(req.rid)) or STRICT.get("*") or STRICT_EVERY
+
+
+def on_fail(req):
+    """What a failed check does to a strict request: "mend" or "abort"."""
+    return ON_FAIL.get(_rule_id(req.rid), ON_FAIL_DEFAULT)
+
+
+def _may_read(other, req):
+    """`other` holds KV that a check of its pages can cover: a live request other than `req`, past its prefill (a
+    request in the middle of a chunked prefill has positions with no slots yet)."""
+    return (other is not req and other.req_pool_idx is not None and not other.finished()
+            and getattr(other, "is_chunked", 0) <= 0)
 
 
 def release_check(st, sched, req, finishing=False):
     """Check a strict request's pages before its next tokens leave. On a pass, every output token so far may be
     released. On a failure, the pages are mended, and the tokens chosen since the last pass, which were never
     released, are dropped and generated again. A request that is finishing is ended with an abort instead, which
-    releases only its checked tokens (the proof of concept does not regenerate at finish)."""
+    releases only its checked tokens (the proof of concept does not regenerate at finish). With on_fail "abort",
+    nothing is mended: the request is aborted (abort_on_fail)."""
     rec = dict(op="release_check", rid=req.rid, n_out=len(req.output_ids), finishing=finishing)
     rec.update(act_check(st, sched, {}, req))
     if not st.found:
         st.checked_upto[req.rid] = len(req.output_ids)
         rec["releasable"] = len(req.output_ids)
         return rec
+    if on_fail(req) == "abort":
+        rec.update(abort_on_fail(st, sched, req, finishing))
+        return rec
     keep = st.checked_upto.get(req.rid, 0)
     since = st.good_step.get(req.rid, 0)  # the damage struck after this request's last passing check
     rec["mend"] = act_mend(st, sched, {}, req)
+    mended = set(rec["mend"].get("mended_pages", []))
     if finishing:
         from sglang.srt.managers.schedule_batch import FINISH_ABORT
 
         req.finished_reason = FINISH_ABORT(message="KV damage found at the end; only checked tokens were released")
         rec["aborted_at_finish"] = True
     else:
-        rec["regenerate"] = _redo(st, sched, req, keep)
+        rec["regenerate"] = _redo(st, sched, req, keep, (mended, since))
     # every other strict reader of a mended page drops its unreleased tokens too: they may have read the damage
-    mended = set(rec["mend"].get("mended_pages", []))
     rec["other_readers"] = []
     for other in _batch_reqs(sched):
-        if (other is req or not is_strict(other) or other.req_pool_idx is None or other.finished() or not mended
+        if (not is_strict(other) or not _may_read(other, req) or not mended
                 or not mended & set(_reader_view(st, sched, other)[0].tolist())):
             continue
-        rec["other_readers"].append(dict(rid=other.rid, **_redo(st, sched, other, st.checked_upto.get(other.rid, 0))))
+        rec["other_readers"].append(dict(rid=other.rid, **_redo(st, sched, other, st.checked_upto.get(other.rid, 0),
+                                                                 (mended, since))))
     # cached KV that finished readers computed after the damage may have read it: drop it from the prefix cache
     rec["evicted_tokens"] = evict_suspect(st, sched.tree_cache, mended, since)
     return rec
 
 
-def _redo(st, sched, req, keep):
+def _redo(st, sched, req, keep, suspect=None):
     """Drop a strict request's tokens after `keep` and generate them again, now, or at its next step if it is not in
-    the running batch yet (it has just finished its prefill); until then, nothing past `keep` is released."""
+    the running batch yet (it has just finished its prefill); until then, nothing past `keep` is released. suspect:
+    the repair's (mended pages, since). A request whose rollback waits still holds its cached pages, so the eviction
+    after the repair (evict_suspect) kept them: its prompt KV, computed on top of the damage if it arrived after it.
+    They are evicted when the rollback lets them go, or the re-prefill would reuse them."""
     st.checked_upto[req.rid] = keep
     rec = act_retract(st, sched, dict(keep=keep), req)
     if not rec.get("retracted"):
         st.pending_redo[req.rid] = keep
+        if suspect is not None:
+            st.pending_suspect[req.rid] = suspect
         rec["pending"] = True
     else:
         forget(st, req.rid)
     return rec
+
+
+def abort_on_fail(st, sched, req, finishing=False):
+    """on_fail "abort": the damage is not mended. The request ends with an abort, which releases only the tokens its
+    last check covered, and so does every other strict reader of a damaged page whose rule is also "abort": they may
+    have read the damage. The client resubmits them. The damaged pages (those whose tags or coverage failed) leave the
+    prefix cache with everything cached on top of them, once no running request holds them (drop_poisoned), so a
+    resubmission recomputes from the first damaged page on and reuses the clean prefix before it."""
+    bad = {p for _, _, p, why in st.found if why in ("tag", "coverage")}
+    for p in bad:
+        st.poisoned.setdefault(p, int(st.gen[p]))
+    _abort(req, finishing)
+    others = []
+    for other in _batch_reqs(sched):
+        if (is_strict(other) and on_fail(other) == "abort" and _may_read(other, req)
+                and not getattr(other, "to_abort", False) and bad & set(_reader_view(st, sched, other)[0].tolist())):
+            _abort(other)
+            others.append(dict(rid=other.rid, aborted=True))
+    st.found, st.damaged = [], []
+    return dict(aborted=True, poisoned_pages=sorted(bad), other_readers=others,
+                dropped_tokens=drop_poisoned(st, sched.tree_cache))
+
+
+def _abort(req, finishing=False):
+    """End a strict request with an abort; its unchecked tokens are never released. A request that is finishing (the
+    check in cache_finished_req) gets its finish reason now; any other is marked as SGLang's own abort marks it, and
+    ends at its next step."""
+    message = "KV damage found; resubmit the request"
+    if finishing:
+        from sglang.srt.managers.schedule_batch import FINISH_ABORT
+
+        req.finished_reason = FINISH_ABORT(message=message)
+    else:
+        req.to_abort, req.to_abort_message = True, message
+
+
+def drop_poisoned(st, tree):
+    """Drop the damaged pages of aborted requests from the prefix cache, with all the KV cached on top of them, which
+    was computed after them and may have read them. A node that holds a damaged page is split at the first one: the
+    clean part before it stays cached, the part from it on goes with everything below it. A node that a running
+    request holds stays until that request ends (abort_on_fail aborts every reader). A damaged page that has been
+    freed meanwhile (a new generation) is done. Returns the tokens dropped."""
+    for p, gen in list(st.poisoned.items()):
+        if int(st.gen[p]) != gen:
+            del st.poisoned[p]
+    if not st.poisoned or tree is None or not hasattr(tree, "root_node"):
+        return 0
+    bad = torch.tensor(sorted(st.poisoned), dtype=torch.int64, device=st.device)
+    dropped, todo = 0, [tree.root_node]
+    while todo:
+        for child in list(todo.pop().children.values()):
+            if child.value is None or not len(child.value):
+                continue
+            hit = torch.isin(torch.div(child.value.to(st.device, torch.int64), PAGE, rounding_mode="floor"),
+                             bad).nonzero().flatten()
+            if not hit.numel():
+                todo.append(child)
+            elif child.lock_ref == 0:  # nothing running holds it, nor anything below it (locks reach the root)
+                cut = int(hit[0]) // PAGE * PAGE
+                if cut:
+                    tree._split_node(child.key, child, cut)  # a new parent keeps the clean head; child keeps the rest
+                dropped += _drop_subtree(tree, child)
+    return dropped
+
+
+def _drop_subtree(tree, node):
+    """Free a node of the prefix cache and everything below it, leaves first, as RadixCache.evict frees leaves."""
+    n = sum(_drop_subtree(tree, c) for c in list(node.children.values()))
+    tree.token_to_kv_pool_allocator.free(node.value)
+    tree._delete_leaf(node)
+    return n + len(node.value)
 
 
 def evict_suspect(st, tree, damaged_pages, since):
@@ -1087,7 +1220,8 @@ def release_checks(st, sched):
     output token) and every strict_every(req) output tokens. The check after the prefill gives every strict request a
     last good check before any decode step reads its KV: without it, damage found at the first scheduled check leaves
     no bound on what read it, so all of the request's cached KV is suspect and its whole prompt is computed again.
-    First, a reader of a mended page that could not regenerate yet does so now."""
+    First, a reader of a mended page that could not regenerate yet does so now, and its cached KV that may have read
+    the damage leaves the prefix cache. A request being aborted is not checked again."""
     if not STRICT:
         return
     reqs = _batch_reqs(sched)
@@ -1098,9 +1232,12 @@ def release_checks(st, sched):
             rec = act_retract(st, sched, dict(keep=keep), req)
             if rec.get("retracted"):
                 forget(st, req.rid)
+                if req.rid in st.pending_suspect:
+                    rec["evicted_tokens"] = evict_suspect(st, sched.tree_cache, *st.pending_suspect.pop(req.rid))
             _log(sched, dict(op="pending_redo", step=st.step, rid=req.rid, t0=time.time(), **rec))
     due = [req for req in _batch_reqs(sched)
            if is_strict(req) and not req.finished() and req.req_pool_idx is not None
+           and not getattr(req, "to_abort", False)
            and (len(req.output_ids) % strict_every(req) == 0 or len(req.output_ids) == 1)
            and st.checked_upto.get(req.rid, 0) < len(req.output_ids)
            and req.rid not in st.pending_redo]
@@ -1269,6 +1406,16 @@ def on_step(sched):
         rec.update(ACTIONS[a["op"]](st, sched, a, req))
         _log(sched, rec)
     release_checks(st, sched)
+    if st.poisoned:  # damaged pages of aborted requests that a running request still held at the last try
+        _drop_and_log(st, sched, sched.tree_cache, "step")
+
+
+def _drop_and_log(st, sched, tree, after):
+    t0 = time.time()
+    n = drop_poisoned(st, tree)
+    if n:
+        _log(sched, dict(op="drop_poisoned", step=st.step, t0=t0, after=after, dropped_tokens=n,
+                         pending_pages=sorted(st.poisoned)))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1399,16 +1546,22 @@ def patch_scheduler(mod):
 
 def patch_radix_cache(mod):
     """The release rule's last check: before a finished strict request's KV goes to the prefix cache, check what its
-    final tokens read, so that they too leave only after a check."""
+    final tokens read, so that they too leave only after a check. A request that ends with an abort releases nothing
+    more and is not checked. Once SGLang has cached the request and released its lock, damaged pages of aborted
+    requests that nothing holds any more leave the prefix cache (drop_poisoned), before the client hears of the
+    abort."""
     cls = mod.RadixCache
     orig_finished = cls.cache_finished_req
 
     def cache_finished_req(self, req, *args, **kwargs):
-        if STRICT and is_strict(req) and req.req_pool_idx is not None:
-            st = getattr(self.token_to_kv_pool_allocator.get_kvcache(), "_kvm", None)
-            if st is not None and st.sched is not None and st.checked_upto.get(req.rid, 0) < len(req.output_ids):
-                _log(st.sched, dict(step=st.step, t0=time.time(), **release_check(st, st.sched, req, finishing=True)))
-        return orig_finished(self, req, *args, **kwargs)
+        st = getattr(self.token_to_kv_pool_allocator.get_kvcache(), "_kvm", None) if STRICT else None
+        if (st is not None and st.sched is not None and is_strict(req) and req.req_pool_idx is not None
+                and not getattr(req, "to_abort", False) and st.checked_upto.get(req.rid, 0) < len(req.output_ids)):
+            _log(st.sched, dict(step=st.step, t0=time.time(), **release_check(st, st.sched, req, finishing=True)))
+        out = orig_finished(self, req, *args, **kwargs)
+        if st is not None and st.sched is not None and st.poisoned:
+            _drop_and_log(st, st.sched, self, req.rid)
+        return out
 
     cls.cache_finished_req = cache_finished_req
 

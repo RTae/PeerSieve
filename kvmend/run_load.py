@@ -82,21 +82,29 @@ def prompts(tok, a):
     return out
 
 
-def make_plan(a, prompts_):
+def fault_specs(a):
+    """The four faults by name, each due when its request has produced `at` output tokens (run_arrivals.py uses them
+    too)."""
     span_end = a.shared
-    faults = {
-        "g0_r0": dict(op="fault", at=10, kind="late_bypass", pos=span_end - 64, pages=4, donor=0),
-        "g1_r2": dict(op="fault", at=20, kind="foreign", pos=span_end, pages=1, donor=0),
-        "g2_r1": dict(op="fault", at=15, kind="burst", pos=16, pages=8, layers=2, layer=1, rank=a.rank),
-        "g3_r0": dict(op="fault", at=12, kind="late_store", pos=span_end - 32, pages=2, donor=0),
+    return {
+        "shared": dict(op="fault", at=10, kind="late_bypass", pos=span_end - 64, pages=4, donor=0),
+        "foreign": dict(op="fault", at=20, kind="foreign", pos=span_end, pages=1, donor=0),
+        "burst": dict(op="fault", at=15, kind="burst", pos=16, pages=8, layers=2, layer=1, rank=a.rank),
+        "fenced": dict(op="fault", at=12, kind="late_store", pos=span_end - 32, pages=2, donor=0),
     }
+
+
+TARGETS = {"shared": "g0_r0", "foreign": "g1_r2", "burst": "g2_r1", "fenced": "g3_r0"}  # the request of each fault
+
+
+def make_plan(a, prompts_):
     plan = {}
     for run in ("f", "x"):
-        for name, f in faults.items():
+        for name, f in fault_specs(a).items():
             f = dict(f)
             if run == "x" and f["kind"] == "late_store":
                 f["fence"] = False  # plain SGLang has no fence: the late write lands
-            plan[f"{run}_{name}"] = [f]
+            plan[f"{run}_{TARGETS[name]}"] = [f]
     return plan
 
 

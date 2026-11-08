@@ -15,6 +15,7 @@ itself is not edited.
 | `hook_site/sitecustomize.py` | loads the patch into every SGLang process when `KVMEND_ENABLE=1` |
 | `run_poc.py` | the driver: request R under each response to one fault, on one engine, then a summary and the comparison table |
 | `bench_overhead.py` | fault-free throughput of plain SGLang, parity alone and KVMend, one engine per mode |
+| `run_arrivals.py` | requests that arrive over time, under fast release, strict release and abort-and-retry (below) |
 | `slurm/poc.sh`, `slurm/compare.sh` | the GPU jobs: the proof of concept, and the GhostServe comparison with the throughput benchmark |
 | `tests/` | CPU tests: tag and parity math, running tags, the plan and the log, and the collective actions on 4 gloo processes |
 
@@ -87,6 +88,26 @@ Its output is also compared with a fault-free run that produced the same text on
 The workload is 64 requests × 1,024 prompt tokens × 256 output tokens, sent at once; each figure is the median of 3 runs.
 
 The proposal's target (H7) is throughput within 3% of parity alone.
+
+## Requests that arrive over time
+
+`run_arrivals.py` runs the shared-prefix workload of `run_load.py` with requests that arrive by a Poisson process
+(`--rate` per second, `--seed`), streamed. Three modes run in one engine, each without and with `run_load.py`'s four
+faults:
+- **fast:** no checks;
+- **strict:** KVMend's release rule, a check every `--every` tokens; damage is mended, and the unreleased tokens are
+  generated again;
+- **retry:** the same checks, but a failed check aborts the request and every other reader of the damaged pages, and
+  the client resubmits.
+
+The abort is a hook option: an entry `rid:every:abort` in `KVMEND_STRICT`, or `KVMEND_ON_FAIL=abort` for every strict
+request. An id that ends in `*` names every id that starts with what comes before it. The damaged pages leave the
+prefix cache, with everything cached on top of them, once no running request holds them. The node that holds the first
+damaged page is split there, so its clean head stays cached and a resubmission recomputes from the damaged page on.
+
+Each run reports time to first token and end-to-end latency (median and 99th percentile, from the arrival to the end of
+the last attempt), throughput, goodput, wrong outputs on stable requests, aborts and resubmissions, and checks per
+step (`summary.json`, `arrivals.md`). The suite step is `arrivals`.
 
 ## Run it on cluster ja
 
