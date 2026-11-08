@@ -11,6 +11,7 @@ itself is not edited.
 |---|---|
 | `kvmend/tags.py` | the tag of a piece (one 16-token page, one layer, one GPU): a 32-bit sum of mixed words, updated one token at a time |
 | `kvmend/hook.py` | the patch: running tags in `MHATokenToKVPool.set_kv_buffer`, dropped tags in the paged allocator's `free`, and a step after every scheduler iteration that runs the plan's actions (encode, scrub, inject, repair, retract, dump, and for the comparison repair_share and evict) and the background encode and scrub |
+| `kvmend/attn_check.py` | checks on read, with `KVMEND_CHECK_IN_ATTN=1`: copies of SGLang's two Triton decode-attention stage-1 kernels that also add up the tag of every piece they read (per layer and page, with atomics), and the comparison with the stored tags after each decode step; `KVMEND_ATTN_RELOAD=1` reads the words again instead of reusing the attention's tiles |
 | `kvmend/meta.py` | names every record: Slurm job, node, GPUs and the SHA-256 of each source file |
 | `hook_site/sitecustomize.py` | loads the patch into every SGLang process when `KVMEND_ENABLE=1` |
 | `run_poc.py` | the driver: request R under each response to one fault, on one engine, then a summary and the comparison table |
@@ -83,6 +84,10 @@ Its output is also compared with a fault-free run that produced the same text on
 - **plain:** SGLang without the patch.
 - **parity:** GhostServe-style parity alone, encoding sealed pages every 16 batch steps.
 - **kvmend:** tags, parity with a tag check before each encode, and a background scrub at several rates.
+- **attn, attn_reload:** tags (fused kernels) and checks on read inside the decode attention. Each mode checks itself:
+  no failure in the fault-free runs, and a probe request whose one flipped bit must be named, rank, layer and page, at
+  the next decode step. `slurm/suite.sh` step `attn` runs plain, tags_fused, attn and attn_reload on the
+  decode-heavy workload (32 requests x 128 prompt tokens x 512 output tokens).
 
 The workload is 64 requests × 1,024 prompt tokens × 256 output tokens, sent at once; each figure is the median of 3 runs.
 
@@ -111,6 +116,10 @@ Each run writes `runs/<job>/`:
 - **Rollback** re-prefills all of R's decode tokens, not only those after the last good check. Here the two sets are the same, because the last good check is at output 1.
 - **Not built yet:** the scrub runs only when the plan asks for it, not as a rate-limited background stream. There are no generations, so stale reads are not caught. There is no Reed–Solomon code, and finished requests' cached KV is not evicted.
 - **Backend:** SGLang runs with the Triton attention backend, so no FlashInfer kernels need compiling.
+- **Checks on read** cover decode attention only. Extend attention (prefill chunks reading earlier chunks, a prompt
+  extending a cached prefix, a recompute) reads unchecked; the first decode step reads the same pages and checks them.
+  They use the slots' own token keys, so another sequence's KV with matching tags passes; the reader's check
+  (`check`, the release rule) uses the reader's keys and catches it.
 - **GhostServe re-implemented:** XOR parity per page in plain PyTorch and NCCL, with synchronous host copies. GhostServe
   uses fused kernels and asynchronous copies, so the parity-alone throughput here is a lower bound for GhostServe's.
   The oracle that names the GPU does not exist in GhostServe; it stands for the best case of a detector it lacks.
