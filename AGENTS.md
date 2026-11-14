@@ -12,7 +12,7 @@ KVMend is a correctness watchdog for the KV cache in LLM serving. It detects sil
 - `kvmend/tests_gpu/`: GPU kernel tests.
 - `kvmend/slurm/`: environment setup and Slurm experiment scripts.
 - `kvmend/results/`: measured records used by the proposal figures; do not treat these as source code.
-- `kvmend/decisions.md`: the owner's decisions and experiment approvals. Check it before assuming that a launch is approved.
+- `proposal/decisions.md`: the owner's decisions and experiment approvals. Check it before assuming that a launch is approved.
 - `proposal/PROPOSAL.md`: the generated proposal.
 - `proposal/build/`: the keyed proposal template, assembler, and consistency checker.
 - `proposal/figures/`: figure generators, shared styles, CSV data, and rendered figures.
