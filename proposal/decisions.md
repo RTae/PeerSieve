@@ -68,3 +68,22 @@ Owner replies, quoted exactly, with the row text of the question each one answer
   - "51 a". Decision 51, option a: commit the refined verdict of the requests-over-time test (4 files, short message, no trailer lines), with the retry mode judged by the same rule as strict release, merge it into main, and rerun every CPU test.
   - "52 a". Decision 52, option a: rerun the requests-over-time test on octave now, from decision 51's commit: a 2-GPU TinyLlama check (CPU tests, then the test), at most 20 minutes (0.67 GPU-hours), then chained, only if it passes, the test on Llama-3.1-8B with 8 GPUs, at most 20 minutes (2.7 GPU-hours).
   - Next free number: 53.
+- 2026-11-08 17:18 CST. OWNER: "53 a, 54 a, 55 a".
+  - "53 a". Decision 53, option a: keep SGLang for every measured result, and state "one engine" as a limit in the proposal.
+  - "54 a". Decision 54, option a: commit both changes onto main, one commit each with short messages and no trailer lines ("Judge arrivals misses by when the wrong token left", "Recompute the prompt chunks that read a skipped write"), then rerun every CPU test on main.
+  - "55 a". Decision 55, option a: rerun on octave from decision 54's commits: (1) a 2-GPU TinyLlama check (CPU tests, an early-page incident with KVMend's own check, the skipped-write test with small prompt chunks, requests over time), at most 20 minutes (0.67 GPU-hours); (2) chained, each step only if it passed, the same three tests on Llama-3.1-8B with 8 GPUs at page 64, at most 35 minutes (4.7 GPU-hours).
+  - Next free number: 56.
+- 2026-11-08 18:18 CST. OWNER: "56 a". Decision 56, option a: apply the checked proposal update: copy the new source into the proposal's build folder (not tracked by git), and commit the regenerated PROPOSAL.md on main with a short message and no trailer lines, "Add today's results to the proposal".
+  - Next free number: 57.
+- 2026-11-08 19:19 CST. OWNER: "57 a, 58 a".
+  - "57 a". Decision 57, option a: delete the leftovers from the day's builds: 7 build checkouts (58 MB), the 6 local branches that point at them (merge-builds and five build branches), and two 8 KB scratch folders in the shared /tmp; keep main, production and before-trailer-removal.
+  - "58 a". Decision 58, option a: make a failed check inside attention start the repair (today it only logs), then run it on both models; the GPU run is asked separately.
+  - Next free number: 59.
+- 2026-11-08 20:52 CST. OWNER: "59 a, 60 a".
+  - "59 a". Decision 59, option a: commit both changes on main as two short commits with no trailer lines, first "Evict KV cached right after a strict request's last good check", then "Repair damage that checks on read find, in the same step"; rerun every CPU test on main.
+  - "60 a". Decision 60, option a: run on octave from decision 59's commits: (1) a 2-GPU TinyLlama check (CPU tests, the attention-repair test, which must show a wrong token avoided, then the release-rule and requests-over-time tests), at most 30 minutes (1.0 GPU-hours); (2) chained, each step only if it passed, the attention-repair and requests-over-time tests on Llama-3.1-8B with 8 GPUs, at most 30 minutes (4.0 GPU-hours).
+  - Next free number: 61.
+- 2026-11-08 22:37 CST. OWNER: "61 a". Decision 61, option a: apply the checked proposal update for checks on read that repair: copy the new source into the proposal's build folder, and commit the regenerated PROPOSAL.md on main as "Add checks on read that repair to the proposal", short, with no trailer lines.
+  - Next free number: 62.
+- 2026-11-08 22:40 CST. OWNER: "62 a". Decision 62, option a: delete the last two scratch checkouts (.claude/worktrees/agent-af530143e052117d7, 8.3 MB, its 8 uncommitted files identical to main; .claude/worktrees/split-check, 8.5 MB, clean at main's tip) and the branch worktree-agent-af530143e052117d7 (at 127e8f4, already on main).
+  - Next free number: 63.
