@@ -1,12 +1,12 @@
-# PeerSieve project instructions
+# PeerSieve
 
 ## Scope and source files
 
 PeerSieve is a research proposal for Byzantine-resilient decentralized LLM tuning. It screens CountSketch announcements before requesting compressed updates, then audits and aggregates the accepted payloads. This repository contains the proposal, not an implementation or experiment results. KVMend is out of scope.
 
-- `proposal_peersieve/latex/main.tex` is the only source of truth for the proposal. Edit it directly.
-- `proposal_peersieve/latex/references.bib` holds the bibliography. `neurips_2025.sty` in the same directory is the vendored NeurIPS style.
-- `proposal_peersieve/latex/figures/` contains the PNGs used by the paper. Keep their relative paths and filenames in sync with `main.tex`.
+- `proposal/latex/main.tex` is the only source of truth for the proposal. Edit it directly.
+- `proposal/latex/references.bib` holds the bibliography. `neurips_2025.sty` in the same directory is the vendored NeurIPS style.
+- `proposal/latex/figures/` contains the PNGs used by the paper. Keep their relative paths and filenames in sync with `main.tex`.
 
 Keep the proposal directory source-only. Do not restore the old Markdown draft, README, Makefile, or figure generator unless the owner asks. Keep rendered PDFs and TeX intermediates outside the checkout.
 
@@ -24,7 +24,7 @@ Use `latexmk` with a TeX installation that provides PDFLaTeX and BibTeX. Run thi
 ```bash
 (
   set -e
-  src=proposal_peersieve/latex
+  src=proposal/latex
   build_dir=$(mktemp -d "${JCODE_SCRATCH_DIR:-${TMPDIR:-/tmp}}/peersieve-latex.XXXXXX")
   cp "$src"/main.tex "$src"/neurips_2025.sty "$src"/references.bib "$build_dir"/
   cp -R "$src"/figures "$build_dir"/
