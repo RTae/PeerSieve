@@ -133,7 +133,7 @@ PeerSieve starts the exchange with a sketch rather than a full update. The sende
   \label{fig:protocol}
 \end{inlinefigure}
 
-In Figure~\ref{fig:protocol}, batched TrustGraph-DFL downloads all six updates before scoring them. With PeerSieve, each neighbor sends a small summary of its update, called a sketch. The receiver compares it with its own validation sketch and requests the compressed update only if their cosine similarity is positive. In this example, that means four downloads instead of six.
+In Figure~\ref{fig:protocol}, batched TrustGraph-DFL downloads all six updates before scoring them. With PeerSieve, each neighbor first sends a sketch, a small summary of its whole update. The receiver compares it with its own validation sketch and requests the compressed update only if their cosine similarity is positive. In this example, four sketches pass, so the receiver skips two downloads.
 
 The sketches are $s_j^{(t)}=F_t(y_j^{(t)})$ for the decoded update and $s_i^{\mathrm{val}}=F_t(g_i^{\mathrm{val}})$ for the validation direction. Here $F_t$ is the round's sketch function and $g_i^{\mathrm{val}}=-\nabla L_i^{\mathrm{val}}(w_i^{(t)})$ is the descent direction on held-out data. The receiver skips the download if either sketch is zero. It computes the full cosine $c_{ij}^{(t)}$ during the audit.
 \begin{equation}
@@ -146,7 +146,7 @@ The sketches are $s_j^{(t)}=F_t(y_j^{(t)})$ for the decoded update and $s_i^{\ma
 \label{eq:sketch}
 \end{equation}
 
-The sketch score can miss a useful update. A positive score triggers a request, not acceptance. The receiver audits the downloaded update before using it, including checking that its rebuilt sketch matches the announcement (Section~\ref{sec:audit}).
+The screen can skip a useful update. A positive score triggers a request, not acceptance. During the audit, the receiver rebuilds the sketch from the payload and checks for an exact match with the announcement (Section~\ref{sec:audit}).
 
 \subsection{Blockwise INT4 compression}
 \label{sec:compression}
@@ -184,7 +184,7 @@ The codes and rounded scales are the only tensor data in the payload. The sender
 
 Figure~\ref{fig:stream} contrasts the batched baseline with PeerSieve. PeerSieve stores one compressed payload at a time instead of a full update from every neighbor. It decodes the payload in chunks using a reusable 4~MiB buffer, called a decode tile. It checks the entire payload on the first pass. It makes a second pass only after the update passes, so a failed check cannot leave a partial update in the running sum.
 
-\textbf{Pass 1. Check the payload.} The receiver ties each announcement to the authenticated sender, run, and round. Each request allows one payload within the size limit. The receiver checks the sender, round, length, and packed format. As it decodes the payload, it rebuilds the sketch and computes the full cosine and norm. The rebuilt bucket sums must exactly match those in the announced sketch. The full cosine against the local validation direction must be positive. The full cosine and norm must also be close to their sketch estimates. For a valid nonzero payload, the checks are:
+\textbf{Pass 1. Check the payload.} The receiver ties each announcement to the authenticated sender, run, and round. It stages at most one payload per request, within the size limit. Before decoding, it checks the sender, round, length, and packed format. As it decodes the payload, it rebuilds the sketch and computes the full cosine and norm. The rebuilt bucket sums must exactly match those in the announced sketch. The full cosine against the local validation direction must be positive. The full cosine and norm must also be close to their sketch estimates. For a valid nonzero payload, the checks are:
 \begin{equation}
 \begin{aligned}
   F_t(y_j^{(t)}) &= s_j^{(t)}, & c_{ij}^{(t)} &> 0, \\
@@ -193,7 +193,7 @@ Figure~\ref{fig:stream} contrasts the batched baseline with PeerSieve. PeerSieve
 \end{aligned}
 \label{eq:audit}
 \end{equation}
-Both peers use the public round seed to assign each coordinate a bucket and a sign. They split the 16,384 buckets across layers in proportion to parameter count, sum in a fixed FP32 order, and round to FP16. The 32~KiB sketch uses one representation for zero and excludes nonfinite values. Different updates can produce the same bucket sums, so a match does not prove that the update is unchanged or that the sender trained honestly.
+Both peers use the public round seed to assign each coordinate a bucket and a sign. They divide the 16,384 buckets among layers in proportion to parameter count. They add the signed values in a fixed FP32 order and round the sums to FP16. The 32~KiB sketch uses one representation for zero and excludes nonfinite values. Different updates can produce the same bucket sums, so a match does not prove that the update is unchanged or that the sender trained honestly.
 
 We start with tolerances $\tau_c=0.05$ and $\tau_n=0.03$. For evaluation, we will set each tolerance to the $99.9$th percentile of its discrepancy in separate attack-free calibration runs and keep it fixed. The receiver can skip a zero update without a ban. It discards any failing payload without changing the running sum or total weight.
 
