@@ -62,10 +62,10 @@ TrustGraph-DFL~\cite{trustgraph2026} scores each received update by cosine simil
 
 Each of these defenses receives the full model or update before deciding whether to use it. For TinyLlama-1.1B with low-rank adaptation (LoRA) at rank 128, one update takes 385~MiB in FP32. In our batched TrustGraph-DFL baseline, a peer receives six updates per round, or 2,310~MiB (Table~\ref{tab:round}). At $1$~Gb/s, we estimate 19.4~s for the transfer alone. The example shows four problems:
 \begin{enumerate}
-  \item \textbf{Rejected updates still cost bandwidth.} If the receiver rejects two updates, it has already received 770~MiB it will not use.
-  \item \textbf{Useful updates are still large.} Top-$k$ compression~\cite{karimireddy2019efsgd} sends only the largest changes by absolute value. Dropping the smaller changes can make the receiver reject an update it would have accepted in full.
-  \item \textbf{More neighbors mean more buffers.} The batched baseline keeps one full update per neighbor in GPU memory. Checking updates one at a time saves memory, but the receiver must check the whole update before adding any of it to the running sum.
-  \item \textbf{The same neighbor can send again.} Rejecting an update does not stop the receiver from downloading the next one. Banning a neighbor after one low score could exclude an honest peer.
+  \item \textbf{Rejected updates still cost bandwidth :} If the receiver rejects two updates, it has already received 770~MiB it will not use.
+  \item \textbf{Useful updates are still large :} Top-$k$ compression~\cite{karimireddy2019efsgd} sends only the largest changes by absolute value. Dropping the smaller changes can make the receiver reject an update it would have accepted in full.
+  \item \textbf{More neighbors mean more buffers :} The batched baseline keeps one full update per neighbor in GPU memory. Checking updates one at a time saves memory, but the receiver must check the whole update before adding any of it to the running sum.
+  \item \textbf{The same neighbor can send again :} Rejecting an update does not stop the receiver from downloading the next one. Banning a neighbor after one low score could exclude an honest peer.
 \end{enumerate}
 
 \begin{inlinefigure}
@@ -76,52 +76,52 @@ Each of these defenses receives the full model or update before deciding whether
 
 We propose \textbf{PeerSieve} for decentralized fine-tuning of large language models (LLMs). The receiver uses a short sketch to decide which updates to request. It adds an update to the aggregate only after the full payload passes a second check. Figure~\ref{fig:story} shows how PeerSieve addresses each problem:
 \begin{enumerate}
-  \item \textbf{Pre-transfer sketch screening.} The sender announces a small CountSketch summary~\cite{charikar2004countsketch,rothchild2020fetchsgd} of the decoded update. The receiver compares it with a sketch of its own validation descent direction. It requests the payload only if the cosine similarity between the sketches is positive.
-  \item \textbf{Blockwise INT4 compression.} The sender packs the update into 4-bit values before it makes the sketch. It saves the quantization error and adds it to the next local update. In our example, the payload shrinks from 385~MiB to 49.63~MiB without selecting a subset of coordinates. We will measure how quantization changes alignment on recorded updates.
-  \item \textbf{Audited streaming aggregation.} The receiver reuses one compressed staging buffer and one decode tile. It checks the whole payload in the first pass. If the payload passes, the receiver caps its norm at the norm of its own update, then weights and adds it to the running sum in the second pass. For fixed update and sketch sizes, the receiver uses the same buffers no matter how many neighbors it has.
-  \item \textbf{Per-edge quarantine.} Persistent misalignment or a soft audit failure puts an edge on probation. The receiver stops requesting payloads from that neighbor. A passing sketch-only probe can restore the edge. A hard protocol fault bans the edge for the rest of the run. If too few neighbors remain active, the receiver can ask them for referrals.
+  \item \textbf{Pre-transfer sketch screening :} The sender announces a small CountSketch summary~\cite{charikar2004countsketch,rothchild2020fetchsgd} of the decoded update. The receiver compares it with a sketch of its own validation descent direction. It requests the payload only if the cosine similarity between the sketches is positive.
+  \item \textbf{Blockwise INT4 compression :} The sender packs the update into 4-bit values before it makes the sketch. It saves the quantization error and adds it to the next local update. In our estimation, the payload shrinks from 385~MiB to 49.63~MiB without selecting a subset of coordinates. We will measure how quantization changes alignment on recorded updates.
+  \item \textbf{Audited streaming aggregation :} The receiver reuses one compressed staging buffer and one decode tile. It checks the whole payload in the first pass. If the payload passes, the receiver caps its norm at the norm of its own update, then weights and adds it to the running sum in the second pass. For fixed update and sketch sizes, the receiver uses the same buffers no matter how many neighbors it has.
+  \item \textbf{Per-edge quarantine :} Persistent misalignment or a soft audit failure puts an edge on probation. The receiver stops requesting payloads from that neighbor. A passing sketch-only probe can restore the edge. A hard protocol fault bans the edge for the rest of the run. If too few neighbors remain active, the receiver can ask them for referrals.
 \end{enumerate}
 
-We will first try to reproduce TrustGraph-DFL's CIFAR-10 results. We will then compare PeerSieve with baselines and with versions that leave out individual mechanisms (Section~\ref{sec:eval}). We will measure received bytes, round time, and receive-side memory. We will also track model quality and the weight given to Byzantine updates.
+We will compare PeerSieve with existing methods and test what changes when we remove each mechanism (Section~\ref{sec:eval}). We will measure received bytes, round time, receive-side memory, model quality, and the weight given to Byzantine updates.
 
-\section{System model and design invariants}
+\section{System model and receiver rules}
 \label{sec:scope}
 
-We plan to instruction-tune TinyLlama-1.1B~\cite{zhang2024tinyllama} on Dolly-15k~\cite{conover2023dolly}. We will tune LoRA adapters~\cite{hu2022lora} or all model parameters. Peers train in synchronized rounds and send messages directly to neighbors using \texttt{torch.distributed}. A token bucket caps the total receive rate at each peer. Authentication tells the receiver who sent an update, not how the sender produced it. Table~\ref{tab:scope} lists how many Byzantine neighbors we plan to test. We do not claim that the protocol can tolerate those numbers in general.
+We will first reproduce the TrustGraph-DFL experiment on CIFAR-10 and compare our results with those in the paper. We will then test PeerSieve by fine-tuning TinyLlama-1.1B~\cite{zhang2024tinyllama} on Dolly-15k~\cite{conover2023dolly}.
+
+In the LLM tests, peers train in synchronized rounds and exchange updates directly with neighbors using \texttt{torch.distributed}. A token bucket limits each peer's total receive rate. Table~\ref{tab:scope} gives the LLM setup and assumptions. The Byzantine neighbor counts are test settings, not proven tolerance limits.
 
 \begin{table}[htbp]
-  \caption{Workload and assumptions.}
+  \caption{LLM experiment settings and assumptions.}
   \label{tab:scope}
   \centering\small
-  \begin{tabularx}{\linewidth}{@{}P{0.19\linewidth}Y@{}}
+  \begin{tabularx}{\linewidth}{@{}P{0.21\linewidth}Y@{}}
     \toprule
-    Item & Scope \\
+    Topic & Setting or assumption \\
     \midrule
-    Workload & TinyLlama-1.1B with rank-32 LoRA, rank-128 LoRA, or full-parameter tuning. Peers train on non-IID Dolly-15k splits. The main experiment uses eight peers. The degree sweep uses up to 16. \\
-    Threat model & The main setting has up to two Byzantine neighbors out of six. The stress setting has up to three. Each round's sketch seed is public. \\
-    Trusted state & An honest receiver trusts its local training and validation data, random number generator, round counter, and transport state. Peer identities are fixed and authenticated for the run. \\
-    Compression & Each 128-element block has packed INT4 values and one FP16 scale. The sender keeps the FP32 residual for error feedback. \\
-    Verification & The receiver screens a 32~KiB FP16 sketch. It checks any requested payload for valid format, sketch agreement, alignment, and norm. \\
-    Edge policy & An edge can recover from probation. If the receiver sees fewer than two active neighbors, it asks them for two-hop referrals. A new edge is not guaranteed. \\
-    Exclusions & We do not model stale updates in asynchronous rounds, Sybil identities, corrupted local validation data, or hardware bit flips. The protocol does not guarantee that honest peers remain connected. \\
+    Training & We tune LoRA adapters~\cite{hu2022lora} at rank 32 or 128, or tune all model parameters. Peers get different mixes of instruction categories. \\
+    Network & The main experiment uses eight peers with six neighbors each. We use up to 16 peers to vary the number of neighbors. \\
+    Byzantine peers & They can send arbitrary updates. We test up to two Byzantine neighbors out of six in the main setting and up to three in stress tests. Each round's sketch seed is public. \\
+    What we trust & Peer identities are fixed and authenticated for the run. Honest peers trust their own training and validation data, random number generator, round counter, and transport state. \\
+    Out of scope & We do not model stale updates from asynchronous training, peers that create extra identities, corrupted local validation data, or hardware bit flips. \\
     \bottomrule
   \end{tabularx}
 \end{table}
 
-Under these assumptions, the receiver follows four rules:
+The receiver follows four rules:
+\begin{enumerate}
+  \item \textbf{Check the whole update before using it.} The receiver requests a full update only if its sketch passes. It adds nothing to the running sum until the full payload passes the audit. The audit does not verify how the sender trained.
+  \item \textbf{Reuse buffers across neighbors.} The receiver stores one compressed payload at a time and decodes it in chunks into a reusable buffer. It keeps one validation vector and one running sum. With fixed update and sketch sizes, adding neighbors does not require more of these buffers. The receiver still keeps a record for each link.
+  \item \textbf{Ban senders after hard faults.} The receiver stores only requested payloads within the size limit. After a hard fault, such as an invalid encoding, it blocks that sender for the rest of the run. This prevents a second hard-failing payload from that sender at this receiver, but it does not bound all Byzantine traffic.
+  \item \textbf{Let links recover from probation.} Repeated poor sketch scores or a soft audit failure put a link on probation. For example, a payload that matches its sketch may still fail the norm check. During probation, the receiver requests no full payloads. A scheduled sketch probe that passes makes the link active again.
+\end{enumerate}
 
-\textbf{I1. Audit before accumulation.} The receiver adds a payload to the running sum only after it passes all audit checks. The audit checks consistency and alignment. It does not tell the receiver how the sender trained.
+If fewer than two neighbors are active, the receiver asks any active neighbors to recommend one of their own neighbors. This may not produce a new link. The protocol does not guarantee that honest peers stay connected.
 
-\textbf{I2. Reuse of tensor buffers.} The receiver holds one compressed staging buffer, one decode tile, one validation vector, and one accumulator. With fixed update and sketch sizes, these buffers stay the same size as the receiver adds neighbors. The receiver still keeps a record for each edge.
-
-\textbf{I3. A size limit and a ban on hard faults.} The receiver stages only requested payloads within the size limit. After a hard protocol fault, it refuses further transfers from that sender for the rest of the run. At each receiver, a sender can deliver at most one payload that fails a hard check. This does not bound all Byzantine traffic.
-
-\textbf{I4. Probation can end.} Persistent misalignment or a soft audit failure can put an edge on probation. A successful scheduled probe can restore it.
-
-\section{System design}
+\section{Methods}
 \label{sec:design}
 
-\subsection{Notation and blockwise compression}
+\subsection{Blockwise compression}
 
 Let $d$ be the number of trainable parameters, $K$ the number of neighbors at the receiver, and $t$ the round number. Peer $j$ trains locally and forms the parameter increment $\Delta w_j^{(t)} = w_j^{(t,\mathrm{after})} - w_j^{(t)}$. At the start of the round, receiver $i$ computes its validation descent direction $g_i^{\mathrm{val}} = -\nabla L_i^{\mathrm{val}}(w_i^{(t)})$. A positive dot product with this direction predicts a first-order decrease in validation loss. The loss may still increase after a finite step. The negative sign follows from defining the increment as after-minus-before.
 
@@ -292,7 +292,7 @@ We will first try to reproduce the TrustGraph-DFL CIFAR-10 results. Then we will
 
 \subsection{Research questions}
 
-\begin{enumerate}[label=\textbf{RQ\arabic*.}]
+\begin{enumerate}
   \item \textbf{Model quality.} How does PeerSieve compare with FP32 TrustGraph-DFL in held-out perplexity and next-token accuracy under attack?
   \item \textbf{Robustness.} How often does the receiver accept Byzantine updates or reject honest ones? What share of the weight goes to Byzantine updates?
   \item \textbf{Communication and time.} How do received bytes and round time vary with the receive-rate limit and with individual mechanisms enabled or disabled?
