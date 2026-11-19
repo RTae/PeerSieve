@@ -128,18 +128,14 @@ PeerSieve starts the exchange with a sketch rather than a full update. The sende
 \subsection{Pre-transfer sketch screening}
 
 \begin{inlinefigure}
-  \includegraphics[width=0.68\linewidth,trim=1624bp 293bp 91bp 338bp,clip]{figures/fig2_compress.png}
-  \captionof{figure}{Both peers use the same signed buckets. The receiver requests the payload only if the two sketches have positive cosine similarity.}
-  \label{fig:screen}
+  \includegraphics[width=\linewidth]{figures/fig3_protocol.png}
+  \captionof{figure}{Modeled receive and local compute time for one rank-128 LoRA round at a shared $1$~Gb/s receive rate. The estimate excludes encoding, audit, and transport overhead.}
+  \label{fig:protocol}
 \end{inlinefigure}
 
-Figure~\ref{fig:screen} shows the two sketches the receiver compares before requesting an update. The sender sketches $y_j^{(t)}$, the values the receiver would decode from the compressed payload. Section~\ref{sec:compression} explains how the sender compresses the update.
+In Figure~\ref{fig:protocol}, batched TrustGraph-DFL downloads all six updates before scoring them. With PeerSieve, each neighbor sends a small summary of its update, called a sketch. The receiver compares it with its own validation sketch and requests the compressed update only if their cosine similarity is positive. In this example, that means four downloads instead of six.
 
-At the start of the round, peer $i$ computes $g_i^{\mathrm{val}} = -\nabla L_i^{\mathrm{val}}(w_i^{(t)})$ on its held-out validation data. A positive cosine with this direction predicts a drop in validation loss for a small enough step. It does not guarantee a drop after the full update.
-
-CountSketch assigns each coordinate to a bucket and gives it a sign. We denote the ideal sketch by $\mathcal S_t$. The sender adds the signed values of its decoded update to those buckets. The receiver does the same with its validation descent direction, using the same bucket assignments and signs. Each layer gets a share of the 16,384 buckets proportional to its parameter count. Both peers sum in a fixed FP32 order and round the bucket sums to FP16. The result is the 32~KiB sketch $F_t$. The format uses a single representation for zero and excludes nonfinite values.
-
-The sender announces $s_j^{(t)}=F_t(y_j^{(t)})$. The receiver compares it with its own sketch $s_i^{\mathrm{val}}=F_t(g_i^{\mathrm{val}})$. Equation~\eqref{eq:sketch} gives the sketch cosine $\widehat c_{ij}^{(t)}$ and the full-update cosine $c_{ij}^{(t)}$ used later in the audit. The receiver skips comparisons with zero norms.
+The sketches are $s_j^{(t)}=F_t(y_j^{(t)})$ for the decoded update and $s_i^{\mathrm{val}}=F_t(g_i^{\mathrm{val}})$ for the validation direction. Here $F_t$ is the round's sketch function and $g_i^{\mathrm{val}}=-\nabla L_i^{\mathrm{val}}(w_i^{(t)})$ is the descent direction on held-out data. The receiver skips the download if either sketch is zero. It computes the full cosine $c_{ij}^{(t)}$ during the audit.
 \begin{equation}
 \begin{aligned}
   \widehat c_{ij}^{(t)} &=\frac{\langle s_j^{(t)},s_i^{\mathrm{val}}\rangle}
@@ -150,9 +146,7 @@ The sender announces $s_j^{(t)}=F_t(y_j^{(t)})$. The receiver compares it with i
 \label{eq:sketch}
 \end{equation}
 
-Peers send announcements first. The receiver ties each announcement to the sender's authenticated identity, the run, and the round. It requests a payload only if the sketch cosine is positive. Each request permits one payload within the size limit for that round. If the score is nonpositive, there is no payload transfer.
-
-The sketch cosine is an estimate. The screen can skip a useful update or request one that fails the full audit. The error scale in Figure~\ref{fig:screen} is a heuristic, not a bound. The ideal sketch estimates an inner product without bias when inputs are chosen independently of the hashes and signs. This property does not carry over to cosine scores or to updates chosen after seeing the public seed.
+The sketch score can miss a useful update. A positive score triggers a request, not acceptance. The receiver audits the downloaded update before using it, including checking that its rebuilt sketch matches the announcement (Section~\ref{sec:audit}).
 
 \subsection{Blockwise INT4 compression}
 \label{sec:compression}
@@ -184,13 +178,13 @@ The codes and rounded scales are the only tensor data in the payload. The sender
 
 \begin{inlinefigure}
   \includegraphics[width=\linewidth]{figures/fig4_stream.png}
-  \captionof{figure}{The receiver checks the payload on the first pass. Only accepted payloads change the running sum. The buffer sizes shown are estimates, not total training memory.}
+  \captionof{figure}{On the first pass, the receiver checks that the sketch rebuilt from the payload matches the announcement. Only a payload that passes the full audit changes the running sum. Buffer sizes are estimates.}
   \label{fig:stream}
 \end{inlinefigure}
 
 Figure~\ref{fig:stream} contrasts the batched baseline with PeerSieve. PeerSieve stores one compressed payload at a time instead of a full update from every neighbor. It decodes the payload in chunks using a reusable 4~MiB buffer, called a decode tile. It checks the entire payload on the first pass. It makes a second pass only after the update passes, so a failed check cannot leave a partial update in the running sum.
 
-\textbf{Pass 1. Check the payload.} The receiver first checks the sender, round, length, and packed format. As it decodes each tile, it recomputes the sketch and calculates the full cosine and norm. The recomputed sketch must match the announcement. The full cosine must be positive, and the full cosine and norm must be close to their sketch estimates. For a valid nonzero payload, the checks are:
+\textbf{Pass 1. Check the payload.} The receiver ties each announcement to the authenticated sender, run, and round. Each request allows one payload within the size limit. The receiver checks the sender, round, length, and packed format. As it decodes the payload, it rebuilds the sketch and computes the full cosine and norm. The rebuilt bucket sums must exactly match those in the announced sketch. The full cosine against the local validation direction must be positive. The full cosine and norm must also be close to their sketch estimates. For a valid nonzero payload, the checks are:
 \begin{equation}
 \begin{aligned}
   F_t(y_j^{(t)}) &= s_j^{(t)}, & c_{ij}^{(t)} &> 0, \\
@@ -199,6 +193,8 @@ Figure~\ref{fig:stream} contrasts the batched baseline with PeerSieve. PeerSieve
 \end{aligned}
 \label{eq:audit}
 \end{equation}
+Both peers use the public round seed to assign each coordinate a bucket and a sign. They split the 16,384 buckets across layers in proportion to parameter count, sum in a fixed FP32 order, and round to FP16. The 32~KiB sketch uses one representation for zero and excludes nonfinite values. Different updates can produce the same bucket sums, so a match does not prove that the update is unchanged or that the sender trained honestly.
+
 We start with tolerances $\tau_c=0.05$ and $\tau_n=0.03$. For evaluation, we will set each tolerance to the $99.9$th percentile of its discrepancy in separate attack-free calibration runs and keep it fixed. The receiver can skip a zero update without a ban. It discards any failing payload without changing the running sum or total weight.
 
 \textbf{Pass 2. Clip, weight, and add.} After a payload passes, the receiver decodes it again. It shrinks the update if its norm is larger than $r_i^{(t)}=\|\Delta w_i^{(t)}\|_2$, the norm of its own uncompressed update. Unlike FLTrust~\cite{cao2021fltrust}, it leaves smaller updates at their original size. It weights each clipped update by its full cosine. For the set $\mathcal N_i^{\mathrm{acc}}$ of accepted nonzero updates, Equation~\eqref{eq:stream} shows the clipping factor $a_{ij}^{(t)}$ and the weighted average $\Delta\bar w_i^{(t)}$.
@@ -214,7 +210,7 @@ We start with tolerances $\tau_c=0.05$ and $\tau_n=0.03$. For evaluation, we wil
 \end{equation}
 At round end, the receiver divides the running sum by the total cosine weight $W_i^{(t)}$ if it is positive. It blends the result with its own update. The LLM tests give those two updates equal weight. If the total weight is zero, the receiver keeps its locally trained model.
 
-For fixed update and sketch sizes, the receiver can use the same tensor buffers as it adds neighbors. It still keeps a record for each link. Decoding twice adds work, so the round-time benefit depends on the cost of the audit and the time saved on transfers. The clipped weighted average has norm at most $r_i^{(t)}$, but the cap does not limit the fraction of weight assigned to Byzantine peers. A matching sketch shows that the payload agrees with the announcement. It cannot establish how the sender trained or detect changes that leave the sketch unchanged.
+For fixed update and sketch sizes, the receiver can use the same tensor buffers as it adds neighbors. It still keeps a record for each link. Decoding twice adds work, so the round-time benefit depends on the cost of the audit and the time saved on transfers. The clipped weighted average has norm at most $r_i^{(t)}$, but the cap does not limit the fraction of weight assigned to Byzantine peers.
 
 \subsection{Per-edge quarantine}
 \label{sec:quarantine}
@@ -312,13 +308,7 @@ We will assess the complete system against these targets, not assume that it mee
   \item \textbf{Scale.} Complete full-parameter tuning with six neighbors on one 40~GB A100 per peer.
 \end{enumerate}
 
-\paragraph{Illustrative cost estimate.} Figure~\ref{fig:protocol} assumes a shared $1$~Gb/s receive rate, four passing sketches out of six, and fixed local compute time. It leaves out encoding, audit, and transport overhead. This is an estimate, not a measured round time. The buffer estimates in Figure~\ref{fig:stream} exclude training allocations and the sender's quantization residual, so they do not establish that full tuning fits.
-
-\begin{inlinefigure}
-  \includegraphics[width=0.9\linewidth]{figures/fig3_protocol.png}
-  \captionof{figure}{Estimated receive and local compute time for the rank-128 LoRA example. The model assumes four of six sketches pass.}
-  \label{fig:protocol}
-\end{inlinefigure}
+\paragraph{Cost estimates.} Figure~\ref{fig:protocol} illustrates the transfer savings under one set of assumptions. We will measure round time with encoding and audit enabled. The buffer estimates in Figure~\ref{fig:stream} exclude training allocations and the sender's quantization residual, so they do not show whether full tuning fits.
 
 \section{Conclusion}
 
