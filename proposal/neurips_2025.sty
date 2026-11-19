@@ -126,9 +126,9 @@
   \RequirePackage[numbers,sort&compress]{natbib}
 \fi
 
-% Customizable bottom notice on page 1
-\newcommand{\@noticestring}{Project Proposal --- Reliable Systems, Tsinghua University.}
-\newcommand{\neuripsnotice}[1]{\renewcommand{\@noticestring}{#1}}
+% Optional bottom notice on page 1
+\newcommand*{\@noticestring}{}
+\newcommand{\neuripsnotice}[1]{\renewcommand*{\@noticestring}{#1}}
 
 \newcommand{\@toptitlebar}{%
   \hrule height 4\p@
@@ -188,10 +188,12 @@
 
 \newcommand{\ftype@noticebox}{8}
 \newcommand{\@notice}{%
-  \enlargethispage{2\baselineskip}%
-  \begin{figure}[b]%
-    \footnotesize\@noticestring%
-  \end{figure}%
+  \ifx\@noticestring\@empty\else
+    \enlargethispage{2\baselineskip}%
+    \begin{figure}[b]%
+      \footnotesize\@noticestring%
+    \end{figure}%
+  \fi
 }
 
 % Abstract environment
