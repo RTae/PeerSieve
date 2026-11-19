@@ -8,12 +8,24 @@
 \usepackage{booktabs,tabularx,array}
 \usepackage{microtype}
 \usepackage{graphicx}
+\usepackage{capt-of}
+\usepackage{flafter}
 \usepackage{enumitem}
 \usepackage{hyperref}
 
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 \newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
 \setlist[enumerate]{leftmargin=1.8em,itemsep=2pt,topsep=2pt}
+
+% Keep the artwork and caption together, directly above the discussion.
+\newenvironment{inlinefigure}{%
+  \par\addvspace{\intextsep}%
+  \noindent\begin{minipage}[b]{\linewidth}%
+  \centering
+}{%
+  \end{minipage}\par\nopagebreak[4]%
+}
+
 \hypersetup{
   colorlinks=true,
   linkcolor=blue,
@@ -23,7 +35,6 @@
   pdfauthor={Natthanan Bhukan and Germain Dal}
 }
 
-\neuripsnotice{Course Project Proposal: Reliable Systems, Tsinghua University.}
 \title{PeerSieve: Sketch-Filtered Compressed Streaming\\for Byzantine-Resilient Decentralized LLM Tuning}
 
 \author{%
@@ -49,7 +60,13 @@ In decentralized federated learning (DFL), peers train on local data and exchang
 
 TrustGraph-DFL~\cite{trustgraph2026} scores neighbor updates against a local validation signal. FLTrust~\cite{cao2021fltrust} uses a related trust score in the centralized setting, while BALANCE~\cite{fang2024balance} filters received models by their distance from the receiver's own model. In all three methods, the receiver obtains the update or model before deciding whether to use it.
 
-Receiving candidates can be costly in large language model (LLM) fine-tuning. In our TinyLlama-1.1B configuration, a rank-128 low-rank adaptation (LoRA) update occupies 385~MiB in FP32. A batched implementation retains each candidate update until aggregation, so its receive-side buffer requirement grows with neighbor degree. Streaming dense updates reduces buffering but still transfers candidates that will be rejected. Sparse Top-$k$ compression~\cite{karimireddy2019efsgd} reduces the number of bytes sent, but coordinate selection can alter the update's alignment with the receiver's validation descent direction. Figure~\ref{fig:story} contrasts these approaches. We treat the effect of sparsification on filtering under heterogeneous data as an empirical question.
+\begin{inlinefigure}
+  \includegraphics[width=\linewidth]{figures/fig1_story.png}
+  \captionof{figure}{Communication and buffering in the running example. The batched FP32 baseline receives and stores all candidate updates. Sparsification reduces traffic but can change alignment scores. PeerSieve screens sketches before requesting compressed payloads.}
+  \label{fig:story}
+\end{inlinefigure}
+
+Receiving candidates can be costly in large language model (LLM) fine-tuning. In TinyLlama-1.1B, a rank-128 low-rank adaptation update occupies 385~MiB in FP32. A batched implementation retains each candidate update until aggregation, so its receive-side buffer requirement grows with neighbor degree. Streaming dense updates reduces buffering but still transfers candidates that will be rejected. Sparse Top-$k$ compression~\cite{karimireddy2019efsgd} reduces the number of bytes sent, but coordinate selection can alter the update's alignment with the receiver's validation descent direction. Figure~\ref{fig:story} contrasts these approaches. We treat the effect of sparsification on filtering under heterogeneous data as an empirical question.
 
 We propose \textbf{PeerSieve}, which separates the decision to request an update from the decision to aggregate it. Peers first exchange compact summaries. The receiver requests compressed payloads only from candidates that pass the initial screen, then audits each payload before adding it to the aggregate. The design combines four mechanisms:
 \begin{enumerate}
@@ -59,13 +76,6 @@ We propose \textbf{PeerSieve}, which separates the decision to request an update
   \item \textbf{Per-edge quarantine.} Persistent misalignment can trigger reversible probation rather than a ban. Best-effort two-hop referrals can replenish the active neighbor set.
 \end{enumerate}
 
-\begin{figure}[tbp]
-  \centering
-  \includegraphics[width=\linewidth]{figures/fig1_story.png}
-  \caption{Communication and buffering in the running example. The batched FP32 baseline receives and stores all candidate updates. Sparsification reduces traffic but can change alignment scores. PeerSieve screens sketches before requesting compressed payloads.}
-  \label{fig:story}
-\end{figure}
-
 We ask whether these mechanisms reduce communication and receive-side memory while preserving model quality and limiting the influence of Byzantine updates. We first model the receive costs, then propose a CIFAR-10 baseline reproduction and a controlled language-model evaluation (Section~\ref{sec:eval}).
 
 \section{System Model and Design Invariants}
@@ -73,7 +83,7 @@ We ask whether these mechanisms reduce communication and receive-side memory whi
 
 We consider synchronous instruction tuning of TinyLlama-1.1B~\cite{zhang2024tinyllama} on Dolly-15k~\cite{conover2023dolly}, using LoRA~\cite{hu2022lora} or full-parameter updates. Peers exchange messages through \texttt{torch.distributed} point-to-point communication. A token bucket emulates a shared receive budget at each peer. Authentication identifies the sender but does not establish how an update was produced. The adversarial degrees in Table~\ref{tab:scope} describe evaluation settings, not proven tolerance bounds.
 
-\begin{table}[tbp]
+\begin{table}[htbp]
   \caption{System scope, threat model, and assumptions about trusted state.}
   \label{tab:scope}
   \centering\small
@@ -113,6 +123,12 @@ Let $d$ denote the trainable dimension and $K$ the receiver's neighbor degree. I
 
 The running example uses TinyLlama-1.1B with rank-128 LoRA on seven linear projections in each of 22 layers. The resulting $100{,}925{,}440$ trainable parameters occupy $385.0$~MiB in FP32. Peer $i$ has six neighbors, including two Byzantine peers in the illustration, and a shared receive budget of $1$~Gb/s.
 
+\begin{inlinefigure}
+  \includegraphics[width=\linewidth]{figures/fig2_compress.png}
+  \captionof{figure}{Blockwise encoding uses 64 packed INT4 bytes and a two-byte FP16 scale per 128-element block, a $7.76\times$ reduction relative to FP32. Sketching the decoded update lets the receiver reproduce the announcement during the payload audit.}
+  \label{fig:compress}
+\end{inlinefigure}
+
 Blockwise INT4 reduces the size of each payload that passes the sketch screen. The sender partitions the increment into 128-element blocks ($788{,}480$ in the running example), adds its previous FP32 residual, and applies Equation~\eqref{eq:quant}. The scale $s_b$ is the largest absolute entry of the residual-corrected block divided by seven, rounded to the transmitted FP16 format. The sender uses this rounded scale both to reconstruct the block and to compute the next residual. A zero scale encodes an all-zero decoded block.
 \begin{equation}
 \begin{aligned}
@@ -126,13 +142,6 @@ Blockwise INT4 reduces the size of each payload that passes the sketch screen. T
 \end{equation}
 
 The sender reconstructs the same vector $y_j^{(t)}$ as the receiver (denoted $\widehat{\Delta w}_j^{(t)}$ in Figure~\ref{fig:compress}). An encoded block occupies 66~B rather than 512~B in FP32, yielding a 49.63~MiB payload in the running example. The mean cosine between input and decoded blocks was approximately $0.993$ in a synthetic Gaussian-block check. Alignment on recorded LoRA updates remains to be measured. Error feedback carries quantization residuals into the next local update. It does not compensate for rejection or receiver-side clipping.
-
-\begin{figure}[tbp]
-  \centering
-  \includegraphics[width=\linewidth]{figures/fig2_compress.png}
-  \caption{Blockwise encoding uses 64 packed INT4 bytes and a two-byte FP16 scale per 128-element block, a $7.76\times$ reduction relative to FP32. Sketching the decoded update lets the receiver reproduce the announcement during the payload audit.}
-  \label{fig:compress}
-\end{figure}
 
 \subsection{Sketch Screen}
 
@@ -151,7 +160,13 @@ The receiver skips comparisons with zero norms. An FP16 sketch occupies 32~KiB, 
 
 \subsection{Two-Phase Round Protocol}
 
-The two phases specify what peers exchange over the network: first sketches, then requested payloads. The two passes in Section~\ref{sec:audit} are local operations on a staged payload in the second phase. Passing the sketch screen permits transfer, not accumulation.
+\begin{inlinefigure}
+  \includegraphics[width=\linewidth]{figures/fig3_protocol.png}
+  \captionof{figure}{Modeled round at $1$~Gb/s. The FP32 baseline spends 19.38~s receiving six updates. PeerSieve receives six sketches and four 49.63~MiB payloads. The totals include 0.40~s of local computation but exclude encoding, auditing, and transport overhead.}
+  \label{fig:protocol}
+\end{inlinefigure}
+
+The two phases in Figure~\ref{fig:protocol} specify what peers exchange over the network: first sketches, then requested payloads. The two passes in Section~\ref{sec:audit} are local operations on a staged payload in the second phase. Passing the sketch screen permits transfer, not accumulation.
 
 \begin{enumerate}
   \item \textbf{Local preparation.} Peer $i$ computes its validation descent direction and sketch, runs four local optimizer steps, and encodes and sketches its increment.
@@ -160,16 +175,9 @@ The two phases specify what peers exchange over the network: first sketches, the
   \item \textbf{Round completion.} The receiver normalizes the accumulated neighbor update once and updates the edge states.
 \end{enumerate}
 
-\begin{figure}[tbp]
-  \centering
-  \includegraphics[width=\linewidth]{figures/fig3_protocol.png}
-  \caption{Modeled round at $1$~Gb/s. The FP32 baseline spends 19.38~s receiving six updates. PeerSieve receives six sketches and four 49.63~MiB payloads. The totals include 0.40~s of local computation but exclude encoding, auditing, and transport overhead.}
-  \label{fig:protocol}
-\end{figure}
-
 Table~\ref{tab:round} assumes serial reception under the shared bandwidth budget. Before quarantine, the sketch screen rejects two of the six neighbors. The four-active-edge case assumes that all remaining peers pass the screen and no probation probes are due. The two cases differ only in sketch traffic.
 
-\begin{table}[tbp]
+\begin{table}[htbp]
   \caption{Modeled per-receiver costs for rank-128 LoRA at initial degree six. RX VRAM counts receive-side tensor buffers, not total training memory. The Top-1\% row assumes 8~B per nonzero and dense buffers after expansion.}
   \label{tab:round}
   \centering\small
@@ -202,12 +210,11 @@ The sketch screen does not establish full-vector alignment or bound update magni
 \end{equation}
 The denominator sums the trust weights, not the clipping factors. For $W_i^{(t)}>0$, the triangle inequality gives $\|\Delta\bar w_i^{(t)}\|_2\le r_i^{(t)}$. This bounds the magnitude of the neighbor increment, not the fraction of trust assigned to a Byzantine peer. In the planned LLM experiments, we blend the local and neighbor increments with self-weight $0.5$. If $W_i^{(t)}=0$, the receiver keeps its locally trained model without a neighbor step.
 
-\begin{figure}[tbp]
-  \centering
+\begin{inlinefigure}
   \includegraphics[width=\linewidth]{figures/fig4_stream.png}
-  \caption{Receive-side tensor buffers for batched and streaming aggregation. The batched baseline holds one dense buffer per neighbor. PeerSieve reuses one compressed staging buffer and one decode tile. Pass~1 performs the payload audit without changing the accumulator. Pass~2 adds the clipped, trust-weighted update only if the audit passes.}
+  \captionof{figure}{Receive-side tensor buffers for batched and streaming aggregation. The batched baseline holds one dense buffer per neighbor. PeerSieve reuses one compressed staging buffer and one decode tile. Pass~1 performs the payload audit without changing the accumulator. Pass~2 adds the clipped, trust-weighted update only if the audit passes.}
   \label{fig:stream}
-\end{figure}
+\end{inlinefigure}
 
 \textbf{Pass 1: Audit without accumulation.} The receiver checks the sender identity, round, payload length, and packed format, then decodes the payload in tiles of at most 4~MiB. It recomputes the canonical sketch $F_t(y_j^{(t)})$ and calculates the full-vector cosine $c_{ij}^{(t)}$ and the norm $\|y_j^{(t)}\|_2$. For well-formed, finite, nonzero inputs, all four conditions must hold:
 \begin{equation}
@@ -227,33 +234,32 @@ The initial tolerances are $\tau_c=0.05$ and $\tau_n=0.03$. We will recalibrate 
 \subsection{Link Quarantine and Topology Repair}
 \label{sec:quarantine}
 
-A single negative sketch score prevents a payload request but does not establish poisoning. To respond to persistent misalignment, the receiver keeps an exponentially weighted moving average (EWMA) of sketch scores for each edge. An edge enters probation after three consecutive rounds with $R_{ij}^{(t)}<0$ or after a soft failure in the payload audit. The smoothing factor is $\beta=0.7$. The $k$th probation follows the backoff below, capped at $T_{\max}=16$ rounds.
+\begin{inlinefigure}
+  \includegraphics[width=\linewidth]{figures/fig5_quarantine.png}
+  \captionof{figure}{Per-edge state transitions and an example of a successful two-hop referral. The repair target is an observed active neighbor degree of two. Reaching it depends on candidate reachability and the sketch screen.}
+  \label{fig:quarantine}
+\end{inlinefigure}
+
+A single negative sketch score prevents a payload request but does not establish poisoning. To respond to persistent misalignment, the receiver keeps an exponentially weighted moving average (EWMA) of sketch scores for each edge. Figure~\ref{fig:quarantine} shows how an edge enters and leaves probation. An edge enters probation after three consecutive rounds with $R_{ij}^{(t)}<0$ or after a soft failure in the payload audit. The smoothing factor is $\beta=0.7$. The $k$th probation follows the backoff below, capped at $T_{\max}=16$ rounds.
 \begin{equation}
   R_{ij}^{(t)}=\beta R_{ij}^{(t-1)}+(1-\beta)\widehat c_{ij}^{(t)}, \qquad
   T_{\mathrm{backoff}}(k)=\min\!\left(2^k,T_{\max}\right) .
 \label{eq:backoff}
 \end{equation}
-An edge on probation carries no payload. When probation expires, a 32~KiB probe that passes the sketch screen restores the edge to active status. A failed probe extends probation. In contrast, a hard protocol fault blocks further traffic from the peer at this receiver for the rest of the run.
+
+\begin{inlinefigure}
+  \includegraphics[width=\linewidth]{figures/fig6_policy.png}
+  \captionof{figure}{Containment policy. Transient sketch misalignment skips the payload request. Persistent misalignment or a soft failure in the payload audit leads to probation. A hard protocol fault, such as a conflicting canonical sketch, leads to a ban. Rejected payloads never change the accumulator.}
+  \label{fig:policy}
+\end{inlinefigure}
+
+Figure~\ref{fig:policy} links screening and audit outcomes to edge states. An edge on probation carries no payload. When probation expires, a 32~KiB probe that passes the sketch screen restores the edge to active status. A failed probe extends probation. In contrast, a hard protocol fault blocks further traffic from the peer at this receiver for the rest of the run.
 
 Quarantine can lower the active neighbor degree. If the observed active neighbor degree drops below two, the receiver asks active neighbors for referrals and screens a sketch from an eligible, authenticated candidate. Rewiring respects the initial neighbor degree cap and never reinstates a banned peer. An isolated peer can still use scheduled probes on probation edges. Repair is best effort: it requires a reachable candidate, cannot identify which active peers are honest, and does not guarantee that the honest graph remains connected.
 
-\begin{figure}[tbp]
-  \centering
-  \includegraphics[width=\linewidth]{figures/fig5_quarantine.png}
-  \caption{Per-edge state transitions and an example of a successful two-hop referral. The repair target is an observed active neighbor degree of two. Reaching it depends on candidate reachability and the sketch screen.}
-  \label{fig:quarantine}
-\end{figure}
+The checks in Table~\ref{tab:modules} must pass before GPU evaluation.
 
-\begin{figure}[tbp]
-  \centering
-  \includegraphics[width=\linewidth]{figures/fig6_policy.png}
-  \caption{Containment policy. Transient sketch misalignment skips the payload request. Persistent misalignment or a soft failure in the payload audit leads to probation. A hard protocol fault, such as a conflicting canonical sketch, leads to a ban. Rejected payloads never change the accumulator.}
-  \label{fig:policy}
-\end{figure}
-
-Figures~\ref{fig:quarantine} and~\ref{fig:policy} summarize how the receiver separates recoverable misalignment from hard protocol faults. The checks in Table~\ref{tab:modules} must pass before GPU evaluation.
-
-\begin{table}[tbp]
+\begin{table}[htbp]
   \caption{Implementation modules and checks required before GPU evaluation.}
   \label{tab:modules}
   \centering\small
@@ -289,14 +295,13 @@ We will reimplement the TrustGraph-DFL preprint's 20-peer CNN experiment~\cite{t
 
 \subsection{Stage 2: Language-Model Evaluation}
 
-\paragraph{Testbed and data.} Figure~\ref{fig:eval} shows the planned testbed: eight NVIDIA A100-PCIE-40GB GPUs on \texttt{octave}, connected via PCIe Gen4 without NVLink. The main configuration places one peer on each GPU in a six-regular graph. A token bucket caps each peer's total receive rate. These caps emulate bandwidth constraints rather than measure an external network.
-
-\begin{figure}[tbp]
-  \centering
+\begin{inlinefigure}
   \includegraphics[width=\linewidth]{figures/fig7_eval.png}
-  \caption{Planned eight-GPU evaluation harness. Honest peers train on Dirichlet-partitioned Dolly-15k shards and reserve local validation sequences. The main configuration uses two Byzantine peers to test six stress families across three trainable scopes.}
+  \captionof{figure}{Planned eight-GPU evaluation harness. Honest peers train on Dirichlet-partitioned Dolly-15k shards and reserve local validation sequences. The main configuration uses two Byzantine peers to test six stress families across three trainable scopes.}
   \label{fig:eval}
-\end{figure}
+\end{inlinefigure}
+
+\textbf{Testbed and data.} Figure~\ref{fig:eval} shows the planned testbed: eight NVIDIA A100-PCIE-40GB GPUs on \texttt{octave}, connected via PCIe Gen4 without NVLink. The main configuration places one peer on each GPU in a six-regular graph. A token bucket caps each peer's total receive rate. These caps emulate bandwidth constraints rather than measure an external network.
 
 Dolly-15k contains roughly $15{,}000$ instruction-response examples in eight categories. We will reserve $1{,}500$ category-balanced test examples and partition the rest using a per-category Dirichlet split. The default concentration is $0.1$, with additional splits at $0.05$ and $0.5$ and an IID comparison. Shard sizes vary. We will resample if any peer receives fewer than 80 sequences, the minimum for 64 validation sequences and one training batch, and report the realized shard sizes. Each run uses sequences truncated to 256 tokens and 40 rounds of four AdamW steps at batch size 16. Each peer computes its validation gradient over two batches of 32.
 
@@ -304,7 +309,7 @@ Dolly-15k contains roughly $15{,}000$ instruction-response examples in eight cat
 
 We will ablate the sketch screen, streaming, clipping, and quarantine individually. The dense streaming baseline separates the effect of reduced buffering from that of receiving fewer bytes. The clipping ablation measures the magnitude of accepted updates, while the quarantine ablation measures active neighbor degree and honest connectivity. We will compare timing across receive-rate caps to determine when transferring fewer bytes reduces round time.
 
-\begin{table}[tbp]
+\begin{table}[htbp]
   \caption{Planned LLM comparison configurations. TrustGraph variants use the descent-corrected sign convention.}
   \label{tab:baselines}
   \centering\small
@@ -349,7 +354,7 @@ The main configuration uses two Byzantine peers. We will sweep from zero to thre
 
 \paragraph{Analytical memory budget.} Let $D$ be the dense FP32 update size in MiB, $Q$ the compressed size in MiB, and $K$ the neighbor degree. The batched baseline budgets $(K+2)D$~MiB for one dense update per neighbor, the validation vector, and the accumulator. PeerSieve budgets $(2D+Q+4)$~MiB, plus small sketch buffers and state not included in Table~\ref{tab:vram}. The degree sweep will use up to two ranks per GPU to test whether the receive-side tensor buffers remain flat as neighbor degree increases. We will assess full-parameter fit separately at neighbor degree six with one rank per GPU.
 
-\begin{table}[tbp]
+\begin{table}[htbp]
   \caption{Predicted receive-side tensor memory in MiB. Training allocations, sketch bookkeeping, and the sender's FP32 error-feedback residual are excluded.}
   \label{tab:vram}
   \centering\small
