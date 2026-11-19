@@ -56,27 +56,33 @@
 \section{Introduction}
 \label{sec:motivation}
 
-In decentralized federated learning (DFL), peers train on local data and exchange parameter updates with their neighbors rather than relying on a central aggregator. Byzantine peers can submit harmful updates, while differences in training data can produce divergent updates even among honest peers.
+In decentralized federated learning (DFL), each peer trains on local data, exchanges models or updates with its neighbors, and aggregates what it receives without a central server. Byzantine peers may send arbitrary updates, but even honest updates can disagree when peers train on different data. A receiver must decide which updates to use without treating every disagreement as evidence of an attack.
 
-TrustGraph-DFL~\cite{trustgraph2026} scores neighbor updates against a local validation signal. FLTrust~\cite{cao2021fltrust} uses a related trust score in the centralized setting, while BALANCE~\cite{fang2024balance} filters received models by their distance from the receiver's own model. In all three methods, the receiver obtains the update or model before deciding whether to use it.
+Existing defenses differ in what they use as a reference. TrustGraph-DFL~\cite{trustgraph2026} scores received updates by cosine similarity to the receiver's held-out validation gradient. It gives zero weight to updates with nonpositive scores and uses the normalized positive scores to blend a weighted average of its neighbors' models with its own. FLTrust~\cite{cao2021fltrust} also weights received updates by positive cosine similarity, but its reference is an update computed by a central server on a small trusted dataset. The server rescales contributing updates to the reference norm before averaging them. BALANCE~\cite{fang2024balance} needs neither a server nor a validation set, since each receiver averages only the neighbor models within a round-dependent distance threshold of its own locally trained model, then blends that average with its own model.
+
+Each of these defenses receives the full model or update before deciding whether to use it. For TinyLlama-1.1B with low-rank adaptation (LoRA) at rank 128, one update takes 385~MiB in FP32. In our batched TrustGraph-DFL baseline, a peer receives six updates per round, or 2,310~MiB (Table~\ref{tab:round}). At $1$~Gb/s, we estimate 19.4~s for the transfer alone. The example shows four problems:
+\begin{enumerate}
+  \item \textbf{Rejected updates still cost bandwidth.} If the receiver rejects two updates, it has already received 770~MiB it will not use.
+  \item \textbf{Useful updates are still large.} Top-$k$ compression~\cite{karimireddy2019efsgd} sends only the largest changes by absolute value. Dropping the smaller changes can make the receiver reject an update it would have accepted in full.
+  \item \textbf{More neighbors mean more buffers.} The batched baseline keeps one full update per neighbor in GPU memory. Checking updates one at a time saves memory, but the receiver must check the whole update before adding any of it to the running sum.
+  \item \textbf{The same neighbor can send again.} Rejecting an update does not stop the receiver from downloading the next one. Banning a neighbor after one low score could exclude an honest peer.
+\end{enumerate}
 
 \begin{inlinefigure}
   \includegraphics[width=\linewidth]{figures/fig1_story.png}
-  \captionof{figure}{Communication and buffering in the running example. The batched FP32 baseline receives and stores all candidate updates. Sparsification reduces traffic but can change alignment scores. PeerSieve screens sketches before requesting compressed payloads.}
+  \captionof{figure}{PeerSieve's four mechanisms: sketch screening, INT4 compression, audited streaming, and link quarantine.}
   \label{fig:story}
 \end{inlinefigure}
 
-Receiving candidates can be costly in large language model (LLM) fine-tuning. In TinyLlama-1.1B, a rank-128 low-rank adaptation update occupies 385~MiB in FP32. A batched implementation retains each candidate update until aggregation, so its receive-side buffer requirement grows with neighbor degree. Streaming dense updates reduces buffering but still transfers candidates that will be rejected. Sparse Top-$k$ compression~\cite{karimireddy2019efsgd} reduces the number of bytes sent, but coordinate selection can alter the update's alignment with the receiver's validation descent direction. Figure~\ref{fig:story} contrasts these approaches. We treat the effect of sparsification on filtering under heterogeneous data as an empirical question.
-
-We propose \textbf{PeerSieve}, which separates the decision to request an update from the decision to aggregate it. Peers first exchange compact summaries. The receiver requests compressed payloads only from candidates that pass the initial screen, then audits each payload before adding it to the aggregate. The design combines four mechanisms:
+We propose \textbf{PeerSieve} for decentralized large language model (LLM) fine-tuning. It separates the decision to request an update from the decision to aggregate it. The four mechanisms in Figure~\ref{fig:story} address the gaps in the same order:
 \begin{enumerate}
-  \item \textbf{Blockwise compression.} INT4 encoding reduces payload size, while error feedback carries quantization residuals into subsequent local updates.
-  \item \textbf{Screening before transfer.} The receiver compares CountSketch summaries~\cite{charikar2004countsketch,rothchild2020fetchsgd} and requests payloads only when the estimated alignment is positive.
-  \item \textbf{Audited streaming.} The receiver audits one staged payload at a time and caps each accepted update using the norm of its own local update. It does not materialize a dense copy of the payload.
-  \item \textbf{Per-edge quarantine.} Persistent misalignment can trigger reversible probation rather than a ban. Best-effort two-hop referrals can replenish the active neighbor set.
+  \item \textbf{Pre-transfer sketch screening.} The receiver compares CountSketch summaries~\cite{charikar2004countsketch,rothchild2020fetchsgd} of the decoded update and its own validation descent direction. It requests the payload only if the sketch cosine is positive. Passing the screen permits transfer, not aggregation.
+  \item \textbf{Blockwise INT4 compression.} Before announcing the sketch, the sender quantizes the update in blocks and saves the residual for the next round. Each requested payload is 49.63~MiB instead of 385~MiB without selecting a sparse subset of coordinates. We will measure how quantization affects alignment on recorded updates.
+  \item \textbf{Audited streaming aggregation.} The receiver reuses one compressed staging buffer and one decode tile. Pass~1 audits the payload. Only after it passes does Pass~2 cap its norm at the receiver's own update norm and add it to the accumulator. For fixed update and sketch sizes, receive-side tensor buffers do not grow with neighbor degree.
+  \item \textbf{Per-edge quarantine.} Persistent misalignment or a soft audit failure puts an edge on probation. A passing sketch-only probe can restore it without a payload transfer. Hard protocol faults trigger a ban at that receiver for the rest of the run. Best-effort two-hop referrals can replenish the active neighbor set.
 \end{enumerate}
 
-We ask whether these mechanisms reduce communication and receive-side memory while preserving model quality and limiting the influence of Byzantine updates. We first model the receive costs, then propose a CIFAR-10 baseline reproduction and a controlled language-model evaluation (Section~\ref{sec:eval}).
+We will test whether PeerSieve reduces received bytes, round time, and receive-side memory while preserving model quality and limiting the influence of Byzantine updates. We will first attempt to reproduce the TrustGraph-DFL baseline on CIFAR-10, then compare PeerSieve against baselines and ablations in a controlled language-model study (Section~\ref{sec:eval}).
 
 \section{System Model and Design Invariants}
 \label{sec:scope}
@@ -380,16 +386,6 @@ For full-parameter tuning, the projected receive-side tensor buffers occupy 8.73
 \end{enumerate}
 
 In the scenario in Table~\ref{tab:round}, the baseline is projected to take 9.6 times as long per round and use 3.7 times as much receive-side tensor memory as PeerSieve. The realized gains depend on local training time, how many payloads pass screening, and the cost of deterministic reductions and two-pass decoding.
-
-\section{Risks and Limitations}
-
-\textbf{Adaptive updates.} The audit checks consistency and alignment, not training provenance. Clipping limits update magnitude but does not rule out harmful directions or prevent a peer from receiving a large share of the trust weight. Performance on the planned stress tests cannot establish robustness to all adaptive peers.
-
-\textbf{Heterogeneity and validation.} We assume each honest peer has a clean validation split. Even with the correct sign convention, honest peers can have different validation descent directions, so low or negative alignment can lead to rejection of useful updates. We will examine these errors by trainable scope, layer, and seed, and freeze the calibrated tolerances before the stress tests. Larger sketches may reduce approximation error but increase communication cost. The resampling rule excludes splits with very small shards, so the evaluation does not cover all severe data imbalances.
-
-\textbf{Connectivity and synchronization.} Reversible probation and referrals help only when acceptable peers are reachable. PeerSieve does not solve eclipse attacks or remove synchronous straggler delays. Connectivity measured on the tested graph does not establish connectivity for other topologies.
-
-\textbf{Scope of efficiency claims.} Limiting the receive rate on a single PCIe host does not reproduce the latency or contention of a multi-host network. The receive-side tensor model excludes training allocations and other overheads. End-to-end measurements are needed to establish round-time gains and full-parameter fit on the planned testbed.
 
 \section{Conclusion}
 
