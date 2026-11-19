@@ -123,33 +123,9 @@ If fewer than two neighbors are active, the receiver asks any active neighbors t
 \section{Methods}
 \label{sec:design}
 
-Each peer acts as a sender for its own update and a receiver for its neighbors' updates. The sender compresses its update and announces a short summary, called a sketch. The receiver screens the sketch before requesting the compressed update. It audits each requested payload before adding it to the running sum. Figure~\ref{fig:story} shows these checks and how the receiver handles repeated failures.
+PeerSieve starts the exchange with a sketch rather than a full update. The sender compresses its update before making the sketch. The receiver uses the sketch to decide whether to request the compressed payload. The four mechanisms below follow the order in Figure~\ref{fig:story}.
 
-\subsection{Compress updates with blockwise INT4}
-
-\begin{inlinefigure}
-  \includegraphics[width=0.68\linewidth,trim=72bp 340bp 1616bp 338bp,clip]{figures/fig2_compress.png}
-  \captionof{figure}{The sender packs a block into 4-bit codes and a scale. It saves the quantization error for the next round.}
-  \label{fig:compress}
-\end{inlinefigure}
-
-Figure~\ref{fig:compress} shows how the sender packs one block. An update is the change in a peer's parameters after local training. For sender $j$ in round $t$, it is $\Delta w_j^{(t)} = w_j^{(t,\mathrm{after})} - w_j^{(t)}$. Rather than keeping only the largest changes, the sender encodes every coordinate with fewer bits. It divides the update into blocks of 128 values and uses one scale per block.
-
-Before encoding block $b$, the sender adds the quantization error saved from the previous round. It computes the scale $s_b$ by dividing the largest absolute value in the corrected block by seven, then rounds the scale to FP16. Equation~\eqref{eq:quant} shows how it turns the block into INT4 codes $q_{j,b}^{(t)}$, decodes those codes to $y_{j,b}^{(t)}$, and saves the difference as the next residual $e_{j,b}^{(t+1)}$. A zero scale decodes to an all-zero block.
-\begin{equation}
-\begin{aligned}
-  u_{j,b}^{(t)} &= \Delta w_{j,b}^{(t)} + e_{j,b}^{(t)}, \\
-  q_{j,b}^{(t)} &= \operatorname{clip}\!\left(\operatorname{round}\!\left(u_{j,b}^{(t)}/s_b\right),-7,7\right),
-                   \qquad s_b>0, \\
-  y_{j,b}^{(t)} &= s_b q_{j,b}^{(t)}, \qquad
-  e_{j,b}^{(t+1)} = u_{j,b}^{(t)} - y_{j,b}^{(t)} .
-\end{aligned}
-\label{eq:quant}
-\end{equation}
-
-The codes and rounded scales are the only tensor data in the payload. The sender and receiver use the rounded scales to decode the same update $y_j^{(t)}$. This way both peers can sketch the same values. The sender's residual tracks quantization error only, so rejection or clipping at the receiver does not change it. We expect smaller transfers and will measure how much quantization changes the direction of real LoRA updates.
-
-\subsection{Screen the sketch before requesting the payload}
+\subsection{Pre-transfer sketch screening}
 
 \begin{inlinefigure}
   \includegraphics[width=0.68\linewidth,trim=1624bp 293bp 91bp 338bp,clip]{figures/fig2_compress.png}
@@ -157,7 +133,9 @@ The codes and rounded scales are the only tensor data in the payload. The sender
   \label{fig:screen}
 \end{inlinefigure}
 
-Figure~\ref{fig:screen} shows the two sketches the receiver compares before it requests an update. The sketch cosine is an estimate. The error scale in the figure is a heuristic, not a bound. At the start of the round, peer $i$ computes $g_i^{\mathrm{val}} = -\nabla L_i^{\mathrm{val}}(w_i^{(t)})$ on its held-out validation data. A positive cosine with this direction predicts a drop in validation loss for a small enough step. It does not guarantee a drop after the full update.
+Figure~\ref{fig:screen} shows the two sketches the receiver compares before requesting an update. The sender sketches $y_j^{(t)}$, the values the receiver would decode from the compressed payload. Section~\ref{sec:compression} explains how the sender compresses the update.
+
+At the start of the round, peer $i$ computes $g_i^{\mathrm{val}} = -\nabla L_i^{\mathrm{val}}(w_i^{(t)})$ on its held-out validation data. A positive cosine with this direction predicts a drop in validation loss for a small enough step. It does not guarantee a drop after the full update.
 
 CountSketch assigns each coordinate to a bucket and gives it a sign. We denote the ideal sketch by $\mathcal S_t$. The sender adds the signed values of its decoded update to those buckets. The receiver does the same with its validation descent direction, using the same bucket assignments and signs. Each layer gets a share of the 16,384 buckets proportional to its parameter count. Both peers sum in a fixed FP32 order and round the bucket sums to FP16. The result is the 32~KiB sketch $F_t$. The format uses a single representation for zero and excludes nonfinite values.
 
@@ -174,9 +152,34 @@ The sender announces $s_j^{(t)}=F_t(y_j^{(t)})$. The receiver compares it with i
 
 Peers send announcements first. The receiver ties each announcement to the sender's authenticated identity, the run, and the round. It requests a payload only if the sketch cosine is positive. Each request permits one payload within the size limit for that round. If the score is nonpositive, there is no payload transfer.
 
-The sketch screen skips a transfer when the score fails. It can reject a useful update or request one that fails the full audit. The ideal sketch estimates an inner product without bias when inputs are chosen independently of the hashes and signs. This property does not carry over to cosine scores or to updates chosen after seeing the public seed.
+The sketch cosine is an estimate. The screen can skip a useful update or request one that fails the full audit. The error scale in Figure~\ref{fig:screen} is a heuristic, not a bound. The ideal sketch estimates an inner product without bias when inputs are chosen independently of the hashes and signs. This property does not carry over to cosine scores or to updates chosen after seeing the public seed.
 
-\subsection{Check the whole update before adding it}
+\subsection{Blockwise INT4 compression}
+\label{sec:compression}
+
+\begin{inlinefigure}
+  \includegraphics[width=0.68\linewidth,trim=72bp 340bp 1616bp 338bp,clip]{figures/fig2_compress.png}
+  \captionof{figure}{The sender packs a block into 4-bit codes and a scale. It saves the quantization error for the next round.}
+  \label{fig:compress}
+\end{inlinefigure}
+
+Figure~\ref{fig:compress} shows how the sender packs one block before making its sketch. An update is the change in a peer's parameters after local training. For sender $j$ in round $t$, it is $\Delta w_j^{(t)} = w_j^{(t,\mathrm{after})} - w_j^{(t)}$. Rather than keeping only the largest changes, the sender encodes every coordinate with fewer bits. It divides the update into blocks of 128 values and uses one scale per block.
+
+Before encoding block $b$, the sender adds the quantization error saved from the previous round. It computes the scale $s_b$ by dividing the largest absolute value in the corrected block by seven, then rounds the scale to FP16. Equation~\eqref{eq:quant} shows how it turns the block into INT4 codes $q_{j,b}^{(t)}$, decodes those codes to $y_{j,b}^{(t)}$, and saves the difference as the next residual $e_{j,b}^{(t+1)}$. A zero scale decodes to an all-zero block.
+\begin{equation}
+\begin{aligned}
+  u_{j,b}^{(t)} &= \Delta w_{j,b}^{(t)} + e_{j,b}^{(t)}, \\
+  q_{j,b}^{(t)} &= \operatorname{clip}\!\left(\operatorname{round}\!\left(u_{j,b}^{(t)}/s_b\right),-7,7\right),
+                   \qquad s_b>0, \\
+  y_{j,b}^{(t)} &= s_b q_{j,b}^{(t)}, \qquad
+  e_{j,b}^{(t+1)} = u_{j,b}^{(t)} - y_{j,b}^{(t)} .
+\end{aligned}
+\label{eq:quant}
+\end{equation}
+
+The codes and rounded scales are the only tensor data in the payload. The sender and receiver use the rounded scales to decode the same update $y_j^{(t)}$. This way both peers can sketch the same values. The sender's residual tracks quantization error only, so rejection or clipping at the receiver does not change it. We expect smaller transfers and will measure how much quantization changes the direction of real LoRA updates.
+
+\subsection{Audited streaming aggregation}
 \label{sec:audit}
 
 \begin{inlinefigure}
@@ -213,7 +216,7 @@ At round end, the receiver divides the running sum by the total cosine weight $W
 
 For fixed update and sketch sizes, the receiver can use the same tensor buffers as it adds neighbors. It still keeps a record for each link. Decoding twice adds work, so the round-time benefit depends on the cost of the audit and the time saved on transfers. The clipped weighted average has norm at most $r_i^{(t)}$, but the cap does not limit the fraction of weight assigned to Byzantine peers. A matching sketch shows that the payload agrees with the announcement. It cannot establish how the sender trained or detect changes that leave the sketch unchanged.
 
-\subsection{Pause failing links and allow recovery}
+\subsection{Per-edge quarantine}
 \label{sec:quarantine}
 
 \begin{inlinefigure}
@@ -250,8 +253,8 @@ Before GPU evaluation, we will check the four mechanisms separately (Table~\ref{
     \toprule
     Module & Check \\
     \midrule
-    Compression & Check decoded values and residual accounting. Measure how much quantization changes alignment on recorded LoRA updates. \\
     Sketch screen & Check that the sender and receiver produce the same sketch across tile sizes. Measure cosine and norm error on attack-free updates. \\
+    Compression & Check decoded values and residual accounting. Measure how much quantization changes alignment on recorded LoRA updates. \\
     Audit and streaming & Check that rejected payloads leave the running sum and total weight unchanged, and that accepted contributions respect the norm cap. \\
     Quarantine & Use multi-process Gloo tests to check bans, recovery from probation, and whether eligible referrals can restore a connection. \\
     \bottomrule
