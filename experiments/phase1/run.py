@@ -252,6 +252,14 @@ def _suite_runs(suite: str, base: ExperimentConfig) -> list[tuple[str, Experimen
                     "diagnostics/label_flip_all__tg_descent_neg",
                     replace(tg_mp, attack="label_flip_all"),
                 ),
+                (
+                    "diagnostics/clip_norm__model_poison__tg_descent_neg",
+                    replace(tg_mp, attack="model_poison", trustgraph_clip_norm=True),
+                ),
+                (
+                    "diagnostics/clip_norm__random_noise__tg_descent_neg",
+                    replace(tg_mp, attack="random_noise", trustgraph_clip_norm=True),
+                ),
             ]
         )
         return runs
@@ -303,6 +311,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--val-grad-sign", choices=["descent_neg", "paper_pos"], default="descent_neg")
     p.add_argument("--no-relu", action="store_true")
     p.add_argument("--trustgraph-metric", choices=["cosine", "euclidean"], default="cosine")
+    p.add_argument("--trustgraph-clip-norm", action="store_true")
     p.add_argument("--balance-gamma", type=float, default=0.3)
     p.add_argument("--balance-kappa", type=float, default=1.0)
     p.add_argument("--krum-mode", choices=["multi", "single"], default="multi")
@@ -312,6 +321,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval-every", type=int, default=5)
     p.add_argument("--shard-index", type=int, default=0)
     p.add_argument("--num-shards", type=int, default=1)
+    p.add_argument("--skip-existing", action="store_true", help="Skip runs that already have summary.json.")
     p.add_argument("--output-root", default="outputs/phase1")
     p.add_argument("--quiet", action="store_true")
     return p.parse_args()
@@ -348,6 +358,7 @@ def main() -> None:
         val_grad_sign=args.val_grad_sign,
         trustgraph_use_relu=not args.no_relu,
         trustgraph_metric=args.trustgraph_metric,
+        trustgraph_clip_norm=args.trustgraph_clip_norm,
         balance_gamma=args.balance_gamma,
         balance_kappa=args.balance_kappa,
         krum_mode=args.krum_mode,
@@ -388,15 +399,20 @@ def main() -> None:
     data_cache: dict[tuple[int, str], object] = {}
 
     all_jobs: list[tuple[int, str, ExperimentConfig]] = []
+    skipped = 0
     for seed in args.seeds:
         seed_base = replace(base_cfg, seed=seed)
         for run_name, cfg in _suite_runs(args.suite, seed_base):
+            out_dir = suite_root / run_name / f"seed_{seed}"
+            if args.skip_existing and (out_dir / "summary.json").exists():
+                skipped += 1
+                continue
             all_jobs.append((seed, run_name, cfg))
 
     shard_jobs = [job for idx, job in enumerate(all_jobs) if idx % args.num_shards == args.shard_index]
     print(
         f"=== Suite '{args.suite}': shard {args.shard_index}/{args.num_shards} "
-        f"running {len(shard_jobs)}/{len(all_jobs)} jobs ===",
+        f"running {len(shard_jobs)}/{len(all_jobs)} pending jobs (skipped {skipped} completed) ===",
         flush=True,
     )
 

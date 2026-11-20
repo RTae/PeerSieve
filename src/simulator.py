@@ -67,6 +67,7 @@ class ExperimentConfig:
     trustgraph_use_relu: bool = True
     trustgraph_metric: str = "cosine"
     trustgraph_score_threshold: float = 0.0
+    trustgraph_clip_norm: bool = False
     balance_gamma: float = 0.3
     balance_kappa: float = 1.0
     krum_mode: str = "multi"
@@ -87,6 +88,7 @@ class ExperimentConfig:
             trustgraph_use_relu=self.trustgraph_use_relu,
             trustgraph_metric=self.trustgraph_metric,
             trustgraph_score_threshold=self.trustgraph_score_threshold,
+            trustgraph_clip_norm=self.trustgraph_clip_norm,
             balance_gamma=self.balance_gamma,
             balance_kappa=self.balance_kappa,
             krum_mode=self.krum_mode,
@@ -296,6 +298,8 @@ def run_experiment(
                     total_rounds=cfg.rounds,
                     byzantine_frac=byz_frac_eff,
                     cfg=agg_cfg,
+                    self_prev=prev_models[i],
+                    self_update=updates[i],
                 )
                 next_models[i] = res.new_model
                 if res.self_fallback:

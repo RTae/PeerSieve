@@ -20,6 +20,8 @@ def _method_label(cfg: dict[str, object]) -> str:
             suffix += ",norelu"
         if cfg.get("trustgraph_metric", "cosine") != "cosine":
             suffix += f",{cfg['trustgraph_metric']}"
+        if cfg.get("trustgraph_clip_norm", False):
+            suffix += ",clip"
         if float(cfg.get("alpha", 0.5)) != 0.5:
             suffix += f",a={cfg['alpha']}"
         if val_split != "local":

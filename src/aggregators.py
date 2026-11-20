@@ -20,6 +20,7 @@ class AggregatorConfig:
     trustgraph_use_relu: bool = True
     trustgraph_metric: str = "cosine"  # cosine | euclidean
     trustgraph_score_threshold: float = 0.0
+    trustgraph_clip_norm: bool = False  # PeerSieve Eq. (4) self-update norm cap
     # BALANCE specific (Fang et al., CCS 2024)
     balance_gamma: float = 0.3
     balance_kappa: float = 1.0
@@ -87,12 +88,16 @@ def aggregate_trustgraph(
     neighbor_posts: dict[int, torch.Tensor],
     neighbor_updates: dict[int, torch.Tensor],
     cfg: AggregatorConfig,
+    self_prev: torch.Tensor | None = None,
+    self_update: torch.Tensor | None = None,
 ) -> AggregationResult:
     """TrustGraph-DFL consistency-weighted neighborhood aggregation (Eq. 3-5).
 
     Supports both:
     - val_grad_sign="paper_pos": literal Algorithm 1 / Eq. 3 using +nabla F_i(theta_i^t; D_i^val)
     - val_grad_sign="descent_neg": corrected descent direction -nabla F_i(theta_i^t; D_i^val)
+    - trustgraph_clip_norm=True: PeerSieve Eq. (4) receiver-norm cap on neighbor updates
+      a_ij = min(1, ||Delta_theta_i||_2 / ||Delta_theta_j||_2), blended in update space.
     """
     if not neighbor_ids:
         return AggregationResult(
@@ -135,12 +140,26 @@ def aggregate_trustgraph(
         )
 
     weights = {j: raw_weights[j] / (denom + cfg.eps) for j in neighbor_ids}
-    nbr_avg = torch.zeros_like(self_post)
-    for j in neighbor_ids:
-        if weights[j] > 0.0:
-            nbr_avg.add_(neighbor_posts[j], alpha=weights[j])
+    if cfg.trustgraph_clip_norm:
+        if self_prev is None or self_update is None:
+            raise ValueError("self_prev and self_update are required when trustgraph_clip_norm=True.")
+        r_i = float(torch.linalg.vector_norm(self_update).item())
+        agg_update = torch.zeros_like(self_update)
+        for j in neighbor_ids:
+            if weights[j] > 0.0:
+                u_j = neighbor_updates[j]
+                n_j = float(torch.linalg.vector_norm(u_j).item())
+                if n_j > 0.0:
+                    a_ij = min(1.0, r_i / n_j)
+                    agg_update.add_(u_j, alpha=weights[j] * a_ij)
+        new_model = self_prev + cfg.alpha * self_update + (1.0 - cfg.alpha) * agg_update
+    else:
+        nbr_avg = torch.zeros_like(self_post)
+        for j in neighbor_ids:
+            if weights[j] > 0.0:
+                nbr_avg.add_(neighbor_posts[j], alpha=weights[j])
+        new_model = cfg.alpha * self_post + (1.0 - cfg.alpha) * nbr_avg
 
-    new_model = cfg.alpha * self_post + (1.0 - cfg.alpha) * nbr_avg
     return AggregationResult(
         new_model=new_model,
         neighbor_weights=weights,
@@ -321,12 +340,23 @@ def aggregate_node(
     total_rounds: int,
     byzantine_frac: float,
     cfg: AggregatorConfig,
+    self_prev: torch.Tensor | None = None,
+    self_update: torch.Tensor | None = None,
 ) -> AggregationResult:
     """Dispatch to the configured decentralized aggregation rule."""
     if cfg.name == "fedavg":
         return aggregate_fedavg(self_post, neighbor_ids, neighbor_posts)
     if cfg.name == "trustgraph":
-        return aggregate_trustgraph(self_post, val_grad, neighbor_ids, neighbor_posts, neighbor_updates, cfg)
+        return aggregate_trustgraph(
+            self_post,
+            val_grad,
+            neighbor_ids,
+            neighbor_posts,
+            neighbor_updates,
+            cfg,
+            self_prev=self_prev,
+            self_update=self_update,
+        )
     if cfg.name == "balance":
         return aggregate_balance(self_post, neighbor_ids, neighbor_posts, round_idx, total_rounds, cfg)
     if cfg.name == "krum":

@@ -219,12 +219,52 @@ def test_step_a_suite_count_and_sharding() -> None:
     from experiments.phase1.run import _suite_runs
 
     runs = _suite_runs("step_a", ExperimentConfig())
-    assert len(runs) == 73
+    assert len(runs) == 75
     names = [name for name, _ in runs]
     assert len(names) == len(set(names))
     sharded = [
         [name for idx, (name, _) in enumerate(runs) if idx % 4 == s]
         for s in range(4)
     ]
-    assert sum(len(x) for x in sharded) == 73
+    assert sum(len(x) for x in sharded) == 75
     assert set().union(*sharded) == set(names)
+
+
+def test_trustgraph_clip_norm_caps_large_updates_and_preserves_small() -> None:
+    self_prev = torch.tensor([1.0, 2.0, 3.0])
+    self_update = torch.tensor([0.3, 0.4, 0.0])  # norm r_i = 0.5
+    self_post = self_prev + self_update
+    val_grad = -self_update  # aligned with self_update
+
+    # Neighbor 1: huge norm (50.0) aligned positively -> must be clipped to norm 0.5.
+    u_huge = 100.0 * self_update
+    # Neighbor 2: small norm (0.25 < r_i) aligned positively -> must remain unclipped.
+    u_small = 0.5 * self_update
+    cfg = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", trustgraph_clip_norm=True, alpha=0.5)
+
+    res_huge = aggregate_trustgraph(
+        self_post,
+        val_grad,
+        [1],
+        {1: self_prev + u_huge},
+        {1: u_huge},
+        cfg,
+        self_prev=self_prev,
+        self_update=self_update,
+    )
+    delta_huge = res_huge.new_model - self_prev
+    assert float(delta_huge.norm().item()) <= float(self_update.norm().item()) + 1e-5
+    assert torch.allclose(delta_huge, self_update, atol=1e-5)
+
+    res_small = aggregate_trustgraph(
+        self_post,
+        val_grad,
+        [2],
+        {2: self_prev + u_small},
+        {2: u_small},
+        cfg,
+        self_prev=self_prev,
+        self_update=self_update,
+    )
+    # 0.5 * self_update + 0.5 * (0.5 * self_update) = 0.75 * self_update
+    assert torch.allclose(res_small.new_model - self_prev, 0.75 * self_update, atol=1e-5)
