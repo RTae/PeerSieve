@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import torch
 
+from experiments.phase1.run import build_suite_runs
+from experiments.phase1.summarize import format_markdown_report, summarize_directory
 from src.aggregators import (
     AggregatorConfig,
     aggregate_balance,
@@ -17,7 +21,13 @@ from src.aggregators import (
 )
 from src.attacks import AttackConfig, apply_round_attack
 from src.data import apply_label_flip, make_synthetic_cifar_tensors, partition_dirichlet_balanced
-from src.models import build_model, compute_validation_gradient, model_to_vector
+from src.models import (
+    build_model,
+    compute_validation_gradient,
+    model_to_vector,
+    train_local_epoch,
+    vector_to_model,
+)
 from src.simulator import ExperimentConfig, run_experiment
 from src.topology import build_topology, select_byzantine_nodes, topology_summary
 
@@ -43,6 +53,27 @@ def test_balanced_dirichlet_partition_exact_counts_and_non_iid() -> None:
     assert np.all(total_per_class == 1000)
 
 
+def test_iid_val_split_is_balanced_per_node() -> None:
+    x_tr, y_tr, x_te, y_te = make_synthetic_cifar_tensors(n_train=10000, n_test=200, seed=2)
+    part = partition_dirichlet_balanced(
+        x_tr,
+        y_tr,
+        x_te,
+        y_te,
+        n_nodes=20,
+        samples_per_node=500,
+        alpha_dir=0.5,
+        val_frac=0.1,
+        val_split="iid",
+        seed=42,
+    )
+    for nd in part.nodes:
+        assert nd.x_train.shape == (450, 3, 32, 32)
+        assert nd.x_val.shape == (50, 3, 32, 32)
+        counts = torch.bincount(nd.y_val, minlength=10)
+        assert torch.all(counts == 5)
+
+
 def test_label_flip_pair_0_1() -> None:
     y = torch.tensor([0, 1, 2, 3, 0, 1, 9])
     flipped = apply_label_flip(y, mode="pair_0_1")
@@ -61,7 +92,6 @@ def test_topologies_connected_and_degree() -> None:
 
 
 def test_trustgraph_sign_direction_and_self_fallback() -> None:
-    # Honest descent update points opposite to +nabla F (val_grad).
     val_grad = torch.tensor([1.0, 2.0, -1.0])
     self_post = torch.tensor([10.0, 10.0, 10.0])
     honest_update = -0.1 * val_grad
@@ -82,7 +112,7 @@ def test_trustgraph_sign_direction_and_self_fallback() -> None:
     assert res_pos.scores[1] < -0.99 and res_pos.scores[2] > 0.99
     assert res_pos.neighbor_weights[1] == 0.0 and res_pos.neighbor_weights[2] > 0.99
 
-    # All-negative fallback: node keeps self_post unchanged (not 0.5 * self_post!).
+    # All-negative fallback: node keeps self_post unchanged (not 0.5 * self_post).
     res_fb = aggregate_trustgraph(
         self_post, val_grad, [2], {2: nbr_posts[2]}, {2: nbr_updates[2]}, cfg_neg
     )
@@ -93,41 +123,37 @@ def test_trustgraph_sign_direction_and_self_fallback() -> None:
 def test_balance_krum_trimmed_mean_and_fedavg() -> None:
     self_post = torch.tensor([10.0, 0.0, 0.0, 0.0])
     nbr_posts = {
-        1: torch.tensor([10.1, 0.05, 0.0, 0.0]),  # benign
-        2: torch.tensor([9.95, -0.05, 0.0, 0.0]),  # benign
-        3: torch.tensor([10.05, 0.02, 0.0, 0.0]),  # benign
-        4: torch.tensor([-50.0, 50.0, 50.0, 50.0]),  # malicious outlier
+        1: torch.tensor([10.1, 0.05, 0.0, 0.0]),
+        2: torch.tensor([9.95, -0.05, 0.0, 0.0]),
+        3: torch.tensor([10.05, 0.02, 0.0, 0.0]),
+        4: torch.tensor([-50.0, 50.0, 50.0, 50.0]),
     }
 
-    # BALANCE rejects outlier 4 and keeps 1, 2, 3.
     res_bal = aggregate_balance(
         self_post, [1, 2, 3, 4], nbr_posts, round_idx=0, total_rounds=200, cfg=AggregatorConfig(name="balance")
     )
     assert res_bal.neighbor_weights[4] == 0.0
     assert all(res_bal.neighbor_weights[j] > 0.0 for j in (1, 2, 3))
 
-    # Multi-Krum with 25% Byzantine rejects outlier 4.
     res_krum = aggregate_krum(
         0, self_post, [1, 2, 3, 4], nbr_posts, byzantine_frac=0.25, cfg=AggregatorConfig(name="krum")
     )
     assert res_krum.neighbor_weights[4] == 0.0
 
-    # Trimmed mean removes extreme outlier coordinate-wise.
     # Coord 0 sorted: [-50, 9.95, 10.0, 10.05, 10.1] -> mean(9.95, 10.0, 10.05) = 10.0
     # Coord 1 sorted: [-0.05, 0.0, 0.02, 0.05, 50.0] -> mean(0.0, 0.02, 0.05) = 0.07 / 3
     res_tm = aggregate_trimmed_mean(
-        0, self_post, [1, 2, 3, 4], nbr_posts, cfg=AggregatorConfig(name="trimmed_mean", trim_ratio=0.3)
+        self_post, [1, 2, 3, 4], nbr_posts, cfg=AggregatorConfig(name="trimmed_mean", trim_ratio=0.3)
     )
     assert torch.allclose(res_tm.new_model, torch.tensor([10.0, 0.07 / 3.0, 0.0, 0.0]), atol=1e-4)
 
     # Ring degree-2 edge case must not crash for Krum or Trimmed Mean.
     ring_posts = {1: nbr_posts[1], 4: nbr_posts[4]}
     res_ring_k = aggregate_krum(0, self_post, [1, 4], ring_posts, byzantine_frac=0.5, cfg=AggregatorConfig(name="krum"))
-    res_ring_tm = aggregate_trimmed_mean(0, self_post, [1, 4], ring_posts, cfg=AggregatorConfig(name="trimmed_mean"))
+    res_ring_tm = aggregate_trimmed_mean(self_post, [1, 4], ring_posts, cfg=AggregatorConfig(name="trimmed_mean"))
     assert torch.isfinite(res_ring_k.new_model).all()
     assert torch.isfinite(res_ring_tm.new_model).all()
 
-    # FedAvg matches exact mean.
     res_fa = aggregate_fedavg(self_post, [1, 2], {1: nbr_posts[1], 2: nbr_posts[2]})
     expected = (self_post + nbr_posts[1] + nbr_posts[2]) / 3.0
     assert torch.allclose(res_fa.new_model, expected)
@@ -165,8 +191,6 @@ def test_validation_gradient_matches_exact_mean_across_batches() -> None:
 
 
 def test_vector_to_model_does_not_alias_source_vector() -> None:
-    from src.models import train_local_epoch, vector_to_model
-
     torch.manual_seed(0)
     model = build_model("cnn2x2")
     v0 = model_to_vector(model)
@@ -204,6 +228,7 @@ def test_end_to_end_synthetic_model_poison_shows_sign_effect() -> None:
     s_neg = res_neg["summary"]
     s_pos = res_pos["summary"]
     assert math.isfinite(float(s_neg["final_benign_test_acc_mean"]))
+    assert s_neg["had_nan"] is False
     assert float(s_neg["mean_benign_score"]) > 0.0
     assert float(s_neg["mean_byz_score"]) < 0.0
     assert float(s_neg["byz_accept_cumulative"]) == 0.0
@@ -215,17 +240,14 @@ def test_end_to_end_synthetic_model_poison_shows_sign_effect() -> None:
     assert float(s_neg["final_consensus_test_acc"]) > float(s_pos["final_consensus_test_acc"]) + 0.15
 
 
-def test_step_a_suite_count_and_sharding() -> None:
-    from experiments.phase1.run import _suite_runs
-
-    runs = _suite_runs("step_a", ExperimentConfig())
-    assert len(runs) == 75
-    names = [name for name, _ in runs]
+def test_full_and_step_a_suite_count_and_sharding() -> None:
+    runs_full = build_suite_runs("full", ExperimentConfig())
+    runs_alias = build_suite_runs("step_a", ExperimentConfig())
+    assert len(runs_full) == 75
+    assert [n for n, _ in runs_full] == [n for n, _ in runs_alias]
+    names = [name for name, _ in runs_full]
     assert len(names) == len(set(names))
-    sharded = [
-        [name for idx, (name, _) in enumerate(runs) if idx % 4 == s]
-        for s in range(4)
-    ]
+    sharded = [[name for idx, (name, _) in enumerate(runs_full) if idx % 4 == s] for s in range(4)]
     assert sum(len(x) for x in sharded) == 75
     assert set().union(*sharded) == set(names)
 
@@ -234,11 +256,9 @@ def test_trustgraph_clip_norm_caps_large_updates_and_preserves_small() -> None:
     self_prev = torch.tensor([1.0, 2.0, 3.0])
     self_update = torch.tensor([0.3, 0.4, 0.0])  # norm r_i = 0.5
     self_post = self_prev + self_update
-    val_grad = -self_update  # aligned with self_update
+    val_grad = -self_update
 
-    # Neighbor 1: huge norm (50.0) aligned positively -> must be clipped to norm 0.5.
     u_huge = 100.0 * self_update
-    # Neighbor 2: small norm (0.25 < r_i) aligned positively -> must remain unclipped.
     u_small = 0.5 * self_update
     cfg = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", trustgraph_clip_norm=True, alpha=0.5)
 
@@ -266,5 +286,43 @@ def test_trustgraph_clip_norm_caps_large_updates_and_preserves_small() -> None:
         self_prev=self_prev,
         self_update=self_update,
     )
-    # 0.5 * self_update + 0.5 * (0.5 * self_update) = 0.75 * self_update
     assert torch.allclose(res_small.new_model - self_prev, 0.75 * self_update, atol=1e-5)
+
+
+def test_summarize_directory_deduplicates_and_counts_nans(tmp_path: Path) -> None:
+    def _write_summary(rel: str, seed: int, acc: float, cons: float, fpr: float, nan_flag: bool) -> None:
+        p = tmp_path / rel / "summary.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "config": {
+                "topology": "random",
+                "attack": "model_poison",
+                "byzantine_frac": 0.3,
+                "aggregator": "trustgraph",
+                "val_grad_sign": "descent_neg",
+                "seed": seed,
+            },
+            "final_benign_test_acc_mean": acc,
+            "final_consensus_test_acc": cons,
+            "fpr_cumulative": fpr,
+            "byz_accept_cumulative": 0.1,
+            "mean_benign_score": float("nan") if nan_flag else 0.05,
+            "mean_byz_score": float("nan") if nan_flag else -0.05,
+            "had_nan": nan_flag,
+        }
+        p.write_text(json.dumps(payload), encoding="utf-8")
+
+    # Duplicate seed 42 in two subfolders + second seed 43 with NaN.
+    _write_summary("a/seed_42", 42, 0.40, 0.50, 0.45, False)
+    _write_summary("b/seed_42", 42, 0.99, 0.99, 0.01, False)
+    _write_summary("a/seed_43", 43, 0.10, 0.10, 0.95, True)
+
+    rows = summarize_directory(tmp_path)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.seeds == 2
+    assert math.isclose(r.acc_mean, 25.0, abs_tol=1e-6)
+    assert math.isclose(r.cons_mean, 30.0, abs_tol=1e-6)
+    assert r.nan_count == 1
+    md = format_markdown_report(rows, tmp_path, "Test Summary")
+    assert "| 1/2 |" in md

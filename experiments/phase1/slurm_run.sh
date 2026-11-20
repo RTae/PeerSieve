@@ -4,9 +4,9 @@
 #
 # Example (after explicit approval):
 #   mkdir -p logs
-#   sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:4 \
-#     --cpus-per-task=16 --mem=64G --time=00:20:00 --open-mode=append --output=logs/%x-%j.out \
-#     experiments/phase1/slurm_run.sh --mode suite --suite step_a --skip-existing --rounds 200 --eval-every 10 --seeds 42
+#   sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
+#     --cpus-per-task=32 --mem=128G --time=00:45:00 --open-mode=append --output=logs/%x-%j.out \
+#     experiments/phase1/slurm_run.sh --mode suite --suite full --skip-existing --rounds 200 --eval-every 10 --seeds 42 43 44
 
 set -euo pipefail
 

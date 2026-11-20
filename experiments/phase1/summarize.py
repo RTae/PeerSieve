@@ -4,29 +4,51 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 
 import numpy as np
 
 
-def _method_label(cfg: dict[str, object]) -> str:
+@dataclass
+class SummaryRow:
+    topology: str
+    attack: str
+    byz_pct: int
+    method: str
+    seeds: int
+    acc_mean: float
+    acc_std: float
+    cons_mean: float
+    cons_std: float
+    fpr_mean: float
+    fpr_std: float
+    byz_accept_mean: float
+    ben_cos_mean: float | None
+    byz_cos_mean: float | None
+    nan_count: int
+
+
+def method_label(cfg: dict[str, object]) -> str:
+    """Format a canonical display label distinguishing aggregator variants."""
     agg = str(cfg["aggregator"])
     val_split = str(cfg.get("val_split", "local"))
     if agg == "trustgraph":
         sign = str(cfg.get("val_grad_sign", "descent_neg"))
-        suffix = ""
+        parts = [sign]
         if not cfg.get("trustgraph_use_relu", True):
-            suffix += ",norelu"
+            parts.append("norelu")
         if cfg.get("trustgraph_metric", "cosine") != "cosine":
-            suffix += f",{cfg['trustgraph_metric']}"
+            parts.append(str(cfg["trustgraph_metric"]))
         if cfg.get("trustgraph_clip_norm", False):
-            suffix += ",clip"
+            parts.append("clip")
         if float(cfg.get("alpha", 0.5)) != 0.5:
-            suffix += f",a={cfg['alpha']}"
+            parts.append(f"a={cfg['alpha']}")
         if val_split != "local":
-            suffix += f",val={val_split}"
-        return f"trustgraph({sign}{suffix})"
+            parts.append(f"val={val_split}")
+        return f"trustgraph({','.join(parts)})"
     if agg == "balance":
         gamma = float(cfg.get("balance_gamma", 0.3))
         if abs(gamma - 0.3) > 1e-9:
@@ -34,20 +56,23 @@ def _method_label(cfg: dict[str, object]) -> str:
     return agg
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description="Summarize Phase 1 summary.json files.")
-    p.add_argument("root", help="Directory containing Phase 1 outputs (searched recursively for summary.json).")
-    p.add_argument("--out", default=None, help="Optional Markdown file path to write the table (e.g. report/phase1_smoke.md).")
-    p.add_argument("--title", default="Phase 1 Experiment Summary", help="Heading when writing a Markdown report.")
-    args = p.parse_args()
+# Backwards-compatible alias.
+_method_label = method_label
 
-    files = sorted(Path(args.root).rglob("summary.json"))
-    if not files:
-        print(f"No summary.json files found under {args.root}")
-        return
 
+def _is_nan_run(summary: dict[str, object]) -> bool:
+    if bool(summary.get("had_nan", False)):
+        return True
+    ben = summary.get("mean_benign_score")
+    return ben is not None and math.isnan(float(ben))
+
+
+def summarize_directory(root: str | Path) -> list[SummaryRow]:
+    """Load and aggregate all summary.json files under root, deduplicating identical (config, seed)."""
+    files = sorted(Path(root).rglob("summary.json"))
     grouped: dict[tuple[str, str, int, str], list[dict[str, object]]] = defaultdict(list)
     seen_seed: set[tuple[str, str, int, str, int]] = set()
+
     for path in files:
         with open(path, encoding="utf-8") as f:
             s = json.load(f)
@@ -56,7 +81,7 @@ def main() -> None:
             str(cfg["topology"]),
             str(cfg["attack"]),
             int(round(float(cfg["byzantine_frac"]) * 100)),
-            _method_label(cfg),
+            method_label(cfg),
         )
         dedup_key = (*key, int(cfg["seed"]))
         if dedup_key in seen_seed:
@@ -64,36 +89,82 @@ def main() -> None:
         seen_seed.add(dedup_key)
         grouped[key].append(s)
 
-    lines = [
-        f"# {args.title}",
-        "",
-        f"Source outputs: `{args.root}`",
-        "",
-        "| Topology | Attack | Byz% | Method | Seeds | Final Acc (%) | Cons Acc (%) | FPR (%) | Byz Accept (%) | Cos(Ben/Byz) |",
-        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|",
-    ]
-    for (topo, atk, byz_pct, method), rows in sorted(grouped.items()):
-        accs = [100.0 * float(r["final_benign_test_acc_mean"]) for r in rows]
-        cons = [100.0 * float(r["final_consensus_test_acc"]) for r in rows]
-        fprs = [100.0 * float(r["fpr_cumulative"]) for r in rows]
-        byz_acc = [100.0 * float(r["byz_accept_cumulative"]) for r in rows]
-        ben_cos = [float(r["mean_benign_score"]) for r in rows if r.get("mean_benign_score") is not None]
-        byz_cos = [float(r["mean_byz_score"]) for r in rows if r.get("mean_byz_score") is not None]
-        cos_txt = (
-            f"{np.mean(ben_cos):+.3f} / {np.mean(byz_cos):+.3f}"
-            if ben_cos and byz_cos
-            else (f"{np.mean(ben_cos):+.3f} / n/a" if ben_cos else "n/a")
-        )
-        acc_txt = f"{np.mean(accs):.2f} ± {np.std(accs):.2f}" if len(accs) > 1 else f"{accs[0]:.2f}"
-        cons_txt = f"{np.mean(cons):.2f}"
-        fpr_txt = f"{np.mean(fprs):.2f}"
-        byz_txt = f"{np.mean(byz_acc):.2f}"
-        lines.append(
-            f"| {topo} | {atk} | {byz_pct} | {method} | {len(rows)} | "
-            f"{acc_txt} | {cons_txt} | {fpr_txt} | {byz_txt} | {cos_txt} |"
-        )
+    rows_out: list[SummaryRow] = []
+    for (topo, atk, byz_pct, method), items in sorted(grouped.items()):
+        accs = [100.0 * float(r["final_benign_test_acc_mean"]) for r in items]
+        cons = [100.0 * float(r["final_consensus_test_acc"]) for r in items]
+        fprs = [100.0 * float(r["fpr_cumulative"]) for r in items]
+        byz_acc = [100.0 * float(r["byz_accept_cumulative"]) for r in items]
+        ben_cos = [float(r["mean_benign_score"]) for r in items if r.get("mean_benign_score") is not None]
+        byz_cos = [float(r["mean_byz_score"]) for r in items if r.get("mean_byz_score") is not None]
+        nan_count = sum(1 for r in items if _is_nan_run(r))
 
-    output = "\n".join(lines) + "\n"
+        rows_out.append(
+            SummaryRow(
+                topology=topo,
+                attack=atk,
+                byz_pct=byz_pct,
+                method=method,
+                seeds=len(items),
+                acc_mean=float(np.mean(accs)),
+                acc_std=float(np.std(accs)),
+                cons_mean=float(np.mean(cons)),
+                cons_std=float(np.std(cons)),
+                fpr_mean=float(np.mean(fprs)),
+                fpr_std=float(np.std(fprs)),
+                byz_accept_mean=float(np.mean(byz_acc)),
+                ben_cos_mean=float(np.mean(ben_cos)) if ben_cos else None,
+                byz_cos_mean=float(np.mean(byz_cos)) if byz_cos else None,
+                nan_count=nan_count,
+            )
+        )
+    return rows_out
+
+
+def _fmt_mean_std(mean: float, std: float, seeds: int) -> str:
+    return f"{mean:.2f} ± {std:.2f}" if seeds > 1 else f"{mean:.2f}"
+
+
+def format_markdown_report(rows: list[SummaryRow], root: str | Path, title: str) -> str:
+    """Render aggregated SummaryRows as a GitHub-flavored Markdown report."""
+    lines = [
+        f"# {title}",
+        "",
+        f"Source outputs: `{root}`",
+        "",
+        "| Topology | Attack | Byz% | Method | Seeds | Final Acc (%) | Cons Acc (%) | FPR (%) | Byz Accept (%) | Cos(Ben/Byz) | NaNs |",
+        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for r in rows:
+        if r.ben_cos_mean is not None and r.byz_cos_mean is not None:
+            cos_txt = f"{r.ben_cos_mean:+.3f} / {r.byz_cos_mean:+.3f}"
+        elif r.ben_cos_mean is not None:
+            cos_txt = f"{r.ben_cos_mean:+.3f} / n/a"
+        else:
+            cos_txt = "n/a"
+        lines.append(
+            f"| {r.topology} | {r.attack} | {r.byz_pct} | {r.method} | {r.seeds} | "
+            f"{_fmt_mean_std(r.acc_mean, r.acc_std, r.seeds)} | "
+            f"{_fmt_mean_std(r.cons_mean, r.cons_std, r.seeds)} | "
+            f"{_fmt_mean_std(r.fpr_mean, r.fpr_std, r.seeds)} | "
+            f"{r.byz_accept_mean:.2f} | {cos_txt} | {r.nan_count}/{r.seeds} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Summarize Phase 1 summary.json files.")
+    p.add_argument("root", help="Directory containing Phase 1 outputs (searched recursively for summary.json).")
+    p.add_argument("--out", default=None, help="Optional Markdown file path to write the table.")
+    p.add_argument("--title", default="Phase 1 Experiment Summary", help="Heading for the Markdown report.")
+    args = p.parse_args()
+
+    rows = summarize_directory(args.root)
+    if not rows:
+        print(f"No summary.json files found under {args.root}")
+        return
+
+    output = format_markdown_report(rows, root=args.root, title=args.title)
     print(output, end="")
     if args.out:
         out_path = Path(args.out)

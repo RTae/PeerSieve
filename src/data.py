@@ -40,10 +40,12 @@ def _normalize_cifar_uint8(images_nhwc: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(np.ascontiguousarray(arr))
 
 
-def _load_cifar10_raw_batches(batches_dir: Path) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def _load_cifar10_raw_batches(
+    batches_dir: Path,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Load CIFAR-10 python batches directly from an extracted cifar-10-batches-py directory."""
     train_images = []
-    train_labels = []
+    train_labels: list[int] = []
     for batch_idx in range(1, 6):
         with open(batches_dir / f"data_batch_{batch_idx}", "rb") as f:
             batch = pickle.load(f, encoding="bytes")
@@ -97,11 +99,7 @@ def make_synthetic_cifar_tensors(
     noise_std: float = 0.85,
     seed: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Create a learnable synthetic 10-class 3x32x32 image dataset for offline smoke/unit tests.
-
-    Each class has a distinct multi-scale spatial prototype (colored quadrant/stripe pattern)
-    perturbed by Gaussian noise so a 2-conv CNN learns quickly and non-IID splits matter.
-    """
+    """Create a learnable synthetic 10-class 3x32x32 image dataset for offline tests."""
     rng = np.random.default_rng(seed)
     prototypes = np.zeros((num_classes, 3, 32, 32), dtype=np.float32)
     yy, xx = np.meshgrid(np.linspace(-1.0, 1.0, 32), np.linspace(-1.0, 1.0, 32), indexing="ij")
@@ -125,6 +123,28 @@ def make_synthetic_cifar_tensors(
     x_train, y_train = _sample(n_train)
     x_test, y_test = _sample(n_test)
     return x_train, y_train, x_test, y_test
+
+
+def _stratified_class_totals(n_total: int, num_classes: int) -> np.ndarray:
+    totals = np.full(num_classes, n_total // num_classes, dtype=np.int64)
+    totals[: n_total % num_classes] += 1
+    return totals
+
+
+def _sample_class_pools(
+    y_np: np.ndarray,
+    class_totals: np.ndarray,
+    rng: np.random.Generator,
+) -> list[np.ndarray]:
+    pools: list[np.ndarray] = []
+    for c, need in enumerate(class_totals):
+        idx_c = np.where(y_np == c)[0]
+        if len(idx_c) < need:
+            raise ValueError(f"Class {c} only has {len(idx_c)} examples, need {int(need)}.")
+        chosen = rng.choice(idx_c, size=int(need), replace=False)
+        rng.shuffle(chosen)
+        pools.append(chosen)
+    return pools
 
 
 def _balanced_dirichlet_counts(
@@ -162,7 +182,6 @@ def _balanced_dirichlet_counts(
     row_def = class_totals - counts.sum(axis=1)
     col_def = np.full(n_nodes, samples_per_node, dtype=np.int64) - counts.sum(axis=0)
 
-    # Greedily satisfy remaining unit deficits in order of largest fractional remainder.
     order = np.argsort(-remainders.ravel())
     for flat_idx in order:
         c = int(flat_idx // n_nodes)
@@ -172,7 +191,6 @@ def _balanced_dirichlet_counts(
             row_def[c] -= 1
             col_def[i] -= 1
 
-    # Fallback augmenting assignment if greedy pass left any residual deficit.
     while row_def.sum() > 0:
         c_need = int(np.argmax(row_def))
         i_need = int(np.argmax(col_def))
@@ -183,6 +201,29 @@ def _balanced_dirichlet_counts(
     assert np.array_equal(counts.sum(axis=1), class_totals)
     assert np.all(counts.sum(axis=0) == samples_per_node)
     return counts
+
+
+def _assign_from_pools(
+    class_pools: list[np.ndarray],
+    counts: np.ndarray,
+    rng: np.random.Generator,
+) -> list[np.ndarray]:
+    """Slice disjoint per-node index arrays according to a (num_classes, n_nodes) count matrix."""
+    num_classes, n_nodes = counts.shape
+    offsets = np.zeros(num_classes, dtype=np.int64)
+    per_node: list[np.ndarray] = []
+    for i in range(n_nodes):
+        parts = []
+        for c in range(num_classes):
+            k = int(counts[c, i])
+            if k > 0:
+                start = int(offsets[c])
+                parts.append(class_pools[c][start : start + k])
+                offsets[c] += k
+        idx = np.concatenate(parts)
+        rng.shuffle(idx)
+        per_node.append(idx)
+    return per_node
 
 
 def partition_dirichlet_balanced(
@@ -207,134 +248,52 @@ def partition_dirichlet_balanced(
     """
     if val_split not in {"local", "iid"}:
         raise ValueError(f"Unknown val_split {val_split!r}; expected 'local' or 'iid'.")
+
     rng = np.random.default_rng(seed)
     n_val = max(1, int(round(samples_per_node * val_frac))) if val_frac > 0 else 0
     n_train_per_node = samples_per_node - n_val
-
     y_np = y_train.cpu().numpy()
+
     if val_split == "local":
-        n_total = n_nodes * samples_per_node
-        base_per_class = n_total // num_classes
-        extra = n_total % num_classes
-        class_totals = np.full(num_classes, base_per_class, dtype=np.int64)
-        class_totals[:extra] += 1
+        class_totals = _stratified_class_totals(n_nodes * samples_per_node, num_classes)
+        pools = _sample_class_pools(y_np, class_totals, rng)
+        counts = _balanced_dirichlet_counts(class_totals, n_nodes, samples_per_node, alpha_dir, rng)
+        node_indices = _assign_from_pools(pools, counts, rng)
+        train_indices = [idx[n_val:] for idx in node_indices]
+        val_indices = [idx[:n_val] for idx in node_indices]
+    else:
+        val_totals = _stratified_class_totals(n_nodes * n_val, num_classes)
+        tr_totals = _stratified_class_totals(n_nodes * n_train_per_node, num_classes)
+        combined_pools = _sample_class_pools(y_np, val_totals + tr_totals, rng)
+        val_pools = [pool[: int(v)] for pool, v in zip(combined_pools, val_totals)]
+        tr_pools = [pool[int(v) :] for pool, v in zip(combined_pools, val_totals)]
 
-        class_pools: list[np.ndarray] = []
-        for c in range(num_classes):
-            idx_c = np.where(y_np == c)[0]
-            if len(idx_c) < class_totals[c]:
-                raise ValueError(
-                    f"Class {c} only has {len(idx_c)} examples, need {class_totals[c]}."
-                )
-            chosen = rng.choice(idx_c, size=int(class_totals[c]), replace=False)
-            rng.shuffle(chosen)
-            class_pools.append(chosen)
+        counts = _balanced_dirichlet_counts(tr_totals, n_nodes, n_train_per_node, alpha_dir, rng)
+        train_indices = _assign_from_pools(tr_pools, counts, rng)
 
-        counts = _balanced_dirichlet_counts(
-            class_totals=class_totals,
-            n_nodes=n_nodes,
-            samples_per_node=samples_per_node,
-            alpha_dir=alpha_dir,
-            rng=rng,
-        )
+        val_per_node: list[list[int]] = [[] for _ in range(n_nodes)]
+        for cursor, idx_val in enumerate(np.concatenate(val_pools)):
+            val_per_node[cursor % n_nodes].append(int(idx_val))
+        val_indices = []
+        for lst in val_per_node:
+            arr = np.array(lst, dtype=np.int64)
+            rng.shuffle(arr)
+            val_indices.append(arr)
 
-        class_offsets = np.zeros(num_classes, dtype=np.int64)
-        nodes: list[NodeDataset] = []
-        node_class_counts: list[list[int]] = []
-        for i in range(n_nodes):
-            node_indices_parts = []
-            for c in range(num_classes):
-                k = int(counts[c, i])
-                if k > 0:
-                    start = int(class_offsets[c])
-                    node_indices_parts.append(class_pools[c][start : start + k])
-                    class_offsets[c] += k
-            node_idx = np.concatenate(node_indices_parts)
-            rng.shuffle(node_idx)
-
-            val_idx = torch.from_numpy(node_idx[:n_val])
-            tr_idx = torch.from_numpy(node_idx[n_val:])
-            nodes.append(
-                NodeDataset(
-                    x_train=x_train[tr_idx].clone(),
-                    y_train=y_train[tr_idx].clone(),
-                    x_val=x_train[val_idx].clone(),
-                    y_val=y_train[val_idx].clone(),
-                )
-            )
-            node_class_counts.append([int(counts[c, i]) for c in range(num_classes)])
-
-        return PartitionedDataset(
-            nodes=nodes,
-            x_test=x_test.clone(),
-            y_test=y_test.clone(),
-            class_counts=node_class_counts,
-            num_classes=num_classes,
-        )
-
-    # Diagnostic val_split == "iid": draw stratified IID val sets and Dir(alpha_dir) train sets.
-    n_total_val = n_nodes * n_val
-    n_total_tr = n_nodes * n_train_per_node
-    n_total = n_total_val + n_total_tr
-    val_per_class = np.full(num_classes, n_total_val // num_classes, dtype=np.int64)
-    val_per_class[: n_total_val % num_classes] += 1
-    tr_per_class = np.full(num_classes, n_total_tr // num_classes, dtype=np.int64)
-    tr_per_class[: n_total_tr % num_classes] += 1
-
-    val_pools: list[np.ndarray] = []
-    tr_pools: list[np.ndarray] = []
-    for c in range(num_classes):
-        idx_c = np.where(y_np == c)[0]
-        need = int(val_per_class[c] + tr_per_class[c])
-        if len(idx_c) < need:
-            raise ValueError(f"Class {c} only has {len(idx_c)} examples, need {need}.")
-        chosen = rng.choice(idx_c, size=need, replace=False)
-        rng.shuffle(chosen)
-        val_pools.append(chosen[: int(val_per_class[c])])
-        tr_pools.append(chosen[int(val_per_class[c]) :])
-
-    tr_counts = _balanced_dirichlet_counts(
-        class_totals=tr_per_class,
-        n_nodes=n_nodes,
-        samples_per_node=n_train_per_node,
-        alpha_dir=alpha_dir,
-        rng=rng,
-    )
-    val_all = np.concatenate(val_pools)
-    # Build stratified per-node validation pools round-robin by class.
-    val_per_node_lists: list[list[int]] = [[] for _ in range(n_nodes)]
-    cursor = 0
-    for idx_val in val_all:
-        val_per_node_lists[cursor % n_nodes].append(int(idx_val))
-        cursor += 1
-
-    tr_offsets = np.zeros(num_classes, dtype=np.int64)
-    nodes = []
-    node_class_counts = []
+    nodes: list[NodeDataset] = []
+    node_class_counts: list[list[int]] = []
     for i in range(n_nodes):
-        tr_parts = []
-        for c in range(num_classes):
-            k = int(tr_counts[c, i])
-            if k > 0:
-                start = int(tr_offsets[c])
-                tr_parts.append(tr_pools[c][start : start + k])
-                tr_offsets[c] += k
-        tr_idx_np = np.concatenate(tr_parts)
-        rng.shuffle(tr_idx_np)
-        val_idx_np = np.array(val_per_node_lists[i], dtype=np.int64)
-        rng.shuffle(val_idx_np)
-
-        tr_idx = torch.from_numpy(tr_idx_np)
-        val_idx = torch.from_numpy(val_idx_np)
+        tr_idx = torch.from_numpy(train_indices[i])
+        va_idx = torch.from_numpy(val_indices[i])
         nodes.append(
             NodeDataset(
                 x_train=x_train[tr_idx].clone(),
                 y_train=y_train[tr_idx].clone(),
-                x_val=x_train[val_idx].clone(),
-                y_val=y_train[val_idx].clone(),
+                x_val=x_train[va_idx].clone(),
+                y_val=y_train[va_idx].clone(),
             )
         )
-        node_class_counts.append([int(tr_counts[c, i]) for c in range(num_classes)])
+        node_class_counts.append([int(counts[c, i]) for c in range(num_classes)])
 
     return PartitionedDataset(
         nodes=nodes,
