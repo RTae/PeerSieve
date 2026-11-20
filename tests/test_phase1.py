@@ -213,3 +213,18 @@ def test_end_to_end_synthetic_model_poison_shows_sign_effect() -> None:
     assert float(s_pos["mean_byz_score"]) > 0.0
     assert float(s_pos["byz_accept_cumulative"]) > 0.8
     assert float(s_neg["final_consensus_test_acc"]) > float(s_pos["final_consensus_test_acc"]) + 0.15
+
+
+def test_step_a_suite_count_and_sharding() -> None:
+    from experiments.phase1.run import _suite_runs
+
+    runs = _suite_runs("step_a", ExperimentConfig())
+    assert len(runs) == 73
+    names = [name for name, _ in runs]
+    assert len(names) == len(set(names))
+    sharded = [
+        [name for idx, (name, _) in enumerate(runs) if idx % 4 == s]
+        for s in range(4)
+    ]
+    assert sum(len(x) for x in sharded) == 73
+    assert set().union(*sharded) == set(names)

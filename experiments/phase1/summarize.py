@@ -12,16 +12,23 @@ import numpy as np
 
 def _method_label(cfg: dict[str, object]) -> str:
     agg = str(cfg["aggregator"])
+    val_split = str(cfg.get("val_split", "local"))
     if agg == "trustgraph":
         sign = str(cfg.get("val_grad_sign", "descent_neg"))
         suffix = ""
         if not cfg.get("trustgraph_use_relu", True):
-            suffix += "_norelu"
+            suffix += ",norelu"
         if cfg.get("trustgraph_metric", "cosine") != "cosine":
-            suffix += f"_{cfg['trustgraph_metric']}"
+            suffix += f",{cfg['trustgraph_metric']}"
         if float(cfg.get("alpha", 0.5)) != 0.5:
-            suffix += f"_a{cfg['alpha']}"
+            suffix += f",a={cfg['alpha']}"
+        if val_split != "local":
+            suffix += f",val={val_split}"
         return f"trustgraph({sign}{suffix})"
+    if agg == "balance":
+        gamma = float(cfg.get("balance_gamma", 0.3))
+        if abs(gamma - 0.3) > 1e-9:
+            return f"balance(g={gamma:g})"
     return agg
 
 
@@ -38,6 +45,7 @@ def main() -> None:
         return
 
     grouped: dict[tuple[str, str, int, str], list[dict[str, object]]] = defaultdict(list)
+    seen_seed: set[tuple[str, str, int, str, int]] = set()
     for path in files:
         with open(path, encoding="utf-8") as f:
             s = json.load(f)
@@ -48,6 +56,10 @@ def main() -> None:
             int(round(float(cfg["byzantine_frac"]) * 100)),
             _method_label(cfg),
         )
+        dedup_key = (*key, int(cfg["seed"]))
+        if dedup_key in seen_seed:
+            continue
+        seen_seed.add(dedup_key)
         grouped[key].append(s)
 
     lines = [

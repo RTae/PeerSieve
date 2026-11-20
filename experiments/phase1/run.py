@@ -127,6 +127,135 @@ def _suite_runs(suite: str, base: ExperimentConfig) -> list[tuple[str, Experimen
         )
         return runs
 
+    if suite == "step_a":
+        methods_all = [
+            ("fedavg", {"aggregator": "fedavg"}),
+            ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+            ("krum", {"aggregator": "krum"}),
+            ("balance", {"aggregator": "balance"}),
+            ("tg_descent_neg", {"aggregator": "trustgraph", "val_grad_sign": "descent_neg"}),
+            ("tg_paper_pos", {"aggregator": "trustgraph", "val_grad_sign": "paper_pos"}),
+        ]
+        # 1) main_attacks (24 runs): random ER(0.3), 30% Byzantine, 4 attacks x 6 methods
+        for atk in ("none", "label_flip", "model_poison", "random_noise"):
+            for tag, overrides in methods_all:
+                runs.append(
+                    (
+                        f"main_attacks/{atk}__{tag}",
+                        replace(base, topology="random", byzantine_frac=0.3, attack=atk, **overrides),
+                    )
+                )
+        # 2) topologies (12 runs): ring & small_world, label_flip, 30% Byzantine x 6 methods
+        for topo in ("ring", "small_world"):
+            for tag, overrides in methods_all:
+                runs.append(
+                    (
+                        f"topologies/{topo}__label_flip__{tag}",
+                        replace(base, topology=topo, byzantine_frac=0.3, attack="label_flip", **overrides),
+                    )
+                )
+        # 3) fpr_sweep (25 runs): random, label_flip, 10%-50% Byzantine x 5 defenses
+        methods_fpr = [
+            ("tg_descent_neg", {"aggregator": "trustgraph", "val_grad_sign": "descent_neg"}),
+            ("tg_paper_pos", {"aggregator": "trustgraph", "val_grad_sign": "paper_pos"}),
+            ("balance", {"aggregator": "balance"}),
+            ("krum", {"aggregator": "krum"}),
+            ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+        ]
+        for frac in (0.1, 0.2, 0.3, 0.4, 0.5):
+            pct = int(round(frac * 100))
+            for tag, overrides in methods_fpr:
+                runs.append(
+                    (
+                        f"fpr_sweep/byz{pct}__{tag}",
+                        replace(
+                            base,
+                            topology="random",
+                            byzantine_frac=frac,
+                            attack="label_flip",
+                            **overrides,
+                        ),
+                    )
+                )
+        # 4) ablations & diagnostics (12 runs)
+        tg_mp = replace(
+            base,
+            topology="random",
+            byzantine_frac=0.3,
+            attack="model_poison",
+            aggregator="trustgraph",
+            val_grad_sign="descent_neg",
+        )
+        runs.extend(
+            [
+                ("ablations/no_relu__model_poison", replace(tg_mp, trustgraph_use_relu=False)),
+                ("ablations/euclidean__model_poison", replace(tg_mp, trustgraph_metric="euclidean")),
+                ("ablations/alpha03__model_poison", replace(tg_mp, alpha=0.3)),
+                ("ablations/alpha07__model_poison", replace(tg_mp, alpha=0.7)),
+                (
+                    "diagnostics/valiid__label_flip__tg_descent_neg",
+                    replace(tg_mp, attack="label_flip", val_split="iid"),
+                ),
+                (
+                    "diagnostics/valiid__model_poison__tg_descent_neg",
+                    replace(tg_mp, attack="model_poison", val_split="iid"),
+                ),
+                (
+                    "diagnostics/bal_g015__label_flip",
+                    replace(
+                        base,
+                        topology="random",
+                        byzantine_frac=0.3,
+                        attack="label_flip",
+                        aggregator="balance",
+                        balance_gamma=0.15,
+                    ),
+                ),
+                (
+                    "diagnostics/bal_g015__model_poison",
+                    replace(
+                        base,
+                        topology="random",
+                        byzantine_frac=0.3,
+                        attack="model_poison",
+                        aggregator="balance",
+                        balance_gamma=0.15,
+                    ),
+                ),
+                (
+                    "diagnostics/bal_g015__random_noise",
+                    replace(
+                        base,
+                        topology="random",
+                        byzantine_frac=0.3,
+                        attack="random_noise",
+                        aggregator="balance",
+                        balance_gamma=0.15,
+                    ),
+                ),
+                (
+                    "diagnostics/label_flip_all__fedavg",
+                    replace(base, topology="random", byzantine_frac=0.3, attack="label_flip_all", aggregator="fedavg"),
+                ),
+                (
+                    "diagnostics/label_flip_all__balance_g015",
+                    replace(
+                        base,
+                        topology="random",
+                        byzantine_frac=0.3,
+                        attack="label_flip_all",
+                        aggregator="balance",
+                        balance_gamma=0.15,
+                    ),
+                ),
+                (
+                    "diagnostics/label_flip_all__tg_descent_neg",
+                    replace(tg_mp, attack="label_flip_all"),
+                ),
+            ]
+        )
+        return runs
+
     raise ValueError(f"Unknown suite: {suite!r}")
 
 
@@ -135,7 +264,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mode", choices=["single", "suite"], default="single")
     p.add_argument(
         "--suite",
-        choices=["smoke", "sign_check", "main_attacks", "topologies", "fpr_sweep", "ablations"],
+        choices=["smoke", "sign_check", "main_attacks", "topologies", "fpr_sweep", "ablations", "step_a"],
         default="smoke",
     )
     p.add_argument("--dataset", choices=["cifar10", "synthetic"], default="cifar10")
@@ -181,6 +310,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seeds", type=int, nargs="+", default=[42])
     p.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     p.add_argument("--eval-every", type=int, default=5)
+    p.add_argument("--shard-index", type=int, default=0)
+    p.add_argument("--num-shards", type=int, default=1)
     p.add_argument("--output-root", default="outputs/phase1")
     p.add_argument("--quiet", action="store_true")
     return p.parse_args()
@@ -248,33 +379,58 @@ def main() -> None:
             )
         return
 
-    # Suite mode: cache partitioned dataset per seed to avoid reloading CIFAR-10 repeatedly.
+    # Suite mode: cache partitioned dataset per (seed, val_split) to avoid reloading CIFAR-10 repeatedly.
+    if not (0 <= args.shard_index < args.num_shards):
+        raise ValueError(f"Invalid shard {args.shard_index}/{args.num_shards}")
     suite_root = out_root / args.suite
     suite_root.mkdir(parents=True, exist_ok=True)
     summaries: list[dict[str, object]] = []
+    data_cache: dict[tuple[int, str], object] = {}
+
+    all_jobs: list[tuple[int, str, ExperimentConfig]] = []
     for seed in args.seeds:
         seed_base = replace(base_cfg, seed=seed)
-        preloaded = prepare_dataset(seed_base)
-        planned = _suite_runs(args.suite, seed_base)
-        for run_name, cfg in planned:
-            out_dir = suite_root / run_name / f"seed_{seed}"
-            run_cfg = replace(cfg, output_dir=str(out_dir))
-            print(f"\n=== [{args.suite}] {run_name} (seed={seed}) ===")
-            res = run_experiment(run_cfg, preloaded_data=preloaded)
-            s = dict(res["summary"])
-            s["run_name"] = run_name
-            summaries.append(s)
+        for run_name, cfg in _suite_runs(args.suite, seed_base):
+            all_jobs.append((seed, run_name, cfg))
 
-    with open(suite_root / "suite_summaries.json", "w", encoding="utf-8") as f:
+    shard_jobs = [job for idx, job in enumerate(all_jobs) if idx % args.num_shards == args.shard_index]
+    print(
+        f"=== Suite '{args.suite}': shard {args.shard_index}/{args.num_shards} "
+        f"running {len(shard_jobs)}/{len(all_jobs)} jobs ===",
+        flush=True,
+    )
+
+    for job_idx, (seed, run_name, cfg) in enumerate(shard_jobs, start=1):
+        cache_key = (seed, cfg.val_split)
+        if cache_key not in data_cache:
+            data_cache[cache_key] = prepare_dataset(cfg)
+        out_dir = suite_root / run_name / f"seed_{seed}"
+        run_cfg = replace(cfg, output_dir=str(out_dir))
+        print(
+            f"\n=== [{args.suite} shard {args.shard_index} ({job_idx}/{len(shard_jobs)})] "
+            f"{run_name} (seed={seed}) ===",
+            flush=True,
+        )
+        res = run_experiment(run_cfg, preloaded_data=data_cache[cache_key])
+        s = dict(res["summary"])
+        s["run_name"] = run_name
+        summaries.append(s)
+
+    summary_name = (
+        "suite_summaries.json"
+        if args.num_shards == 1
+        else f"suite_summaries_shard{args.shard_index}.json"
+    )
+    with open(suite_root / summary_name, "w", encoding="utf-8") as f:
         json.dump(summaries, f, indent=2)
 
-    print(f"\n=== Suite '{args.suite}' summary ===")
-    print(f"{'Run':32s} {'Seed':>5s} {'FinalAcc':>9s} {'ConsAcc':>9s} {'FPR(cum)':>9s} {'ByzAcc':>8s} {'CosBen':>8s} {'CosByz':>8s}")
+    print(f"\n=== Suite '{args.suite}' shard {args.shard_index}/{args.num_shards} summary ===")
+    print(f"{'Run':44s} {'Seed':>5s} {'FinalAcc':>9s} {'ConsAcc':>9s} {'FPR(cum)':>9s} {'ByzAcc':>8s} {'CosBen':>8s} {'CosByz':>8s}")
     for s in summaries:
         cb = f"{s['mean_benign_score']:+.3f}" if s["mean_benign_score"] is not None else "   n/a"
         cm = f"{s['mean_byz_score']:+.3f}" if s["mean_byz_score"] is not None else "   n/a"
         print(
-            f"{s['run_name']:32s} {s['config']['seed']:5d} "
+            f"{s['run_name']:44s} {s['config']['seed']:5d} "
             f"{100.0 * s['final_benign_test_acc_mean']:8.2f}% "
             f"{100.0 * s['final_consensus_test_acc']:8.2f}% "
             f"{100.0 * s['fpr_cumulative']:8.2f}% "
