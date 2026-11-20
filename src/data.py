@@ -1,0 +1,360 @@
+"""Dataset loading, balanced Dirichlet partitioning, and label-flip helpers."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import pickle
+
+import numpy as np
+import torch
+
+CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
+CIFAR10_STD = (0.2023, 0.1994, 0.2010)
+
+
+@dataclass
+class NodeDataset:
+    x_train: torch.Tensor
+    y_train: torch.Tensor
+    x_val: torch.Tensor
+    y_val: torch.Tensor
+
+
+@dataclass
+class PartitionedDataset:
+    nodes: list[NodeDataset]
+    x_test: torch.Tensor
+    y_test: torch.Tensor
+    class_counts: list[list[int]]
+    num_classes: int = 10
+
+
+def _normalize_cifar_uint8(images_nhwc: np.ndarray) -> torch.Tensor:
+    """Convert uint8 (N, 32, 32, 3) images to normalized FP32 (N, 3, 32, 32)."""
+    arr = images_nhwc.astype(np.float32) / 255.0
+    mean = np.array(CIFAR10_MEAN, dtype=np.float32).reshape(1, 1, 1, 3)
+    std = np.array(CIFAR10_STD, dtype=np.float32).reshape(1, 1, 1, 3)
+    arr = (arr - mean) / std
+    arr = np.transpose(arr, (0, 3, 1, 2))
+    return torch.from_numpy(np.ascontiguousarray(arr))
+
+
+def _load_cifar10_raw_batches(batches_dir: Path) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Load CIFAR-10 python batches directly from an extracted cifar-10-batches-py directory."""
+    train_images = []
+    train_labels = []
+    for batch_idx in range(1, 6):
+        with open(batches_dir / f"data_batch_{batch_idx}", "rb") as f:
+            batch = pickle.load(f, encoding="bytes")
+        data = batch[b"data"].reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
+        train_images.append(data)
+        train_labels.extend(batch[b"labels"])
+
+    with open(batches_dir / "test_batch", "rb") as f:
+        test_batch = pickle.load(f, encoding="bytes")
+    test_images = test_batch[b"data"].reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
+    test_labels = test_batch[b"labels"]
+
+    x_train = _normalize_cifar_uint8(np.concatenate(train_images, axis=0))
+    y_train = torch.tensor(train_labels, dtype=torch.long)
+    x_test = _normalize_cifar_uint8(test_images)
+    y_test = torch.tensor(test_labels, dtype=torch.long)
+    return x_train, y_train, x_test, y_test
+
+
+def load_cifar10_tensors(
+    data_dir: str | Path = "data",
+    download: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Load full CIFAR-10 train (50k) and test (10k) sets into normalized FP32 tensors."""
+    root = Path(data_dir)
+    batches_dir = root / "cifar-10-batches-py"
+    if batches_dir.is_dir():
+        return _load_cifar10_raw_batches(batches_dir)
+
+    try:
+        from torchvision.datasets import CIFAR10
+    except ImportError as exc:
+        raise RuntimeError(
+            "torchvision is required to download CIFAR-10 (or place extracted "
+            f"cifar-10-batches-py under {root})."
+        ) from exc
+
+    train_ds = CIFAR10(root=str(root), train=True, download=download)
+    test_ds = CIFAR10(root=str(root), train=False, download=download)
+    x_train = _normalize_cifar_uint8(train_ds.data)
+    y_train = torch.tensor(train_ds.targets, dtype=torch.long)
+    x_test = _normalize_cifar_uint8(test_ds.data)
+    y_test = torch.tensor(test_ds.targets, dtype=torch.long)
+    return x_train, y_train, x_test, y_test
+
+
+def make_synthetic_cifar_tensors(
+    n_train: int = 10000,
+    n_test: int = 1000,
+    num_classes: int = 10,
+    noise_std: float = 0.85,
+    seed: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Create a learnable synthetic 10-class 3x32x32 image dataset for offline smoke/unit tests.
+
+    Each class has a distinct multi-scale spatial prototype (colored quadrant/stripe pattern)
+    perturbed by Gaussian noise so a 2-conv CNN learns quickly and non-IID splits matter.
+    """
+    rng = np.random.default_rng(seed)
+    prototypes = np.zeros((num_classes, 3, 32, 32), dtype=np.float32)
+    yy, xx = np.meshgrid(np.linspace(-1.0, 1.0, 32), np.linspace(-1.0, 1.0, 32), indexing="ij")
+    for c in range(num_classes):
+        angle = 2.0 * np.pi * c / num_classes
+        freq = 1.5 + 0.35 * (c % 4)
+        wave = np.sin(freq * (np.cos(angle) * xx + np.sin(angle) * yy))
+        cx = 0.45 * np.cos(angle)
+        cy = 0.45 * np.sin(angle)
+        blob = np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / 0.18)
+        prototypes[c, c % 3] = 0.9 * blob + 0.45 * wave
+        prototypes[c, (c + 1) % 3] = -0.5 * blob + 0.35 * np.cos(freq * xx)
+        prototypes[c, (c + 2) % 3] = 0.4 * np.sin(freq * yy)
+
+    def _sample(n: int) -> tuple[torch.Tensor, torch.Tensor]:
+        y = np.arange(n, dtype=np.int64) % num_classes
+        rng.shuffle(y)
+        x = prototypes[y] + rng.normal(0.0, noise_std, size=(n, 3, 32, 32)).astype(np.float32)
+        return torch.from_numpy(x), torch.from_numpy(y)
+
+    x_train, y_train = _sample(n_train)
+    x_test, y_test = _sample(n_test)
+    return x_train, y_train, x_test, y_test
+
+
+def _balanced_dirichlet_counts(
+    class_totals: np.ndarray,
+    n_nodes: int,
+    samples_per_node: int,
+    alpha_dir: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Compute an integer (num_classes, n_nodes) count matrix with exact row/col sums.
+
+    Draws Gamma(alpha_dir, 1) entries (the generative law of Dirichlet), applies
+    biproportional (Sinkhorn) scaling to match exact class totals and per-node
+    quotas, and rounds to exact integers while preserving non-IID skewness.
+    """
+    num_classes = len(class_totals)
+    total_samples = int(class_totals.sum())
+    if total_samples != n_nodes * samples_per_node:
+        raise ValueError(
+            f"class_totals sum ({total_samples}) != n_nodes * samples_per_node "
+            f"({n_nodes * samples_per_node})"
+        )
+
+    weights = rng.gamma(shape=alpha_dir, scale=1.0, size=(num_classes, n_nodes))
+    weights = np.maximum(weights, 1e-12)
+    row_targets = class_totals.astype(np.float64)
+    col_targets = np.full(n_nodes, float(samples_per_node), dtype=np.float64)
+
+    for _ in range(200):
+        weights *= (row_targets / weights.sum(axis=1))[:, None]
+        weights *= (col_targets / weights.sum(axis=0))[None, :]
+
+    counts = np.floor(weights).astype(np.int64)
+    remainders = weights - counts
+    row_def = class_totals - counts.sum(axis=1)
+    col_def = np.full(n_nodes, samples_per_node, dtype=np.int64) - counts.sum(axis=0)
+
+    # Greedily satisfy remaining unit deficits in order of largest fractional remainder.
+    order = np.argsort(-remainders.ravel())
+    for flat_idx in order:
+        c = int(flat_idx // n_nodes)
+        i = int(flat_idx % n_nodes)
+        if row_def[c] > 0 and col_def[i] > 0:
+            counts[c, i] += 1
+            row_def[c] -= 1
+            col_def[i] -= 1
+
+    # Fallback augmenting assignment if greedy pass left any residual deficit.
+    while row_def.sum() > 0:
+        c_need = int(np.argmax(row_def))
+        i_need = int(np.argmax(col_def))
+        counts[c_need, i_need] += 1
+        row_def[c_need] -= 1
+        col_def[i_need] -= 1
+
+    assert np.array_equal(counts.sum(axis=1), class_totals)
+    assert np.all(counts.sum(axis=0) == samples_per_node)
+    return counts
+
+
+def partition_dirichlet_balanced(
+    x_train: torch.Tensor,
+    y_train: torch.Tensor,
+    x_test: torch.Tensor,
+    y_test: torch.Tensor,
+    n_nodes: int = 20,
+    samples_per_node: int = 500,
+    alpha_dir: float = 0.5,
+    val_frac: float = 0.1,
+    val_split: str = "local",
+    num_classes: int = 10,
+    seed: int = 42,
+) -> PartitionedDataset:
+    """Subsample n_nodes * samples_per_node images and split non-IID via Dirichlet(alpha_dir).
+
+    val_split="local" (literal TrustGraph-DFL Section 5.1): each node holds out val_frac of
+    its own local non-IID shard as D_i^val.
+    val_split="iid": diagnostic mode where each node's val_frac validation set is sampled
+    stratified-IID from a disjoint pool of training images while training shards remain Dir(alpha_dir).
+    """
+    if val_split not in {"local", "iid"}:
+        raise ValueError(f"Unknown val_split {val_split!r}; expected 'local' or 'iid'.")
+    rng = np.random.default_rng(seed)
+    n_val = max(1, int(round(samples_per_node * val_frac))) if val_frac > 0 else 0
+    n_train_per_node = samples_per_node - n_val
+
+    y_np = y_train.cpu().numpy()
+    if val_split == "local":
+        n_total = n_nodes * samples_per_node
+        base_per_class = n_total // num_classes
+        extra = n_total % num_classes
+        class_totals = np.full(num_classes, base_per_class, dtype=np.int64)
+        class_totals[:extra] += 1
+
+        class_pools: list[np.ndarray] = []
+        for c in range(num_classes):
+            idx_c = np.where(y_np == c)[0]
+            if len(idx_c) < class_totals[c]:
+                raise ValueError(
+                    f"Class {c} only has {len(idx_c)} examples, need {class_totals[c]}."
+                )
+            chosen = rng.choice(idx_c, size=int(class_totals[c]), replace=False)
+            rng.shuffle(chosen)
+            class_pools.append(chosen)
+
+        counts = _balanced_dirichlet_counts(
+            class_totals=class_totals,
+            n_nodes=n_nodes,
+            samples_per_node=samples_per_node,
+            alpha_dir=alpha_dir,
+            rng=rng,
+        )
+
+        class_offsets = np.zeros(num_classes, dtype=np.int64)
+        nodes: list[NodeDataset] = []
+        node_class_counts: list[list[int]] = []
+        for i in range(n_nodes):
+            node_indices_parts = []
+            for c in range(num_classes):
+                k = int(counts[c, i])
+                if k > 0:
+                    start = int(class_offsets[c])
+                    node_indices_parts.append(class_pools[c][start : start + k])
+                    class_offsets[c] += k
+            node_idx = np.concatenate(node_indices_parts)
+            rng.shuffle(node_idx)
+
+            val_idx = torch.from_numpy(node_idx[:n_val])
+            tr_idx = torch.from_numpy(node_idx[n_val:])
+            nodes.append(
+                NodeDataset(
+                    x_train=x_train[tr_idx].clone(),
+                    y_train=y_train[tr_idx].clone(),
+                    x_val=x_train[val_idx].clone(),
+                    y_val=y_train[val_idx].clone(),
+                )
+            )
+            node_class_counts.append([int(counts[c, i]) for c in range(num_classes)])
+
+        return PartitionedDataset(
+            nodes=nodes,
+            x_test=x_test.clone(),
+            y_test=y_test.clone(),
+            class_counts=node_class_counts,
+            num_classes=num_classes,
+        )
+
+    # Diagnostic val_split == "iid": draw stratified IID val sets and Dir(alpha_dir) train sets.
+    n_total_val = n_nodes * n_val
+    n_total_tr = n_nodes * n_train_per_node
+    n_total = n_total_val + n_total_tr
+    val_per_class = np.full(num_classes, n_total_val // num_classes, dtype=np.int64)
+    val_per_class[: n_total_val % num_classes] += 1
+    tr_per_class = np.full(num_classes, n_total_tr // num_classes, dtype=np.int64)
+    tr_per_class[: n_total_tr % num_classes] += 1
+
+    val_pools: list[np.ndarray] = []
+    tr_pools: list[np.ndarray] = []
+    for c in range(num_classes):
+        idx_c = np.where(y_np == c)[0]
+        need = int(val_per_class[c] + tr_per_class[c])
+        if len(idx_c) < need:
+            raise ValueError(f"Class {c} only has {len(idx_c)} examples, need {need}.")
+        chosen = rng.choice(idx_c, size=need, replace=False)
+        rng.shuffle(chosen)
+        val_pools.append(chosen[: int(val_per_class[c])])
+        tr_pools.append(chosen[int(val_per_class[c]) :])
+
+    tr_counts = _balanced_dirichlet_counts(
+        class_totals=tr_per_class,
+        n_nodes=n_nodes,
+        samples_per_node=n_train_per_node,
+        alpha_dir=alpha_dir,
+        rng=rng,
+    )
+    val_all = np.concatenate(val_pools)
+    # Build stratified per-node validation pools round-robin by class.
+    val_per_node_lists: list[list[int]] = [[] for _ in range(n_nodes)]
+    cursor = 0
+    for idx_val in val_all:
+        val_per_node_lists[cursor % n_nodes].append(int(idx_val))
+        cursor += 1
+
+    tr_offsets = np.zeros(num_classes, dtype=np.int64)
+    nodes = []
+    node_class_counts = []
+    for i in range(n_nodes):
+        tr_parts = []
+        for c in range(num_classes):
+            k = int(tr_counts[c, i])
+            if k > 0:
+                start = int(tr_offsets[c])
+                tr_parts.append(tr_pools[c][start : start + k])
+                tr_offsets[c] += k
+        tr_idx_np = np.concatenate(tr_parts)
+        rng.shuffle(tr_idx_np)
+        val_idx_np = np.array(val_per_node_lists[i], dtype=np.int64)
+        rng.shuffle(val_idx_np)
+
+        tr_idx = torch.from_numpy(tr_idx_np)
+        val_idx = torch.from_numpy(val_idx_np)
+        nodes.append(
+            NodeDataset(
+                x_train=x_train[tr_idx].clone(),
+                y_train=y_train[tr_idx].clone(),
+                x_val=x_train[val_idx].clone(),
+                y_val=y_train[val_idx].clone(),
+            )
+        )
+        node_class_counts.append([int(tr_counts[c, i]) for c in range(num_classes)])
+
+    return PartitionedDataset(
+        nodes=nodes,
+        x_test=x_test.clone(),
+        y_test=y_test.clone(),
+        class_counts=node_class_counts,
+        num_classes=num_classes,
+    )
+
+
+def apply_label_flip(y: torch.Tensor, mode: str = "pair_0_1", num_classes: int = 10) -> torch.Tensor:
+    """Return a label-flipped copy of target labels."""
+    flipped = y.clone()
+    if mode == "pair_0_1":
+        # Literal TrustGraph-DFL Section 5.1: "Label-flipping between classes 0 and 1".
+        mask0 = y == 0
+        mask1 = y == 1
+        flipped[mask0] = 1
+        flipped[mask1] = 0
+        return flipped
+    if mode == "all_classes":
+        return (num_classes - 1) - flipped
+    raise ValueError(f"Unknown label flip mode: {mode!r}")
