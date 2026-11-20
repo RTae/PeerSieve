@@ -1,0 +1,20 @@
+[project]
+name = "peersieve"
+version = "0.1.0"
+description = "PeerSieve decentralized federated learning experiments"
+requires-python = ">=3.11"
+dependencies = [
+    "networkx>=3.0",
+    "numpy>=1.26",
+    "torch>=2.2",
+    "torchvision>=0.17",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

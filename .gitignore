@@ -1,7 +1,14 @@
-__pycache__
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+data/
+outputs/
+logs/
 .obsidian
 
-// latex
+# latex
 *.aux
 *.bbl
 *.blg
@@ -11,3 +18,4 @@ __pycache__
 *.out
 *.synctex.gz
 *.synctex(busy)
+TrustGraph-DFL.pdf
