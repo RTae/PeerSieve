@@ -37,6 +37,8 @@ def method_label(cfg: dict[str, object]) -> str:
     """Format a canonical display label distinguishing aggregator variants."""
     agg = str(cfg["aggregator"])
     val_split = str(cfg.get("val_split", "local"))
+    gc = float(cfg.get("grad_clip_norm", 0.0))
+    gc_suffix = f"[gc={gc:g}]" if gc > 0.0 else ""
     if agg == "trustgraph":
         sign = str(cfg.get("val_grad_sign", "descent_neg"))
         parts = [sign]
@@ -54,12 +56,12 @@ def method_label(cfg: dict[str, object]) -> str:
             parts.append(f"a={cfg['alpha']}")
         if val_split != "local":
             parts.append(f"val={val_split}")
-        return f"trustgraph({','.join(parts)})"
+        return f"trustgraph({','.join(parts)}){gc_suffix}"
     if agg == "balance":
         gamma = float(cfg.get("balance_gamma", 0.3))
         if abs(gamma - 0.3) > 1e-9:
-            return f"balance(g={gamma:g})"
-    return agg
+            return f"balance(g={gamma:g}){gc_suffix}"
+    return f"{agg}{gc_suffix}"
 
 
 # Backwards-compatible alias.

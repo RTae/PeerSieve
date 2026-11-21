@@ -351,6 +351,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--augment", action="store_true")
+    p.add_argument("--grad-clip-norm", type=float, default=0.0)
     p.add_argument("--topology", choices=["ring", "random", "small_world"], default="random")
     p.add_argument("--er-p", type=float, default=0.3)
     p.add_argument("--ws-k", type=int, default=4)
@@ -410,6 +411,7 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         weight_decay=args.weight_decay,
         batch_size=args.batch_size,
         augment=args.augment,
+        grad_clip_norm=args.grad_clip_norm,
         topology=args.topology,
         er_p=args.er_p,
         ws_k=args.ws_k,
