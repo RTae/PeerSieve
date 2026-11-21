@@ -2,10 +2,11 @@
 
 Byzantine-resilient decentralized federated learning (DFL) research codebase built with PyTorch and managed with `uv`.
 
-- **Phase 1 (Complete + Phase 1c Paper-Match Evaluation):**
+- **Phase 1 (Complete — 721 A100 Runs Across 3-Seed Audits & Paper-Panel Reproduction):**
   - Literal 3-seed CIFAR-10 reproduction audit (`225` runs) of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026): [report/phase1_final.md](report/phase1_final.md).
-  - Stabilized working reproduction (`cnn2x2_gn` + pretrained ResNet-18 using descent sign, model-space norm clipping, and $\tau=0.02$): [report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md).
+  - Stabilized 3-seed Option C reproduction (`330` runs across `cnn2x2_gn` + unclipped `resnet18_pretrained`): [report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md).
   - Phase 1c gradient-clipping & validation-regime calibration (`16` runs): [report/phase1c_calibration.md](report/phase1c_calibration.md).
+  - Calibrated 3-seed paper-panel reproduction (`150` runs, `0/150` NaNs, publication-style Fig. 2–4 PNG + PDF): [report/phase1_paper_match.md](report/phase1_paper_match.md).
 - **Phase 2 (Core Mechanisms Verified Locally; 8-GPU LLM Evaluation Planned):**
   - Core PeerSieve modules implemented & verified against Proposal Table 2 (including 4-process `torch.distributed` Gloo tests): [report/phase2_local_verification.md](report/phase2_local_verification.md).
   - Planned next: eight-GPU TinyLlama-1.1B / Dolly-15k evaluation on `octave`.
@@ -33,6 +34,9 @@ Byzantine-resilient decentralized federated learning (DFL) research codebase bui
 │   ├── phase1/
 │   │   ├── run.py              # CLI runner (single runs, named suites, multi-GPU sharding, --skip-existing)
 │   │   ├── summarize.py        # Aggregates summary.json files into Markdown tables (mean ± std, NaNs)
+│   │   ├── plot_figures.py     # Draws 300 dpi PNG + header-free PDF figures from report/data/*.json
+│   │   ├── figstyle.py         # figures4papers house style (unedited skill copy)
+│   │   ├── figroles.py         # Fixed method color/marker/dash encodings
 │   │   └── slurm_run.sh        # Multi-GPU Slurm launcher with hardware/git run-record capture
 │   └── phase2/
 │       └── verify_mechanisms.py # Local pre-GPU verification suite for Proposal Table 2
@@ -40,11 +44,14 @@ Byzantine-resilient decentralized federated learning (DFL) research codebase bui
 │   ├── test_phase1.py          # Phase 1 unit and offline synthetic DFL integration tests
 │   └── test_phase2.py          # Phase 2 unit and 4-process Gloo quarantine/referral tests
 └── report/
+    ├── data/                        # Committed 3-seed aggregated JSON datasets
+    ├── figures/                     # Publication-style 300 dpi PNG + header-free PDF figures
     ├── phase1_smoke.md              # Local CPU 5-round CIFAR-10 smoke test & diagnostics
     ├── phase1_step_a.md             # Single-seed (seed 42) 75-run A100 literal reproduction report
     ├── phase1_final.md              # Final 3-seed (225-run) A100 literal reproduction report
-    ├── phase1_stabilized_ab.md      # Option C stabilized CNN + pretrained ResNet-18 report
+    ├── phase1_stabilized_ab.md      # 3-seed (330-run) stabilized CNN + unclipped ResNet-18 report
     ├── phase1c_calibration.md       # Phase 1c grad-clip, validation-regime, & BALANCE calibration report
+    ├── phase1_paper_match.md        # 3-seed (150-run, 0-NaN) paper-panel reproduction & figures
     └── phase2_local_verification.md # Pre-GPU verification of all 4 PeerSieve mechanisms + Gloo tests
 ```
 
@@ -129,9 +136,8 @@ sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
 
 ## Phase 1 Headline Results
 
-Full tables, hardware provenance, and analysis are in [report/phase1_final.md](report/phase1_final.md) (`225` literal 3-seed runs) and [report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md) (`110` Option C stabilized runs on `octave` A100 GPUs):
+Full tables, hardware provenance, and publication-style figures (`report/figures/`) span `721` A100 runs on `octave`:
 
-- **Literal reproduction gap ([report/phase1_final.md](report/phase1_final.md)):** On `10,000` CIFAR-10 images ($\alpha_{\mathrm{dir}}=0.5$, 2-conv 2-FC CNN, 200 rounds), attack-free `FedAvg` reaches `53.27 ± 0.86%` mean benign accuracy (`56.52 ± 0.41%` consensus), far below the `93–95%` claimed in Fig. 3(a). Literal `paper_pos` ($+\nabla F_i$) is inverted relative to SGD updates, unclipped cosine hits `NaN` on `model_poison` and `random_noise`, and local non-IID validation yields `50.3–53.5%` honest FPR rather than `<10%`.
-- **Working stabilized reproduction ([report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md)):** Combining corrected `descent_neg` ($-\nabla F_i$), model-space receiver-norm clipping (`mclip`, $2 r_i$), and a noise-floor threshold ($\tau=0.02$) produces a strong defense across both stabilized `cnn2x2_gn` and ImageNet-pretrained `ResNet-18`:
-  - On `cnn2x2_gn`, `trustgraph(stab)` is the only method surviving `model_poison` ($\lambda=10$) at both $\alpha_{\mathrm{dir}}=0.5$ (`45.32%` / `54.99%` cons) and $\alpha_{\mathrm{dir}}=5.0$ (`57.20%` / `58.61%` cons), and cuts `random_noise` Byzantine acceptance to `0.00%`.
-  - On pretrained `ResNet-18` ($\alpha_{\mathrm{dir}}=0.5$, 50 rounds, clean ceiling `90.34–90.73%`), `trustgraph(stab)` beats all baselines on `label_flip_all` at `30%` Byz (`83.73%` / `88.36%` cons vs. `Krum` `77.68%`, `Trimmed Mean` `74.49%`, `FedAvg` `65.75%`), holds **`84.41%` / `87.67%` cons at `50%` Byz** (while `Krum` collapses to `33.53%` / `75.8%` FPR), and is the sole clean winner on `random_noise` (`82.91%` / `88.23%` cons, `0.00%` Byz accept).
+- **Literal reproduction gap ([report/phase1_final.md](report/phase1_final.md), `225` runs, 3 seeds):** On `10,000` CIFAR-10 images ($\alpha_{\mathrm{dir}}=0.5$, 2-conv 2-FC CNN, 200 rounds), attack-free `FedAvg` reaches `53.27 ± 0.86%` mean benign accuracy (`56.52 ± 0.41%` consensus), far below the `93–95%` claimed in Fig. 3(a). Literal `paper_pos` ($+\nabla F_i$) is inverted relative to SGD updates, unclipped cosine hits `NaN` on `model_poison` and `random_noise`, and local non-IID validation yields `50.3–53.5%` honest FPR rather than `<10%`.
+- **Stabilized Option C ([report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md), `330` runs, 3 seeds):** Combining `descent_neg` ($-\nabla F_i$), model-space receiver-norm clipping (`2 r_i`), and $\tau=0.02$ makes `trustgraph(stab)` the only method surviving `model_poison` ($\lambda=10$) on `cnn2x2_gn` at both $\alpha_{\mathrm{dir}}=0.5$ (`43.71 ± 1.20%` / `52.34 ± 1.92%` cons, `0/3` NaNs) and $\alpha_{\mathrm{dir}}=5.0$ (`57.64 ± 1.08%` / `58.71 ± 0.94%` cons, `0/3` NaNs), while exposing sporadic isolated-peer frozen-BN SGD overflows on unclipped `resnet18_pretrained` (`grad_clip_norm=0.0`).
+- **Calibrated paper-panel reproduction ([report/phase1_paper_match.md](report/phase1_paper_match.md), `150` runs, 3 seeds, `0/150` NaNs):** Adding `grad_clip_norm=10.0` and `balance_gamma=0.025` to pretrained `ResNet-18` ($\alpha_{\mathrm{dir}}=0.5$, 50 rounds) eliminates all NaNs (`0/150`) and preserves the `90.60 ± 0.02%` clean ceiling. `trustgraph(stab)` is the sole method staying at **`86.4–89.9%` consensus accuracy across every regime** — beating all baselines on `model_poison` (`87.62 ± 0.49%` cons vs. `Krum` `36.03%`, `BALANCE`/`Trimmed Mean`/`FedAvg` `10.00%`), rejecting `100%` of `random_noise` (`88.90 ± 0.41%` cons, `0.00%` Byz accept), holding **`86.43 ± 0.56%` cons at `50%` Byzantine** (while `Krum` collapses to `19.98 ± 3.06%` / `71.3%` FPR), and confirming all Section 5.5 ablations (`no_relu` `-18.9 pp`, `euclidean` `-12.3 pp`).
