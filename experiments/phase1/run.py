@@ -390,6 +390,91 @@ def _build_paper_match_calib(base: ExperimentConfig) -> list[tuple[str, Experime
     ]
 
 
+def _build_paper_match(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Phase 1c full paper-figure reproduction (50 runs/seed) on pretrained ResNet-18.
+
+    Matches all four evaluation panels of TrustGraph-DFL.pdf (Fig. 2 convergence curves,
+    Table 1 topologies, Fig. 3a attack heatmap, Fig. 3b FPR sweep, & Section 5.5 ablations)
+    using grad_clip_norm=10.0 (preserves ~90% ceiling while preventing frozen-BN NaNs)
+    and calibrated BALANCE gamma=0.025.
+    """
+    base_b = replace(
+        base,
+        model_name="resnet18_pretrained",
+        rounds=50,
+        lr=0.005,
+        lr_schedule="cosine",
+        augment=True,
+        grad_clip_norm=10.0,
+        alpha_dir=0.5,
+        val_split="local",
+        topology="random",
+        byzantine_frac=0.3,
+        eval_batch_size=256,
+    )
+    tg_stab: dict[str, object] = {
+        "aggregator": "trustgraph",
+        "val_grad_sign": "descent_neg",
+        "trustgraph_clip_norm": True,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_score_threshold": 0.02,
+    }
+    bal_cal: dict[str, object] = {"aggregator": "balance", "balance_gamma": 0.025}
+    methods_5: tuple[MethodSpec, ...] = (
+        ("fedavg", {"aggregator": "fedavg"}),
+        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+        ("krum", {"aggregator": "krum"}),
+        ("balance", bal_cal),
+        ("tg_stab", tg_stab),
+    )
+    methods_fpr: tuple[MethodSpec, ...] = (
+        ("tg_stab", tg_stab),
+        ("balance", bal_cal),
+        ("krum", {"aggregator": "krum"}),
+        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+    )
+
+    runs: list[tuple[str, ExperimentConfig]] = []
+    # Panel 1 (20): Fig. 2 & Fig. 3(a) main attacks on Random ER (p=0.3, 30% Byzantine)
+    for atk in ("none", "label_flip_all", "model_poison", "random_noise"):
+        for tag, overrides in methods_5:
+            runs.append((f"main/{atk}__{tag}", replace(base_b, attack=atk, **overrides)))
+
+    # Panel 2 (10): Table 1 Ring & Small-World topologies under label_flip_all (30% Byzantine)
+    for topo in ("ring", "small_world"):
+        for tag, overrides in methods_5:
+            runs.append(
+                (
+                    f"topologies/{topo}__label_flip_all__{tag}",
+                    replace(base_b, topology=topo, attack="label_flip_all", **overrides),
+                )
+            )
+
+    # Panel 3 (16): Fig. 3(b) FPR sweep 10/20/40/50% Byzantine under label_flip_all (30% in Panel 1)
+    for frac in (0.1, 0.2, 0.4, 0.5):
+        pct = int(round(frac * 100))
+        for tag, overrides in methods_fpr:
+            runs.append(
+                (
+                    f"fpr/byz{pct}__{tag}",
+                    replace(base_b, attack="label_flip_all", byzantine_frac=frac, **overrides),
+                )
+            )
+
+    # Panel 4 (4): Section 5.5 ablations under model_poison (30% Byzantine)
+    tg_mp = replace(base_b, attack="model_poison", **tg_stab)
+    runs.extend(
+        [
+            ("ablations/no_relu__model_poison", replace(tg_mp, trustgraph_use_relu=False)),
+            ("ablations/euclidean__model_poison", replace(tg_mp, trustgraph_metric="euclidean", trustgraph_score_threshold=0.0)),
+            ("ablations/alpha03__model_poison", replace(tg_mp, alpha=0.3)),
+            ("ablations/alpha07__model_poison", replace(tg_mp, alpha=0.7)),
+        ]
+    )
+    return runs
+
+
 SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]]]] = {
     "smoke": _build_smoke,
     "sign_check": _build_sign_check,
@@ -401,6 +486,7 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
     "step_a": _build_full_phase1,  # backwards-compatible alias
     "stabilized_ab": _build_stabilized_ab,
     "paper_match_calib": _build_paper_match_calib,
+    "paper_match": _build_paper_match,
 }
 
 

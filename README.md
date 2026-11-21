@@ -2,9 +2,10 @@
 
 Byzantine-resilient decentralized federated learning (DFL) research codebase built with PyTorch and managed with `uv`.
 
-- **Phase 1 (Complete + Phase 1c Paper-Match Calibration Ready):**
+- **Phase 1 (Complete + Phase 1c Paper-Match Evaluation):**
   - Literal 3-seed CIFAR-10 reproduction audit (`225` runs) of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026): [report/phase1_final.md](report/phase1_final.md).
-  - Stabilized working reproduction (`110` runs across stabilized 2-conv CNN + pretrained ResNet-18 using descent sign, model-space norm clipping, and $\tau=0.02$): [report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md).
+  - Stabilized working reproduction (`cnn2x2_gn` + pretrained ResNet-18 using descent sign, model-space norm clipping, and $\tau=0.02$): [report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md).
+  - Phase 1c gradient-clipping & validation-regime calibration (`16` runs): [report/phase1c_calibration.md](report/phase1c_calibration.md).
 - **Phase 2 (Core Mechanisms Verified Locally; 8-GPU LLM Evaluation Planned):**
   - Core PeerSieve modules implemented & verified against Proposal Table 2 (including 4-process `torch.distributed` Gloo tests): [report/phase2_local_verification.md](report/phase2_local_verification.md).
   - Planned next: eight-GPU TinyLlama-1.1B / Dolly-15k evaluation on `octave`.
@@ -42,7 +43,8 @@ Byzantine-resilient decentralized federated learning (DFL) research codebase bui
     ├── phase1_smoke.md              # Local CPU 5-round CIFAR-10 smoke test & diagnostics
     ├── phase1_step_a.md             # Single-seed (seed 42) 75-run A100 literal reproduction report
     ├── phase1_final.md              # Final 3-seed (225-run) A100 literal reproduction report
-    ├── phase1_stabilized_ab.md      # Option C (110-run) stabilized CNN + pretrained ResNet-18 report
+    ├── phase1_stabilized_ab.md      # Option C stabilized CNN + pretrained ResNet-18 report
+    ├── phase1c_calibration.md       # Phase 1c grad-clip, validation-regime, & BALANCE calibration report
     └── phase2_local_verification.md # Pre-GPU verification of all 4 PeerSieve mechanisms + Gloo tests
 ```
 
@@ -91,12 +93,12 @@ uv run python -m experiments.phase1.run \
 ```
 
 Key CLI toggles in `experiments/phase1/run.py`:
-- `--suite`: `smoke`, `sign_check`, `main_attacks`, `topologies`, `fpr_sweep`, `ablations`, `full` (75 literal configs; `step_a` alias), `stabilized_ab` (110 Option C stabilized CNN + pretrained ResNet-18 configs).
+- `--suite`: `smoke`, `sign_check`, `main_attacks`, `topologies`, `fpr_sweep`, `ablations`, `full` (75 literal configs; `step_a` alias), `stabilized_ab` (110 Option C stabilized CNN + pretrained ResNet-18 configs), `paper_match_calib` (16 calibration configs), `paper_match` (50 calibrated paper-panel configs).
 - `--model`: `cnn2x2`, `cnn2x2_gn`, `lenet2x2`, `resnet18_pretrained`, `resnet18_scratch`.
 - `--val-grad-sign`: `descent_neg` ($-\nabla F_i$, corrected descent direction) or `paper_pos` ($+\nabla F_i$, literal TrustGraph-DFL Eq. 3 / Alg. 1).
 - `--val-split`: `local` (literal paper: 10% held out from each node's non-IID shard) or `iid` (balanced 50-sample validation diagnostic).
-- `--trustgraph-clip-norm`, `--trustgraph-clip-mode` (`update | model`), `--trustgraph-clip-factor`, `--trustgraph-threshold`: PeerSieve receiver-norm cap and noise-floor cosine threshold ($\tau$).
-- `--lr-schedule` (`constant | cosine`), `--augment`, `--balance-gamma`: training stabilization and BALANCE distance multiplier (`0.3` literal; calibrated `0.15` / `0.015`).
+- `--trustgraph-clip-norm`, `--trustgraph-clip-mode` (`update | model`), `--trustgraph-clip-factor`, `--trustgraph-score-threshold`: PeerSieve receiver-norm cap and noise-floor cosine threshold ($\tau$).
+- `--lr-schedule` (`constant | cosine`), `--augment`, `--grad-clip-norm`, `--balance-gamma`: training stabilization and BALANCE distance multiplier (`0.3` literal; calibrated `0.15` / `0.025` / `0.015`).
 - `--shard-index`, `--num-shards`, `--skip-existing`: resumable parallel sharding across GPUs.
 
 ### 3. Summarize Outputs to Markdown
