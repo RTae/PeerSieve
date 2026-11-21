@@ -55,6 +55,7 @@ class ExperimentConfig:
     weight_decay: float = 1e-4
     batch_size: int = 64
     augment: bool = False
+    grad_clip_norm: float = 0.0
     # Topology
     topology: str = "random"  # ring | random | small_world
     er_p: float = 0.3
@@ -253,6 +254,7 @@ def _local_training_phase(
             batch_size=cfg.batch_size,
             epochs=cfg.local_epochs,
             augment=cfg.augment,
+            grad_clip_norm=cfg.grad_clip_norm,
             generator=train_gen,
         )
         post_vec = model_to_vector(work_model)

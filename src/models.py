@@ -198,6 +198,7 @@ def train_local_epoch(
     batch_size: int = 64,
     epochs: int = 1,
     augment: bool = False,
+    grad_clip_norm: float = 0.0,
     generator: torch.Generator | None = None,
 ) -> None:
     """Train model in-place using SGD on preloaded tensors."""
@@ -225,6 +226,8 @@ def train_local_epoch(
             logits = model(xb)
             loss = F.cross_entropy(logits, y_train[idx])
             loss.backward()
+            if grad_clip_norm > 0.0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
 
 
