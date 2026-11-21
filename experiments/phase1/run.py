@@ -475,6 +475,67 @@ def _build_paper_match(base: ExperimentConfig) -> list[tuple[str, ExperimentConf
     return runs
 
 
+def _build_fpr_ceiling_diag(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Option A diagnostic (16 runs, 1 fast 10k + 1 50k run per GPU on 8x A100).
+
+    Isolates the remaining TrustGraph-DFL baseline gaps vs. paper targets:
+      - 10k ablations (runs 0..7): weight_decay alignment, tau=0.003 vs 0.0, momentum=0.0,
+        and 3-epoch Byzantine label_flip_all separation.
+      - 50k full CIFAR-10 (runs 8..15, 250 val/node, 25 rounds): ~93% ceiling, lower FPR
+        under 250-sample local vs. IID validation and alpha_dir=5.0, plus all 3 attacks.
+    """
+    base_10k = replace(
+        base,
+        model_name="resnet18_pretrained",
+        samples_per_node=500,
+        rounds=50,
+        lr=0.005,
+        lr_schedule="cosine",
+        augment=True,
+        grad_clip_norm=10.0,
+        alpha_dir=0.5,
+        val_split="local",
+        topology="random",
+        byzantine_frac=0.3,
+        eval_batch_size=256,
+    )
+    base_50k = replace(
+        base_10k,
+        samples_per_node=2500,
+        rounds=25,
+    )
+    tg_t003: dict[str, object] = {
+        "aggregator": "trustgraph",
+        "val_grad_sign": "descent_neg",
+        "trustgraph_clip_norm": True,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_score_threshold": 0.003,
+    }
+    tg_t000: dict[str, object] = {**tg_t003, "trustgraph_score_threshold": 0.0}
+
+    return [
+        # Group 1 (indices 0..7): 10k fast FPR & separation diagnostics (50 rounds)
+        ("diag10k/wd_match__none__tg_t003", replace(base_10k, attack="none", val_grad_weight_decay=True, **tg_t003)),
+        ("diag10k/wd0__none__tg_t003", replace(base_10k, attack="none", weight_decay=0.0, **tg_t003)),
+        ("diag10k/mom0__none__tg_t003", replace(base_10k, attack="none", momentum=0.0, lr=0.02, **tg_t003)),
+        ("diag10k/tau003__random_noise__tg", replace(base_10k, attack="random_noise", **tg_t003)),
+        ("diag10k/tau000__random_noise__tg", replace(base_10k, attack="random_noise", **tg_t000)),
+        ("diag10k/tau003__model_poison__tg", replace(base_10k, attack="model_poison", **tg_t003)),
+        ("diag10k/byzep3__label_flip_all__fedavg", replace(base_10k, attack="label_flip_all", byz_local_epochs=3, aggregator="fedavg")),
+        ("diag10k/byzep3__label_flip_all__tg_t003", replace(base_10k, attack="label_flip_all", byz_local_epochs=3, **tg_t003)),
+        # Group 2 (indices 8..15): Full 50k CIFAR-10 (250 val/node, 25 rounds)
+        ("diag50k/none__fedavg", replace(base_50k, attack="none", aggregator="fedavg")),
+        ("diag50k/none__tg_t003_local", replace(base_50k, attack="none", val_split="local", **tg_t003)),
+        ("diag50k/none__tg_t003_iidval", replace(base_50k, attack="none", val_split="iid", **tg_t003)),
+        ("diag50k/label_flip_all_byz30__tg_t003_iidval", replace(base_50k, attack="label_flip_all", val_split="iid", **tg_t003)),
+        ("diag50k/label_flip_all_byz50__tg_t003_iidval", replace(base_50k, attack="label_flip_all", byzantine_frac=0.5, val_split="iid", **tg_t003)),
+        ("diag50k/label_flip_all_byz50__tg_t003_dir50", replace(base_50k, attack="label_flip_all", byzantine_frac=0.5, alpha_dir=5.0, val_split="local", **tg_t003)),
+        ("diag50k/model_poison__tg_t003_iidval", replace(base_50k, attack="model_poison", val_split="iid", **tg_t003)),
+        ("diag50k/random_noise__tg_t003_iidval", replace(base_50k, attack="random_noise", val_split="iid", **tg_t003)),
+    ]
+
+
 SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]]]] = {
     "smoke": _build_smoke,
     "sign_check": _build_sign_check,
@@ -487,6 +548,7 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
     "stabilized_ab": _build_stabilized_ab,
     "paper_match_calib": _build_paper_match_calib,
     "paper_match": _build_paper_match,
+    "fpr_ceiling_diag": _build_fpr_ceiling_diag,
 }
 
 
@@ -527,6 +589,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--augment", action="store_true")
     p.add_argument("--grad-clip-norm", type=float, default=0.0)
+    p.add_argument("--val-grad-weight-decay", action="store_true")
+    p.add_argument("--byz-local-epochs", type=int, default=0)
     p.add_argument("--topology", choices=["ring", "random", "small_world"], default="random")
     p.add_argument("--er-p", type=float, default=0.3)
     p.add_argument("--ws-k", type=int, default=4)
@@ -587,6 +651,8 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         batch_size=args.batch_size,
         augment=args.augment,
         grad_clip_norm=args.grad_clip_norm,
+        val_grad_weight_decay=args.val_grad_weight_decay,
+        byz_local_epochs=args.byz_local_epochs,
         topology=args.topology,
         er_p=args.er_p,
         ws_k=args.ws_k,

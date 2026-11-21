@@ -396,6 +396,23 @@ def test_stabilized_ab_suite_count_and_sharding() -> None:
     assert len({name for name, _ in pm}) == 50
     assert all(cfg.grad_clip_norm == 10.0 for _, cfg in pm)
 
+    diag = build_suite_runs("fpr_ceiling_diag", ExperimentConfig())
+    assert len(diag) == 16
+    assert len({name for name, _ in diag}) == 16
+    assert sum(1 for _, cfg in diag if cfg.samples_per_node == 500) == 8
+    assert sum(1 for _, cfg in diag if cfg.samples_per_node == 2500) == 8
+
+
+def test_validation_gradient_weight_decay_matches_l2_term() -> None:
+    torch.manual_seed(0)
+    model = build_model("cnn2x2")
+    x = torch.randn(8, 3, 32, 32)
+    y = torch.randint(0, 10, (8,))
+    g0 = compute_validation_gradient(model, x, y, batch_size=8, weight_decay=0.0)
+    g_wd = compute_validation_gradient(model, x, y, batch_size=8, weight_decay=1e-2)
+    theta = model_to_vector(model)
+    assert torch.allclose(g_wd - g0, 1e-2 * theta, atol=1e-6)
+
 
 def test_local_grad_clip_bounds_step_magnitude() -> None:
     from src.models import train_local_epoch

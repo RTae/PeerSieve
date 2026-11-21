@@ -37,8 +37,23 @@ def method_label(cfg: dict[str, object]) -> str:
     """Format a canonical display label distinguishing aggregator variants."""
     agg = str(cfg["aggregator"])
     val_split = str(cfg.get("val_split", "local"))
+    extra: list[str] = []
     gc = float(cfg.get("grad_clip_norm", 0.0))
-    gc_suffix = f"[gc={gc:g}]" if gc > 0.0 else ""
+    if gc > 0.0:
+        extra.append(f"gc={gc:g}")
+    if cfg.get("val_grad_weight_decay", False):
+        extra.append("wdmatch")
+    if "weight_decay" in cfg and float(cfg["weight_decay"]) == 0.0:
+        extra.append("wd=0")
+    if "momentum" in cfg and float(cfg["momentum"]) == 0.0:
+        extra.append("mom=0")
+    bep = int(cfg.get("byz_local_epochs", 0))
+    if bep > 0:
+        extra.append(f"bep={bep}")
+    spn = int(cfg.get("samples_per_node", 500))
+    if spn != 500:
+        extra.append(f"spn={spn}")
+    suffix = f"[{','.join(extra)}]" if extra else ""
     if agg == "trustgraph":
         sign = str(cfg.get("val_grad_sign", "descent_neg"))
         parts = [sign]
@@ -56,12 +71,12 @@ def method_label(cfg: dict[str, object]) -> str:
             parts.append(f"a={cfg['alpha']}")
         if val_split != "local":
             parts.append(f"val={val_split}")
-        return f"trustgraph({','.join(parts)}){gc_suffix}"
+        return f"trustgraph({','.join(parts)}){suffix}"
     if agg == "balance":
         gamma = float(cfg.get("balance_gamma", 0.3))
         if abs(gamma - 0.3) > 1e-9:
-            return f"balance(g={gamma:g}){gc_suffix}"
-    return f"{agg}{gc_suffix}"
+            return f"balance(g={gamma:g}){suffix}"
+    return f"{agg}{suffix}"
 
 
 # Backwards-compatible alias.

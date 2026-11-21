@@ -165,8 +165,13 @@ def compute_validation_gradient(
     x_val: torch.Tensor,
     y_val: torch.Tensor,
     batch_size: int = 64,
+    weight_decay: float = 0.0,
 ) -> torch.Tensor:
-    """Compute exact mean loss gradient nabla F(theta; D_val) as a 1D FP32 tensor."""
+    """Compute exact mean loss gradient nabla F(theta; D_val) as a 1D FP32 tensor.
+
+    If ``weight_decay > 0``, adds the L2 regularization gradient ``weight_decay * theta``
+    so the reference matches SGD with weight decay.
+    """
     model.zero_grad(set_to_none=True)
     n_samples = int(x_val.shape[0])
     if n_samples == 0:
@@ -179,10 +184,12 @@ def compute_validation_gradient(
         loss = F.cross_entropy(logits, y_val[start:end], reduction="sum") / n_samples
         loss.backward()
 
-    grads = [
-        p.grad.detach().reshape(-1).float() if p.grad is not None else torch.zeros(p.numel(), device=p.device)
-        for p in model.parameters()
-    ]
+    grads = []
+    for p in model.parameters():
+        g = p.grad.detach().reshape(-1).float() if p.grad is not None else torch.zeros(p.numel(), device=p.device)
+        if weight_decay > 0.0:
+            g = g + weight_decay * p.detach().reshape(-1).float()
+        grads.append(g)
     grad_vec = torch.cat(grads).clone()
     model.zero_grad(set_to_none=True)
     return grad_vec
