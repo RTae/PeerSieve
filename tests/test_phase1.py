@@ -386,6 +386,11 @@ def test_stabilized_ab_suite_count_and_sharding() -> None:
     assert sum(len(x) for x in sharded) == 110
     assert set().union(*sharded) == set(names)
 
+    calib = build_suite_runs("paper_match_calib", ExperimentConfig())
+    assert len(calib) == 16
+    assert len({name for name, _ in calib}) == 16
+    assert all(cfg.grad_clip_norm == 1.0 for _, cfg in calib)
+
 
 def test_local_grad_clip_bounds_step_magnitude() -> None:
     from src.models import train_local_epoch

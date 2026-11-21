@@ -302,6 +302,94 @@ def _build_stabilized_ab(base: ExperimentConfig) -> list[tuple[str, ExperimentCo
     return runs
 
 
+def _build_paper_match_calib(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Phase 1c calibration (16 runs, 2/GPU on 8x A100): grad_clip, low-FPR validation, & BALANCE gamma."""
+    base_b = replace(
+        base,
+        model_name="resnet18_pretrained",
+        rounds=50,
+        lr=0.005,
+        lr_schedule="cosine",
+        augment=True,
+        grad_clip_norm=1.0,
+        alpha_dir=0.5,
+        topology="random",
+        byzantine_frac=0.3,
+        eval_batch_size=256,
+    )
+    tg_stab: dict[str, object] = {
+        "aggregator": "trustgraph",
+        "val_grad_sign": "descent_neg",
+        "trustgraph_clip_norm": True,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_score_threshold": 0.02,
+    }
+    tg_stab_t01: dict[str, object] = {**tg_stab, "trustgraph_score_threshold": 0.01}
+    tg_raw: dict[str, object] = {
+        "aggregator": "trustgraph",
+        "val_grad_sign": "descent_neg",
+        "trustgraph_clip_norm": False,
+        "trustgraph_score_threshold": 0.0,
+    }
+
+    return [
+        # 1-2: Confirm grad_clip_norm=1.0 fixes isolated-peer NaN under model_poison (local val, dir=0.5)
+        ("calib/local_dir05/model_poison__tg_stab", replace(base_b, attack="model_poison", **tg_stab)),
+        ("calib/local_dir05/model_poison__tg_raw", replace(base_b, attack="model_poison", **tg_raw)),
+        # 3-9: Stratified balanced validation (val_split=iid) with non-IID dir=0.5 training shards
+        ("calib/iidval_dir05/none__tg_stab", replace(base_b, val_split="iid", attack="none", **tg_stab)),
+        (
+            "calib/iidval_dir05/label_flip_all_byz30__tg_stab",
+            replace(base_b, val_split="iid", attack="label_flip_all", **tg_stab),
+        ),
+        (
+            "calib/iidval_dir05/label_flip_all_byz50__tg_stab",
+            replace(base_b, val_split="iid", attack="label_flip_all", byzantine_frac=0.5, **tg_stab),
+        ),
+        (
+            "calib/iidval_dir05/model_poison_byz30__tg_stab",
+            replace(base_b, val_split="iid", attack="model_poison", **tg_stab),
+        ),
+        (
+            "calib/iidval_dir05/random_noise_byz30__tg_stab",
+            replace(base_b, val_split="iid", attack="random_noise", **tg_stab),
+        ),
+        (
+            "calib/iidval_dir05/random_noise_byz30__tg_stab_t01",
+            replace(base_b, val_split="iid", attack="random_noise", **tg_stab_t01),
+        ),
+        (
+            "calib/iidval_dir05/label_flip_all_byz50__tg_stab_t01",
+            replace(base_b, val_split="iid", attack="label_flip_all", byzantine_frac=0.5, **tg_stab_t01),
+        ),
+        # 10-11: Local validation under milder heterogeneity (dir=5.0) & larger shard (20k -> 100 val/node)
+        (
+            "calib/local_dir50/label_flip_all_byz50__tg_stab",
+            replace(base_b, alpha_dir=5.0, attack="label_flip_all", byzantine_frac=0.5, **tg_stab),
+        ),
+        (
+            "calib/local_dir05_20k/label_flip_all_byz30__tg_stab",
+            replace(base_b, samples_per_node=1000, attack="label_flip_all", **tg_stab),
+        ),
+        # 12-16: BALANCE gamma calibration on pretrained ResNet-18 with grad_clip_norm=1.0
+        ("calib/balance/none__bal_g03", replace(base_b, attack="none", aggregator="balance", balance_gamma=0.03)),
+        (
+            "calib/balance/label_flip_all__bal_g03",
+            replace(base_b, attack="label_flip_all", aggregator="balance", balance_gamma=0.03),
+        ),
+        ("calib/balance/none__bal_g05", replace(base_b, attack="none", aggregator="balance", balance_gamma=0.05)),
+        (
+            "calib/balance/label_flip_all__bal_g05",
+            replace(base_b, attack="label_flip_all", aggregator="balance", balance_gamma=0.05),
+        ),
+        (
+            "calib/balance/model_poison__bal_g05",
+            replace(base_b, attack="model_poison", aggregator="balance", balance_gamma=0.05),
+        ),
+    ]
+
+
 SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]]]] = {
     "smoke": _build_smoke,
     "sign_check": _build_sign_check,
@@ -312,6 +400,7 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
     "full": _build_full_phase1,
     "step_a": _build_full_phase1,  # backwards-compatible alias
     "stabilized_ab": _build_stabilized_ab,
+    "paper_match_calib": _build_paper_match_calib,
 }
 
 

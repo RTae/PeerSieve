@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import timedelta
 import math
 import os
+import socket
+import sys
 import tempfile
 
 import pytest
@@ -383,13 +385,14 @@ def test_quarantine_ema_backoff_probation_recovery_and_permanent_ban() -> None:
     assert qt.is_banned(2)  # Permanent ban still recorded after slot reuse
 
 
-def _gloo_worker_quarantine_and_referrals(rank: int, world_size: int, store_path: str, out_path: str) -> None:
+def _gloo_worker_quarantine_and_referrals(rank: int, world_size: int, port: int, out_path: str) -> None:
     """Multi-process Gloo test worker verifying bans, probation recovery, and referrals."""
-    os.environ["GLOO_SOCKET_IFNAME"] = "lo0"
-    store = dist.FileStore(store_path, world_size)
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    os.environ["GLOO_SOCKET_IFNAME"] = "lo0" if sys.platform == "darwin" else "lo"
     dist.init_process_group(
         backend="gloo",
-        store=store,
+        init_method=f"tcp://127.0.0.1:{port}",
         rank=rank,
         world_size=world_size,
         timeout=timedelta(seconds=15),
@@ -484,16 +487,18 @@ def test_gloo_multiprocess_ban_probation_recovery_and_referral() -> None:
     if not dist.is_gloo_available():
         pytest.skip("Gloo backend unavailable")
 
-    fd1, store_path = tempfile.mkstemp(prefix="peersieve_gloo_store_")
-    os.close(fd1)
-    os.unlink(store_path)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
     fd2, out_path = tempfile.mkstemp(prefix="peersieve_gloo_out_", suffix=".pt")
     os.close(fd2)
 
     try:
         mp.spawn(
             _gloo_worker_quarantine_and_referrals,
-            args=(4, store_path, out_path),
+            args=(4, port, out_path),
             nprocs=4,
             join=True,
         )
@@ -543,6 +548,5 @@ def test_gloo_multiprocess_ban_probation_recovery_and_referral() -> None:
         assert records[11]["payloads_accepted"] == 2
         assert records[11]["accepted_3"] is True
     finally:
-        for p in (store_path, out_path):
-            if os.path.exists(p):
-                os.unlink(p)
+        if os.path.exists(out_path):
+            os.unlink(out_path)

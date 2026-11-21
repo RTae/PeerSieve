@@ -2,10 +2,12 @@
 
 Byzantine-resilient decentralized federated learning (DFL) research codebase built with PyTorch and managed with `uv`.
 
-- **Phase 1 (Complete):**
+- **Phase 1 (Complete + Phase 1c Paper-Match Calibration Ready):**
   - Literal 3-seed CIFAR-10 reproduction audit (`225` runs) of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026): [report/phase1_final.md](report/phase1_final.md).
   - Stabilized working reproduction (`110` runs across stabilized 2-conv CNN + pretrained ResNet-18 using descent sign, model-space norm clipping, and $\tau=0.02$): [report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md).
-- **Phase 2 (Planned):** PeerSieve mechanisms (CountSketch pre-transfer screening, blockwise INT4 compression with error feedback, two-pass audited streaming, per-edge quarantine) and eight-GPU TinyLlama-1.1B / Dolly-15k evaluation on `octave`.
+- **Phase 2 (Core Mechanisms Verified Locally; 8-GPU LLM Evaluation Planned):**
+  - Core PeerSieve modules implemented & verified against Proposal Table 2 (including 4-process `torch.distributed` Gloo tests): [report/phase2_local_verification.md](report/phase2_local_verification.md).
+  - Planned next: eight-GPU TinyLlama-1.1B / Dolly-15k evaluation on `octave`.
 
 ---
 
@@ -14,25 +16,34 @@ Byzantine-resilient decentralized federated learning (DFL) research codebase bui
 ```text
 .
 ├── pyproject.toml              # uv project and dependency specification
-├── src/                        # Reusable DFL core modules
+├── src/                        # Reusable DFL & PeerSieve core modules
 │   ├── aggregators.py          # FedAvg, TrustGraph-DFL (+ clip/ablations), BALANCE, Krum, Trimmed Mean
 │   ├── attacks.py              # none, label_flip (0<->1), label_flip_all, model_poison, random_noise
+│   ├── audit.py                # PeerSieve two-pass audited streaming aggregation & receiver-norm cap
+│   ├── compression.py          # Blockwise INT4 quantization + error feedback, tiled decode, Top-k baseline
 │   ├── data.py                 # CIFAR-10 & synthetic loaders, balanced Dirichlet split (local/iid val)
 │   ├── models.py               # CNNs (cnn2x2, cnn2x2_gn, lenet2x2), ResNet-18, augmentation, vector helpers
+│   ├── quarantine.py           # Per-edge EMA backoff probation, permanent hard-fault bans, & referrals
 │   ├── simulator.py            # Synchronous DFL simulator, metrics, and JSON/JSONL logging
-│   └── topology.py             # Ring, Erdos-Renyi (p=0.3), Watts-Strogatz (k=4, p=0.3)
+│   ├── sketch.py               # Deterministic layer-proportional FP32->FP16 CountSketch (32 KiB)
+│   ├── topology.py             # Ring, Erdos-Renyi (p=0.3), Watts-Strogatz (k=4, p=0.3)
+│   └── transport.py            # Token-bucket receive limiter & multi-process Gloo exchange protocol
 ├── experiments/
-│   └── phase1/
-│       ├── run.py              # CLI runner (single runs, named suites, multi-GPU sharding, --skip-existing)
-│       ├── summarize.py        # Aggregates summary.json files into Markdown tables (mean ± std, NaNs)
-│       └── slurm_run.sh        # Multi-GPU Slurm launcher with hardware/git run-record capture
+│   ├── phase1/
+│   │   ├── run.py              # CLI runner (single runs, named suites, multi-GPU sharding, --skip-existing)
+│   │   ├── summarize.py        # Aggregates summary.json files into Markdown tables (mean ± std, NaNs)
+│   │   └── slurm_run.sh        # Multi-GPU Slurm launcher with hardware/git run-record capture
+│   └── phase2/
+│       └── verify_mechanisms.py # Local pre-GPU verification suite for Proposal Table 2
 ├── tests/
-│   └── test_phase1.py          # Unit and offline synthetic DFL integration tests
+│   ├── test_phase1.py          # Phase 1 unit and offline synthetic DFL integration tests
+│   └── test_phase2.py          # Phase 2 unit and 4-process Gloo quarantine/referral tests
 └── report/
-    ├── phase1_smoke.md         # Local CPU 5-round CIFAR-10 smoke test & diagnostics
-    ├── phase1_step_a.md        # Single-seed (seed 42) 75-run A100 literal reproduction report
-    ├── phase1_final.md         # Final 3-seed (225-run) A100 literal reproduction report
-    └── phase1_stabilized_ab.md # Option C (110-run) stabilized CNN + pretrained ResNet-18 report
+    ├── phase1_smoke.md              # Local CPU 5-round CIFAR-10 smoke test & diagnostics
+    ├── phase1_step_a.md             # Single-seed (seed 42) 75-run A100 literal reproduction report
+    ├── phase1_final.md              # Final 3-seed (225-run) A100 literal reproduction report
+    ├── phase1_stabilized_ab.md      # Option C (110-run) stabilized CNN + pretrained ResNet-18 report
+    └── phase2_local_verification.md # Pre-GPU verification of all 4 PeerSieve mechanisms + Gloo tests
 ```
 
 ---
