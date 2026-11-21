@@ -326,3 +326,61 @@ def test_summarize_directory_deduplicates_and_counts_nans(tmp_path: Path) -> Non
     assert r.nan_count == 1
     md = format_markdown_report(rows, tmp_path, "Test Summary")
     assert "| 1/2 |" in md
+
+
+def test_model_space_clip_and_stabilized_models() -> None:
+    from src.models import augment_cifar_batch
+
+    # Model-space clip caps large displacement (theta_j - theta_i^t) to clip_factor * r_i.
+    self_prev = torch.tensor([10.0, 0.0, 0.0])
+    self_update = torch.tensor([0.3, 0.4, 0.0])  # r_i = 0.5
+    self_post = self_prev + self_update
+    val_grad = -self_update
+    nbr_far = self_prev + torch.tensor([100.0, 0.0, 0.0])
+    nbr_upd = torch.tensor([0.3, 0.4, 0.0])  # positively aligned direction
+
+    cfg = AggregatorConfig(
+        name="trustgraph",
+        val_grad_sign="descent_neg",
+        trustgraph_clip_norm=True,
+        trustgraph_clip_mode="model",
+        trustgraph_clip_factor=2.0,
+        trustgraph_score_threshold=0.02,
+        alpha=0.5,
+    )
+    res = aggregate_trustgraph(
+        self_post,
+        val_grad,
+        [1],
+        {1: nbr_far},
+        {1: nbr_upd},
+        cfg,
+        self_prev=self_prev,
+        self_update=self_update,
+    )
+    # Clipped neighbor is self_prev + [1.0, 0, 0] (norm 2 * 0.5 = 1.0).
+    expected = 0.5 * self_post + 0.5 * (self_prev + torch.tensor([1.0, 0.0, 0.0]))
+    assert torch.allclose(res.new_model, expected, atol=1e-5)
+
+    # GroupNorm CNN & ResNet-18 (offline scratch init) preserve frozen BN stats in train().
+    gn_model = build_model("cnn2x2_gn")
+    xb = augment_cifar_batch(torch.randn(4, 3, 32, 32), generator=torch.Generator().manual_seed(0))
+    assert xb.shape == (4, 3, 32, 32)
+    assert gn_model(xb).shape == (4, 10)
+
+    rn = build_model("resnet18_scratch")
+    rn.train()
+    for mod in rn.modules():
+        if isinstance(mod, torch.nn.BatchNorm2d):
+            assert mod.training is False
+    assert rn(xb).shape == (4, 10)
+
+
+def test_stabilized_ab_suite_count_and_sharding() -> None:
+    runs = build_suite_runs("stabilized_ab", ExperimentConfig())
+    assert len(runs) == 110
+    names = [name for name, _ in runs]
+    assert len(names) == len(set(names))
+    sharded = [[name for idx, (name, _) in enumerate(runs) if idx % 8 == s] for s in range(8)]
+    assert sum(len(x) for x in sharded) == 110
+    assert set().union(*sharded) == set(names)

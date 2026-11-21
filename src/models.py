@@ -1,4 +1,4 @@
-"""Models and parameter-vector utilities for Phase 1 CIFAR-10 experiments."""
+"""Models, augmentation, and parameter-vector utilities for Phase 1 CIFAR-10 experiments."""
 
 from __future__ import annotations
 
@@ -11,9 +11,8 @@ from torch.nn.utils import parameters_to_vector
 class SimpleCIFARCNN(nn.Module):
     """Two-convolution, two-FC CNN for 32x32 CIFAR-10 images.
 
-    Matches the TrustGraph-DFL description ("two convolutional layers followed
-    by two fully connected layers") without BatchNorm so model-parameter
-    averaging in DFL has no running-stat ambiguity.
+    Matches the literal TrustGraph-DFL description ("two convolutional layers
+    followed by two fully connected layers") without BatchNorm.
     """
 
     def __init__(self, num_classes: int = 10) -> None:
@@ -29,6 +28,32 @@ class SimpleCIFARCNN(nn.Module):
         x = self.pool(F.relu(self.conv2(x)))
         x = torch.flatten(x, 1)
         x = F.relu(self.fc1(x))
+        return self.fc2(x)
+
+
+class GroupNormCIFARCNN(nn.Module):
+    """Stabilized 2-conv, 2-FC CNN with GroupNorm and Dropout for CIFAR-10.
+
+    GroupNorm has no running-stat buffers, avoiding BatchNorm drift under
+    decentralized parameter averaging while reducing local overfitting.
+    """
+
+    def __init__(self, num_classes: int = 10, dropout: float = 0.25) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
+        self.gn1 = nn.GroupNorm(8, 64)
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.gn2 = nn.GroupNorm(8, 128)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.drop = nn.Dropout(dropout)
+        self.fc1 = nn.Linear(128 * 8 * 8, 256)
+        self.fc2 = nn.Linear(256, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.pool(F.relu(self.gn1(self.conv1(x))))
+        x = self.pool(F.relu(self.gn2(self.conv2(x))))
+        x = self.drop(torch.flatten(x, 1))
+        x = self.drop(F.relu(self.fc1(x)))
         return self.fc2(x)
 
 
@@ -51,11 +76,52 @@ class LeNetCIFARCNN(nn.Module):
         return self.fc2(x)
 
 
+class PretrainedResNet18CIFAR(nn.Module):
+    """ImageNet-pretrained ResNet-18 adapted for 32x32 CIFAR-10 in DFL.
+
+    Upsamples batches on-the-fly to 128x128 so pretrained stem filters remain
+    valid, and keeps BatchNorm running stats frozen in eval mode so non-IID
+    and Byzantine peers never corrupt shared running buffers.
+    """
+
+    def __init__(self, num_classes: int = 10, image_size: int = 128, pretrained: bool = True) -> None:
+        super().__init__()
+        from torchvision.models import ResNet18_Weights, resnet18
+
+        weights = ResNet18_Weights.DEFAULT if pretrained else None
+        backbone = resnet18(weights=weights)
+        backbone.fc = nn.Linear(backbone.fc.in_features, num_classes)
+        self.backbone = backbone
+        self.image_size = image_size
+        self._freeze_bn_stats()
+
+    def _freeze_bn_stats(self) -> None:
+        for mod in self.backbone.modules():
+            if isinstance(mod, nn.BatchNorm2d):
+                mod.eval()
+
+    def train(self, mode: bool = True) -> PretrainedResNet18CIFAR:
+        super().train(mode)
+        self._freeze_bn_stats()
+        return self
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.shape[-1] != self.image_size or x.shape[-2] != self.image_size:
+            x = F.interpolate(x, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
+        return self.backbone(x)
+
+
 def build_model(name: str = "cnn2x2", num_classes: int = 10) -> nn.Module:
     if name == "cnn2x2":
         return SimpleCIFARCNN(num_classes=num_classes)
+    if name == "cnn2x2_gn":
+        return GroupNormCIFARCNN(num_classes=num_classes)
     if name == "lenet2x2":
         return LeNetCIFARCNN(num_classes=num_classes)
+    if name == "resnet18_pretrained":
+        return PretrainedResNet18CIFAR(num_classes=num_classes, pretrained=True)
+    if name == "resnet18_scratch":
+        return PretrainedResNet18CIFAR(num_classes=num_classes, pretrained=False)
     raise ValueError(f"Unknown model name: {name!r}")
 
 
@@ -75,6 +141,23 @@ def vector_to_model(vec: torch.Tensor, model: nn.Module) -> None:
         offset += numel
     if offset != vec.numel():
         raise ValueError(f"Vector length {vec.numel()} does not match model parameter count {offset}.")
+
+
+def augment_cifar_batch(x: torch.Tensor, generator: torch.Generator | None = None) -> torch.Tensor:
+    """Apply vectorized RandomHorizontalFlip + RandomCrop(32, padding=4) to a (B, C, 32, 32) batch."""
+    bsz, _, h, w = x.shape
+    out = x.clone()
+    flip_mask = torch.rand(bsz, generator=generator, device="cpu") < 0.5
+    if bool(flip_mask.any()):
+        flip_idx = flip_mask.to(x.device)
+        out[flip_idx] = torch.flip(out[flip_idx], dims=[3])
+
+    pad = 4
+    padded = F.pad(out, (pad, pad, pad, pad), mode="reflect")
+    dy = torch.randint(0, 2 * pad + 1, (bsz,), generator=generator, device="cpu").tolist()
+    dx = torch.randint(0, 2 * pad + 1, (bsz,), generator=generator, device="cpu").tolist()
+    cropped = torch.stack([padded[b, :, dy[b] : dy[b] + h, dx[b] : dx[b] + w] for b in range(bsz)], dim=0)
+    return cropped
 
 
 def compute_validation_gradient(
@@ -114,6 +197,7 @@ def train_local_epoch(
     weight_decay: float = 1e-4,
     batch_size: int = 64,
     epochs: int = 1,
+    augment: bool = False,
     generator: torch.Generator | None = None,
 ) -> None:
     """Train model in-place using SGD on preloaded tensors."""
@@ -134,8 +218,11 @@ def train_local_epoch(
             perm = perm.to(x_train.device)
         for start in range(0, n_samples, batch_size):
             idx = perm[start : start + batch_size]
+            xb = x_train[idx]
+            if augment:
+                xb = augment_cifar_batch(xb, generator=generator)
             optimizer.zero_grad(set_to_none=True)
-            logits = model(x_train[idx])
+            logits = model(xb)
             loss = F.cross_entropy(logits, y_train[idx])
             loss.backward()
             optimizer.step()

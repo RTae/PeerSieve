@@ -20,7 +20,9 @@ class AggregatorConfig:
     trustgraph_use_relu: bool = True
     trustgraph_metric: str = "cosine"  # cosine | euclidean
     trustgraph_score_threshold: float = 0.0
-    trustgraph_clip_norm: bool = False  # PeerSieve Eq. (4) self-update norm cap
+    trustgraph_clip_norm: bool = False  # receiver-norm cap on accepted neighbor contributions
+    trustgraph_clip_mode: str = "update"  # update (PeerSieve Eq. 4) | model (consensus-preserving)
+    trustgraph_clip_factor: float = 2.0  # multiplier on r_i for model-space displacement cap
     # BALANCE specific (Fang et al., CCS 2024)
     balance_gamma: float = 0.3
     balance_kappa: float = 1.0
@@ -37,6 +39,8 @@ class AggregatorConfig:
             raise ValueError(f"Unknown val_grad_sign: {self.val_grad_sign!r}")
         if self.trustgraph_metric not in {"cosine", "euclidean"}:
             raise ValueError(f"Unknown trustgraph_metric: {self.trustgraph_metric!r}")
+        if self.trustgraph_clip_mode not in {"update", "model"}:
+            raise ValueError(f"Unknown trustgraph_clip_mode: {self.trustgraph_clip_mode!r}")
         if self.krum_mode not in {"multi", "single"}:
             raise ValueError(f"Unknown krum_mode: {self.krum_mode!r}")
 
@@ -147,15 +151,27 @@ def aggregate_trustgraph(
         if self_prev is None or self_update is None:
             raise ValueError("self_prev and self_update are required when trustgraph_clip_norm=True.")
         r_i = float(torch.linalg.vector_norm(self_update).item())
-        agg_update = torch.zeros_like(self_update)
-        for j in neighbor_ids:
-            if weights[j] > 0.0:
-                u_j = neighbor_updates[j]
-                n_j = float(torch.linalg.vector_norm(u_j).item())
-                if n_j > 0.0:
-                    a_ij = min(1.0, r_i / n_j)
-                    agg_update.add_(u_j, alpha=weights[j] * a_ij)
-        new_model = self_prev + cfg.alpha * self_update + (1.0 - cfg.alpha) * agg_update
+        if cfg.trustgraph_clip_mode == "model":
+            # Consensus-preserving model-space clip: cap displacement (theta_j^{t+1/2} - theta_i^t).
+            cap = cfg.trustgraph_clip_factor * r_i
+            nbr_avg = torch.zeros_like(self_post)
+            for j in neighbor_ids:
+                if weights[j] > 0.0:
+                    disp = neighbor_posts[j] - self_prev
+                    dn = float(torch.linalg.vector_norm(disp).item())
+                    scale = min(1.0, cap / dn) if dn > 0.0 else 1.0
+                    nbr_avg.add_(self_prev + scale * disp, alpha=weights[j])
+            new_model = cfg.alpha * self_post + (1.0 - cfg.alpha) * nbr_avg
+        else:
+            agg_update = torch.zeros_like(self_update)
+            for j in neighbor_ids:
+                if weights[j] > 0.0:
+                    u_j = neighbor_updates[j]
+                    n_j = float(torch.linalg.vector_norm(u_j).item())
+                    if n_j > 0.0:
+                        a_ij = min(1.0, r_i / n_j)
+                        agg_update.add_(u_j, alpha=weights[j] * a_ij)
+            new_model = self_prev + cfg.alpha * self_update + (1.0 - cfg.alpha) * agg_update
     else:
         nbr_avg = torch.zeros_like(self_post)
         for j in neighbor_ids:

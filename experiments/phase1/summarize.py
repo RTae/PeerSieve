@@ -14,6 +14,8 @@ import numpy as np
 
 @dataclass
 class SummaryRow:
+    model: str
+    alpha_dir: float
     topology: str
     attack: str
     byz_pct: int
@@ -43,7 +45,11 @@ def method_label(cfg: dict[str, object]) -> str:
         if cfg.get("trustgraph_metric", "cosine") != "cosine":
             parts.append(str(cfg["trustgraph_metric"]))
         if cfg.get("trustgraph_clip_norm", False):
-            parts.append("clip")
+            clip_mode = str(cfg.get("trustgraph_clip_mode", "update"))
+            parts.append("mclip" if clip_mode == "model" else "clip")
+        thresh = float(cfg.get("trustgraph_score_threshold", 0.0))
+        if abs(thresh) > 1e-9:
+            parts.append(f"t={thresh:g}")
         if float(cfg.get("alpha", 0.5)) != 0.5:
             parts.append(f"a={cfg['alpha']}")
         if val_split != "local":
@@ -70,14 +76,16 @@ def _is_nan_run(summary: dict[str, object]) -> bool:
 def summarize_directory(root: str | Path) -> list[SummaryRow]:
     """Load and aggregate all summary.json files under root, deduplicating identical (config, seed)."""
     files = sorted(Path(root).rglob("summary.json"))
-    grouped: dict[tuple[str, str, int, str], list[dict[str, object]]] = defaultdict(list)
-    seen_seed: set[tuple[str, str, int, str, int]] = set()
+    grouped: dict[tuple[str, float, str, str, int, str], list[dict[str, object]]] = defaultdict(list)
+    seen_seed: set[tuple[str, float, str, str, int, str, int]] = set()
 
     for path in files:
         with open(path, encoding="utf-8") as f:
             s = json.load(f)
         cfg = s["config"]
         key = (
+            str(cfg.get("model_name", "cnn2x2")),
+            float(cfg.get("alpha_dir", 0.5)),
             str(cfg["topology"]),
             str(cfg["attack"]),
             int(round(float(cfg["byzantine_frac"]) * 100)),
@@ -90,7 +98,7 @@ def summarize_directory(root: str | Path) -> list[SummaryRow]:
         grouped[key].append(s)
 
     rows_out: list[SummaryRow] = []
-    for (topo, atk, byz_pct, method), items in sorted(grouped.items()):
+    for (model, alpha_dir, topo, atk, byz_pct, method), items in sorted(grouped.items()):
         accs = [100.0 * float(r["final_benign_test_acc_mean"]) for r in items]
         cons = [100.0 * float(r["final_consensus_test_acc"]) for r in items]
         fprs = [100.0 * float(r["fpr_cumulative"]) for r in items]
@@ -101,6 +109,8 @@ def summarize_directory(root: str | Path) -> list[SummaryRow]:
 
         rows_out.append(
             SummaryRow(
+                model=model,
+                alpha_dir=alpha_dir,
                 topology=topo,
                 attack=atk,
                 byz_pct=byz_pct,
@@ -127,13 +137,21 @@ def _fmt_mean_std(mean: float, std: float, seeds: int) -> str:
 
 def format_markdown_report(rows: list[SummaryRow], root: str | Path, title: str) -> str:
     """Render aggregated SummaryRows as a GitHub-flavored Markdown report."""
+    multi_context = len({(r.model, r.alpha_dir) for r in rows}) > 1
+    if multi_context:
+        header = "| Model | Dir | Topology | Attack | Byz% | Method | Seeds | Final Acc (%) | Cons Acc (%) | FPR (%) | Byz Accept (%) | Cos(Ben/Byz) | NaNs |"
+        sep = "|---|---:|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|"
+    else:
+        header = "| Topology | Attack | Byz% | Method | Seeds | Final Acc (%) | Cons Acc (%) | FPR (%) | Byz Accept (%) | Cos(Ben/Byz) | NaNs |"
+        sep = "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|"
+
     lines = [
         f"# {title}",
         "",
         f"Source outputs: `{root}`",
         "",
-        "| Topology | Attack | Byz% | Method | Seeds | Final Acc (%) | Cons Acc (%) | FPR (%) | Byz Accept (%) | Cos(Ben/Byz) | NaNs |",
-        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|",
+        header,
+        sep,
     ]
     for r in rows:
         if r.ben_cos_mean is not None and r.byz_cos_mean is not None:
@@ -142,8 +160,9 @@ def format_markdown_report(rows: list[SummaryRow], root: str | Path, title: str)
             cos_txt = f"{r.ben_cos_mean:+.3f} / n/a"
         else:
             cos_txt = "n/a"
+        prefix = f"| {r.model} | {r.alpha_dir:g} " if multi_context else ""
         lines.append(
-            f"| {r.topology} | {r.attack} | {r.byz_pct} | {r.method} | {r.seeds} | "
+            f"{prefix}| {r.topology} | {r.attack} | {r.byz_pct} | {r.method} | {r.seeds} | "
             f"{_fmt_mean_std(r.acc_mean, r.acc_std, r.seeds)} | "
             f"{_fmt_mean_std(r.cons_mean, r.cons_std, r.seeds)} | "
             f"{_fmt_mean_std(r.fpr_mean, r.fpr_std, r.seeds)} | "

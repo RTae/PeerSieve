@@ -29,6 +29,9 @@ DEFENSE_METHODS: tuple[MethodSpec, ...] = (
     ("trimmed_mean", {"aggregator": "trimmed_mean"}),
 )
 
+CNN_GN_BALANCE_GAMMA = 0.15
+RESNET18_BALANCE_GAMMA = 0.015
+
 
 def _build_smoke(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
     smoke_base = replace(
@@ -163,6 +166,142 @@ def _build_full_phase1(base: ExperimentConfig) -> list[tuple[str, ExperimentConf
     return runs
 
 
+def _build_stabilized_ab(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Option C (110 runs): Part A stabilized 2-conv CNN + Part B pretrained ResNet-18."""
+    runs: list[tuple[str, ExperimentConfig]] = []
+    tg_stab_overrides: dict[str, object] = {
+        "aggregator": "trustgraph",
+        "val_grad_sign": "descent_neg",
+        "trustgraph_clip_norm": True,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_score_threshold": 0.02,
+    }
+    tg_raw_overrides: dict[str, object] = {
+        "aggregator": "trustgraph",
+        "val_grad_sign": "descent_neg",
+        "trustgraph_clip_norm": False,
+        "trustgraph_score_threshold": 0.0,
+    }
+
+    # --- Part A: Stabilized 2-conv 2-FC CNN (GroupNorm + Aug + Cosine LR, 200 rounds) ---
+    base_a = replace(
+        base,
+        model_name="cnn2x2_gn",
+        rounds=200,
+        lr=0.01,
+        lr_schedule="cosine",
+        augment=True,
+        topology="random",
+        byzantine_frac=0.3,
+    )
+    methods_a6: tuple[MethodSpec, ...] = (
+        ("fedavg", {"aggregator": "fedavg"}),
+        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+        ("krum", {"aggregator": "krum"}),
+        ("balance", {"aggregator": "balance", "balance_gamma": CNN_GN_BALANCE_GAMMA}),
+        ("tg_raw", tg_raw_overrides),
+        ("tg_stab", tg_stab_overrides),
+    )
+    methods_a5: tuple[MethodSpec, ...] = (
+        ("fedavg", {"aggregator": "fedavg"}),
+        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+        ("krum", {"aggregator": "krum"}),
+        ("balance", {"aggregator": "balance", "balance_gamma": CNN_GN_BALANCE_GAMMA}),
+        ("tg_stab", tg_stab_overrides),
+    )
+    methods_a_fpr: tuple[MethodSpec, ...] = (
+        ("tg_stab", tg_stab_overrides),
+        ("balance", {"aggregator": "balance", "balance_gamma": CNN_GN_BALANCE_GAMMA}),
+        ("krum", {"aggregator": "krum"}),
+        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+    )
+
+    # A1 (24): alpha_dir=0.5 main attacks
+    for atk in ("none", "label_flip_all", "model_poison", "random_noise"):
+        for tag, overrides in methods_a6:
+            runs.append((f"part_a/dir05/{atk}__{tag}", replace(base_a, alpha_dir=0.5, attack=atk, **overrides)))
+
+    # A2 (20): alpha_dir=5.0 main attacks
+    for atk in ("none", "label_flip_all", "model_poison", "random_noise"):
+        for tag, overrides in methods_a5:
+            runs.append((f"part_a/dir50/{atk}__{tag}", replace(base_a, alpha_dir=5.0, attack=atk, **overrides)))
+
+    # A3 (16): alpha_dir=5.0 FPR sweep under label_flip_all (30% already in A2)
+    for frac in (0.1, 0.2, 0.4, 0.5):
+        pct = int(round(frac * 100))
+        for tag, overrides in methods_a_fpr:
+            runs.append(
+                (
+                    f"part_a/fpr_dir50/byz{pct}__{tag}",
+                    replace(base_a, alpha_dir=5.0, attack="label_flip_all", byzantine_frac=frac, **overrides),
+                )
+            )
+
+    # --- Part B: Pretrained ResNet-18 fine-tuned on 10k CIFAR-10 (alpha_dir=0.5, 50 rounds) ---
+    base_b = replace(
+        base,
+        model_name="resnet18_pretrained",
+        rounds=50,
+        lr=0.005,
+        lr_schedule="cosine",
+        augment=True,
+        alpha_dir=0.5,
+        topology="random",
+        byzantine_frac=0.3,
+        eval_batch_size=256,
+    )
+    methods_b6: tuple[MethodSpec, ...] = (
+        ("fedavg", {"aggregator": "fedavg"}),
+        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+        ("krum", {"aggregator": "krum"}),
+        ("balance", {"aggregator": "balance", "balance_gamma": RESNET18_BALANCE_GAMMA}),
+        ("tg_raw", tg_raw_overrides),
+        ("tg_stab", tg_stab_overrides),
+    )
+    methods_b5: tuple[MethodSpec, ...] = (
+        ("fedavg", {"aggregator": "fedavg"}),
+        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+        ("krum", {"aggregator": "krum"}),
+        ("balance", {"aggregator": "balance", "balance_gamma": RESNET18_BALANCE_GAMMA}),
+        ("tg_stab", tg_stab_overrides),
+    )
+    methods_b_fpr: tuple[MethodSpec, ...] = (
+        ("tg_stab", tg_stab_overrides),
+        ("balance", {"aggregator": "balance", "balance_gamma": RESNET18_BALANCE_GAMMA}),
+        ("krum", {"aggregator": "krum"}),
+        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+    )
+
+    # B1 (24): main attacks on random ER(0.3), 30% Byzantine
+    for atk in ("none", "label_flip_all", "model_poison", "random_noise"):
+        for tag, overrides in methods_b6:
+            runs.append((f"part_b/main/{atk}__{tag}", replace(base_b, attack=atk, **overrides)))
+
+    # B2 (10): ring & small_world topologies under label_flip_all
+    for topo in ("ring", "small_world"):
+        for tag, overrides in methods_b5:
+            runs.append(
+                (
+                    f"part_b/topologies/{topo}__label_flip_all__{tag}",
+                    replace(base_b, topology=topo, attack="label_flip_all", **overrides),
+                )
+            )
+
+    # B3 (16): FPR sweep 10/20/40/50% under label_flip_all (30% already in B1)
+    for frac in (0.1, 0.2, 0.4, 0.5):
+        pct = int(round(frac * 100))
+        for tag, overrides in methods_b_fpr:
+            runs.append(
+                (
+                    f"part_b/fpr/byz{pct}__{tag}",
+                    replace(base_b, attack="label_flip_all", byzantine_frac=frac, **overrides),
+                )
+            )
+
+    return runs
+
+
 SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]]]] = {
     "smoke": _build_smoke,
     "sign_check": _build_sign_check,
@@ -172,6 +311,7 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
     "ablations": _build_ablations,
     "full": _build_full_phase1,
     "step_a": _build_full_phase1,  # backwards-compatible alias
+    "stabilized_ab": _build_stabilized_ab,
 }
 
 
@@ -198,13 +338,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--alpha-dir", type=float, default=0.5)
     p.add_argument("--val-frac", type=float, default=0.1)
     p.add_argument("--val-split", choices=["local", "iid"], default="local")
-    p.add_argument("--model", default="cnn2x2", choices=["cnn2x2", "lenet2x2"])
+    p.add_argument(
+        "--model",
+        default="cnn2x2",
+        choices=["cnn2x2", "cnn2x2_gn", "lenet2x2", "resnet18_pretrained", "resnet18_scratch"],
+    )
     p.add_argument("--rounds", type=int, default=200)
     p.add_argument("--local-epochs", type=int, default=1)
     p.add_argument("--lr", type=float, default=0.01)
+    p.add_argument("--lr-schedule", choices=["constant", "cosine"], default="constant")
     p.add_argument("--momentum", type=float, default=0.9)
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--augment", action="store_true")
     p.add_argument("--topology", choices=["ring", "random", "small_world"], default="random")
     p.add_argument("--er-p", type=float, default=0.3)
     p.add_argument("--ws-k", type=int, default=4)
@@ -226,7 +372,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--val-grad-sign", choices=["descent_neg", "paper_pos"], default="descent_neg")
     p.add_argument("--no-relu", action="store_true")
     p.add_argument("--trustgraph-metric", choices=["cosine", "euclidean"], default="cosine")
+    p.add_argument("--trustgraph-score-threshold", type=float, default=0.0)
     p.add_argument("--trustgraph-clip-norm", action="store_true")
+    p.add_argument("--trustgraph-clip-mode", choices=["update", "model"], default="update")
+    p.add_argument("--trustgraph-clip-factor", type=float, default=2.0)
     p.add_argument("--balance-gamma", type=float, default=0.3)
     p.add_argument("--balance-kappa", type=float, default=1.0)
     p.add_argument("--krum-mode", choices=["multi", "single"], default="multi")
@@ -256,9 +405,11 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         rounds=args.rounds,
         local_epochs=args.local_epochs,
         lr=args.lr,
+        lr_schedule=args.lr_schedule,
         momentum=args.momentum,
         weight_decay=args.weight_decay,
         batch_size=args.batch_size,
+        augment=args.augment,
         topology=args.topology,
         er_p=args.er_p,
         ws_k=args.ws_k,
@@ -272,7 +423,10 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         val_grad_sign=args.val_grad_sign,
         trustgraph_use_relu=not args.no_relu,
         trustgraph_metric=args.trustgraph_metric,
+        trustgraph_score_threshold=args.trustgraph_score_threshold,
         trustgraph_clip_norm=args.trustgraph_clip_norm,
+        trustgraph_clip_mode=args.trustgraph_clip_mode,
+        trustgraph_clip_factor=args.trustgraph_clip_factor,
         balance_gamma=args.balance_gamma,
         balance_kappa=args.balance_kappa,
         krum_mode=args.krum_mode,
@@ -335,9 +489,9 @@ def _run_suite(args: argparse.Namespace, base_cfg: ExperimentConfig, out_root: P
     )
 
     summaries: list[dict[str, object]] = []
-    data_cache: dict[tuple[int, str], object] = {}
+    data_cache: dict[tuple[int, str, float, int, int, float], object] = {}
     for job_idx, (seed, run_name, cfg) in enumerate(shard_jobs, start=1):
-        cache_key = (seed, cfg.val_split)
+        cache_key = (seed, cfg.val_split, cfg.alpha_dir, cfg.n_nodes, cfg.samples_per_node, cfg.val_frac)
         if cache_key not in data_cache:
             data_cache[cache_key] = prepare_dataset(cfg)
         out_dir = suite_root / run_name / f"seed_{seed}"

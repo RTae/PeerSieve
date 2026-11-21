@@ -50,9 +50,11 @@ class ExperimentConfig:
     rounds: int = 200
     local_epochs: int = 1
     lr: float = 0.01
+    lr_schedule: str = "constant"  # constant | cosine
     momentum: float = 0.9
     weight_decay: float = 1e-4
     batch_size: int = 64
+    augment: bool = False
     # Topology
     topology: str = "random"  # ring | random | small_world
     er_p: float = 0.3
@@ -71,6 +73,8 @@ class ExperimentConfig:
     trustgraph_metric: str = "cosine"
     trustgraph_score_threshold: float = 0.0
     trustgraph_clip_norm: bool = False
+    trustgraph_clip_mode: str = "update"
+    trustgraph_clip_factor: float = 2.0
     balance_gamma: float = 0.3
     balance_kappa: float = 1.0
     krum_mode: str = "multi"
@@ -92,6 +96,8 @@ class ExperimentConfig:
             trustgraph_metric=self.trustgraph_metric,
             trustgraph_score_threshold=self.trustgraph_score_threshold,
             trustgraph_clip_norm=self.trustgraph_clip_norm,
+            trustgraph_clip_mode=self.trustgraph_clip_mode,
+            trustgraph_clip_factor=self.trustgraph_clip_factor,
             balance_gamma=self.balance_gamma,
             balance_kappa=self.balance_kappa,
             krum_mode=self.krum_mode,
@@ -202,6 +208,16 @@ def _stage_device_data(
     )
 
 
+def _round_lr(cfg: ExperimentConfig, round_idx: int) -> float:
+    if cfg.lr_schedule == "constant":
+        return cfg.lr
+    if cfg.lr_schedule == "cosine":
+        lr_min = 0.05 * cfg.lr
+        frac = round_idx / max(cfg.rounds - 1, 1)
+        return lr_min + 0.5 * (cfg.lr - lr_min) * (1.0 + math.cos(math.pi * frac))
+    raise ValueError(f"Unknown lr_schedule: {cfg.lr_schedule!r}")
+
+
 def _local_training_phase(
     cfg: ExperimentConfig,
     prev_models: list[torch.Tensor],
@@ -210,11 +226,13 @@ def _local_training_phase(
     byzantine_ids: set[int],
     train_gen: torch.Generator,
     device: torch.device,
+    round_idx: int,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor], dict[int, torch.Tensor]]:
     """Run Phase 1 local SGD and pre-update validation gradient computation."""
     post_models: list[torch.Tensor] = [torch.empty(0, device=device) for _ in range(cfg.n_nodes)]
     updates: list[torch.Tensor] = [torch.empty(0, device=device) for _ in range(cfg.n_nodes)]
     val_grads: dict[int, torch.Tensor] = {}
+    lr_now = _round_lr(cfg, round_idx)
 
     for i in range(cfg.n_nodes):
         if i in byzantine_ids and cfg.attack in {"model_poison", "random_noise"}:
@@ -229,11 +247,12 @@ def _local_training_phase(
             work_model,
             dev_data.x_train[i],
             dev_data.y_train[i],
-            lr=cfg.lr,
+            lr=lr_now,
             momentum=cfg.momentum,
             weight_decay=cfg.weight_decay,
             batch_size=cfg.batch_size,
             epochs=cfg.local_epochs,
+            augment=cfg.augment,
             generator=train_gen,
         )
         post_vec = model_to_vector(work_model)
@@ -438,7 +457,7 @@ def run_experiment(
             prev_models = [vec.clone() for vec in node_models]
 
             post_models, updates, val_grads = _local_training_phase(
-                cfg, prev_models, work_model, dev_data, byzantine_ids, train_gen, device
+                cfg, prev_models, work_model, dev_data, byzantine_ids, train_gen, device, round_idx=r
             )
             apply_round_attack(
                 attack_cfg=atk_cfg,
