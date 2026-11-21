@@ -402,6 +402,11 @@ def test_stabilized_ab_suite_count_and_sharding() -> None:
     assert sum(1 for _, cfg in diag if cfg.samples_per_node == 500) == 8
     assert sum(1 for _, cfg in diag if cfg.samples_per_node == 2500) == 8
 
+    pm50 = build_suite_runs("paper_match_50k", ExperimentConfig())
+    assert len(pm50) == 50
+    assert len({name for name, _ in pm50}) == 50
+    assert all(cfg.samples_per_node == 2500 and cfg.rounds == 25 and cfg.grad_clip_norm == 10.0 for _, cfg in pm50)
+
 
 def test_validation_gradient_weight_decay_matches_l2_term() -> None:
     torch.manual_seed(0)

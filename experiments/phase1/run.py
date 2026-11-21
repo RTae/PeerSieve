@@ -536,6 +536,94 @@ def _build_fpr_ceiling_diag(base: ExperimentConfig) -> list[tuple[str, Experimen
     ]
 
 
+def _build_paper_match_50k(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Strong full-50k CIFAR-10 TrustGraph-DFL baseline (50 runs/seed, ~91-93% regime).
+
+    Uses full 50,000 CIFAR-10 (2,500/node, 250 stratified val/node, Dir(0.5) non-IID train),
+    pretrained ResNet-18, 25 rounds, grad_clip_norm=10.0, tau=0.003, model-space clip 2*r_i,
+    calibrated BALANCE gamma=0.04, and byz_local_epochs=2 for label_flip_all so all 4
+    paper panels (Fig. 2, Table 1, Fig. 3a, Fig. 3b, & Section 5.5 ablations) have clean
+    baseline separation.
+    """
+    base_50k = replace(
+        base,
+        model_name="resnet18_pretrained",
+        samples_per_node=2500,
+        rounds=25,
+        lr=0.005,
+        lr_schedule="cosine",
+        augment=True,
+        grad_clip_norm=10.0,
+        alpha_dir=0.5,
+        val_split="iid",
+        topology="random",
+        byzantine_frac=0.3,
+        eval_batch_size=256,
+    )
+    tg_strong: dict[str, object] = {
+        "aggregator": "trustgraph",
+        "val_grad_sign": "descent_neg",
+        "trustgraph_clip_norm": True,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_score_threshold": 0.003,
+    }
+    bal_cal: dict[str, object] = {"aggregator": "balance", "balance_gamma": 0.04}
+    methods_5: tuple[MethodSpec, ...] = (
+        ("fedavg", {"aggregator": "fedavg"}),
+        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+        ("krum", {"aggregator": "krum"}),
+        ("balance", bal_cal),
+        ("tg_strong", tg_strong),
+    )
+    methods_fpr: tuple[MethodSpec, ...] = (
+        ("tg_strong", tg_strong),
+        ("balance", bal_cal),
+        ("krum", {"aggregator": "krum"}),
+        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
+    )
+
+    runs: list[tuple[str, ExperimentConfig]] = []
+    # Panel 1 (20): Fig. 2 & Fig. 3(a) main attacks on Random ER (p=0.3, 30% Byzantine)
+    for atk in ("none", "label_flip_all", "model_poison", "random_noise"):
+        bep = 2 if atk == "label_flip_all" else 0
+        for tag, overrides in methods_5:
+            runs.append((f"main/{atk}__{tag}", replace(base_50k, attack=atk, byz_local_epochs=bep, **overrides)))
+
+    # Panel 2 (10): Table 1 Ring & Small-World topologies under label_flip_all (30% Byzantine, bep=2)
+    for topo in ("ring", "small_world"):
+        for tag, overrides in methods_5:
+            runs.append(
+                (
+                    f"topologies/{topo}__label_flip_all__{tag}",
+                    replace(base_50k, topology=topo, attack="label_flip_all", byz_local_epochs=2, **overrides),
+                )
+            )
+
+    # Panel 3 (16): Fig. 3(b) FPR sweep 10/20/40/50% Byzantine under label_flip_all (30% in Panel 1)
+    for frac in (0.1, 0.2, 0.4, 0.5):
+        pct = int(round(frac * 100))
+        for tag, overrides in methods_fpr:
+            runs.append(
+                (
+                    f"fpr/byz{pct}__{tag}",
+                    replace(base_50k, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=frac, **overrides),
+                )
+            )
+
+    # Panel 4 (4): Section 5.5 ablations under model_poison (30% Byzantine)
+    tg_mp = replace(base_50k, attack="model_poison", **tg_strong)
+    runs.extend(
+        [
+            ("ablations/no_relu__model_poison", replace(tg_mp, trustgraph_use_relu=False)),
+            ("ablations/euclidean__model_poison", replace(tg_mp, trustgraph_metric="euclidean", trustgraph_score_threshold=0.0)),
+            ("ablations/alpha03__model_poison", replace(tg_mp, alpha=0.3)),
+            ("ablations/alpha07__model_poison", replace(tg_mp, alpha=0.7)),
+        ]
+    )
+    return runs
+
+
 SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]]]] = {
     "smoke": _build_smoke,
     "sign_check": _build_sign_check,
@@ -549,6 +637,7 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
     "paper_match_calib": _build_paper_match_calib,
     "paper_match": _build_paper_match,
     "fpr_ceiling_diag": _build_fpr_ceiling_diag,
+    "paper_match_50k": _build_paper_match_50k,
 }
 
 
