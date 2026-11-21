@@ -7,6 +7,7 @@ Byzantine-resilient decentralized federated learning (DFL) research codebase bui
   - Stabilized 3-seed Option C reproduction (`330` runs across `cnn2x2_gn` + unclipped `resnet18_pretrained`): [report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md).
   - Phase 1c gradient-clipping & validation-regime calibration (`16` runs): [report/phase1c_calibration.md](report/phase1c_calibration.md).
   - Calibrated 3-seed paper-panel reproduction (`150` runs, `0/150` NaNs, publication-style Fig. 2–4 PNG + PDF): [report/phase1_paper_match.md](report/phase1_paper_match.md).
+  - Phase 1d 50k ceiling & FPR root-cause diagnostic (`16` runs, `0/16` NaNs, `93.06%` clean / `90.8–92.6%` under attacks): [report/phase1d_fpr_ceiling_diag.md](report/phase1d_fpr_ceiling_diag.md).
 - **Phase 2 (Core Mechanisms Verified Locally; 8-GPU LLM Evaluation Planned):**
   - Core PeerSieve modules implemented & verified against Proposal Table 2 (including 4-process `torch.distributed` Gloo tests): [report/phase2_local_verification.md](report/phase2_local_verification.md).
   - Planned next: eight-GPU TinyLlama-1.1B / Dolly-15k evaluation on `octave`.
@@ -52,6 +53,7 @@ Byzantine-resilient decentralized federated learning (DFL) research codebase bui
     ├── phase1_stabilized_ab.md      # 3-seed (330-run) stabilized CNN + unclipped ResNet-18 report
     ├── phase1c_calibration.md       # Phase 1c grad-clip, validation-regime, & BALANCE calibration report
     ├── phase1_paper_match.md        # 3-seed (150-run, 0-NaN) paper-panel reproduction & figures
+    ├── phase1d_fpr_ceiling_diag.md  # Phase 1d 50k ceiling, tau=0.003 FPR, & attack-separation diagnostic
     └── phase2_local_verification.md # Pre-GPU verification of all 4 PeerSieve mechanisms + Gloo tests
 ```
 
