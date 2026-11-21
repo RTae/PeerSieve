@@ -377,10 +377,32 @@ def test_model_space_clip_and_stabilized_models() -> None:
 
 
 def test_stabilized_ab_suite_count_and_sharding() -> None:
-    runs = build_suite_runs("stabilized_ab", ExperimentConfig())
+    runs = build_suite_runs("stabilized_ab", ExperimentConfig(grad_clip_norm=1.0))
     assert len(runs) == 110
+    assert all(cfg.grad_clip_norm == 1.0 for _, cfg in runs)
     names = [name for name, _ in runs]
     assert len(names) == len(set(names))
     sharded = [[name for idx, (name, _) in enumerate(runs) if idx % 8 == s] for s in range(8)]
     assert sum(len(x) for x in sharded) == 110
     assert set().union(*sharded) == set(names)
+
+
+def test_local_grad_clip_bounds_step_magnitude() -> None:
+    from src.models import train_local_epoch
+
+    torch.manual_seed(0)
+    m_unclipped = build_model("cnn2x2_gn")
+    m_clipped = build_model("cnn2x2_gn")
+    m_clipped.load_state_dict(m_unclipped.state_dict())
+    before = model_to_vector(m_unclipped)
+
+    # Large input magnitudes produce huge unclipped gradients.
+    x = torch.randn(16, 3, 32, 32) * 50.0
+    y = torch.randint(0, 10, (16,))
+    train_local_epoch(m_unclipped, x, y, lr=0.05, momentum=0.0, weight_decay=0.0, batch_size=16, epochs=1, grad_clip_norm=0.0)
+    train_local_epoch(m_clipped, x, y, lr=0.05, momentum=0.0, weight_decay=0.0, batch_size=16, epochs=1, grad_clip_norm=1.0)
+
+    upd_unclipped = float(torch.linalg.vector_norm(model_to_vector(m_unclipped) - before).item())
+    upd_clipped = float(torch.linalg.vector_norm(model_to_vector(m_clipped) - before).item())
+    assert upd_clipped <= 0.05 * 1.0 + 1e-4
+    assert upd_unclipped > upd_clipped * 5.0
