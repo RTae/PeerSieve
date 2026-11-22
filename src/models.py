@@ -206,9 +206,13 @@ def train_local_epoch(
     epochs: int = 1,
     augment: bool = False,
     grad_clip_norm: float = 0.0,
+    max_steps: int = 0,
     generator: torch.Generator | None = None,
 ) -> None:
-    """Train model in-place using SGD on preloaded tensors."""
+    """Train model in-place using SGD on preloaded tensors.
+
+    If ``max_steps > 0``, caps the number of mini-batch SGD updates per epoch to ``max_steps``.
+    """
     n_samples = int(x_train.shape[0])
     if n_samples == 0:
         return
@@ -224,7 +228,10 @@ def train_local_epoch(
         perm = torch.randperm(n_samples, generator=generator, device="cpu")
         if x_train.device.type != "cpu":
             perm = perm.to(x_train.device)
+        steps_in_epoch = 0
         for start in range(0, n_samples, batch_size):
+            if max_steps > 0 and steps_in_epoch >= max_steps:
+                break
             idx = perm[start : start + batch_size]
             xb = x_train[idx]
             if augment:
@@ -236,6 +243,7 @@ def train_local_epoch(
             if grad_clip_norm > 0.0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
+            steps_in_epoch += 1
 
 
 @torch.no_grad()

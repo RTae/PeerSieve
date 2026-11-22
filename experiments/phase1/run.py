@@ -664,6 +664,90 @@ def _build_fpr_lever1(base: ExperimentConfig) -> list[tuple[str, ExperimentConfi
     ]
 
 
+def _build_fpr_lever1b(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """FPR Lever 1b diagnostic (8 runs = 1/GPU on 8x A100): threshold sweep on receiver-anchored delta.
+
+    Sweeps tau in {0.02, 0.035} across the 4 main attacks under rxdelta + val=iid on full 50k CIFAR-10.
+    """
+    base_rx = replace(
+        base,
+        model_name="resnet18_pretrained",
+        samples_per_node=2500,
+        rounds=25,
+        lr=0.005,
+        lr_schedule="cosine",
+        augment=True,
+        grad_clip_norm=10.0,
+        alpha_dir=0.5,
+        val_split="iid",
+        topology="random",
+        byzantine_frac=0.3,
+        eval_batch_size=256,
+        aggregator="trustgraph",
+        val_grad_sign="descent_neg",
+        trustgraph_clip_norm=True,
+        trustgraph_clip_mode="model",
+        trustgraph_clip_factor=2.0,
+        trustgraph_delta_mode="receiver",
+    )
+    runs: list[tuple[str, ExperimentConfig]] = []
+    for tau, t_tag in ((0.02, "t020"), (0.035, "t035")):
+        cfg_t = replace(base_rx, trustgraph_score_threshold=tau)
+        runs.extend(
+            [
+                (f"lever1b/{t_tag}__none", replace(cfg_t, attack="none")),
+                (f"lever1b/{t_tag}__label_flip_all_byz30", replace(cfg_t, attack="label_flip_all", byz_local_epochs=2)),
+                (f"lever1b/{t_tag}__model_poison", replace(cfg_t, attack="model_poison")),
+                (f"lever1b/{t_tag}__random_noise", replace(cfg_t, attack="random_noise")),
+            ]
+        )
+    return runs
+
+
+def _build_fpr_lever2(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """FPR Lever 2 diagnostic (8 runs = 1/GPU on 8x A100): fewer local SGD steps per round.
+
+    Keeps strict sender-anchored Eq. (3) (theta_j^{t+1/2} - theta_j^t, val=iid, tau=0.003) and tests
+    two ways to reduce per-round local drift on full 50k CIFAR-10:
+      1) batch_size=256, 25 rounds (9 local steps/round instead of 36, same 25 full epochs)
+      2) batch_size=64, max_local_steps=4, 100 rounds (4 local steps/round, 400 total steps)
+    """
+    base_sender = replace(
+        base,
+        model_name="resnet18_pretrained",
+        samples_per_node=2500,
+        lr=0.005,
+        lr_schedule="cosine",
+        augment=True,
+        grad_clip_norm=10.0,
+        alpha_dir=0.5,
+        val_split="iid",
+        topology="random",
+        byzantine_frac=0.3,
+        eval_batch_size=256,
+        aggregator="trustgraph",
+        val_grad_sign="descent_neg",
+        trustgraph_clip_norm=True,
+        trustgraph_clip_mode="model",
+        trustgraph_clip_factor=2.0,
+        trustgraph_score_threshold=0.003,
+        trustgraph_delta_mode="sender",
+    )
+    cfg_bs256 = replace(base_sender, batch_size=256, rounds=25, max_local_steps=0, eval_every=5)
+    cfg_steps4 = replace(base_sender, batch_size=64, rounds=100, max_local_steps=4, eval_every=10)
+    runs: list[tuple[str, ExperimentConfig]] = []
+    for tag, cfg_v in (("bs256_r25", cfg_bs256), ("steps4_r100", cfg_steps4)):
+        runs.extend(
+            [
+                (f"lever2/{tag}__none", replace(cfg_v, attack="none")),
+                (f"lever2/{tag}__label_flip_all_byz30", replace(cfg_v, attack="label_flip_all", byz_local_epochs=2)),
+                (f"lever2/{tag}__model_poison", replace(cfg_v, attack="model_poison")),
+                (f"lever2/{tag}__random_noise", replace(cfg_v, attack="random_noise")),
+            ]
+        )
+    return runs
+
+
 SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]]]] = {
     "smoke": _build_smoke,
     "sign_check": _build_sign_check,
@@ -679,6 +763,8 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
     "fpr_ceiling_diag": _build_fpr_ceiling_diag,
     "paper_match_50k": _build_paper_match_50k,
     "fpr_lever1": _build_fpr_lever1,
+    "fpr_lever1b": _build_fpr_lever1b,
+    "fpr_lever2": _build_fpr_lever2,
 }
 
 
@@ -721,6 +807,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--grad-clip-norm", type=float, default=0.0)
     p.add_argument("--val-grad-weight-decay", action="store_true")
     p.add_argument("--byz-local-epochs", type=int, default=0)
+    p.add_argument("--max-local-steps", type=int, default=0)
     p.add_argument("--topology", choices=["ring", "random", "small_world"], default="random")
     p.add_argument("--er-p", type=float, default=0.3)
     p.add_argument("--ws-k", type=int, default=4)
@@ -784,6 +871,7 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         grad_clip_norm=args.grad_clip_norm,
         val_grad_weight_decay=args.val_grad_weight_decay,
         byz_local_epochs=args.byz_local_epochs,
+        max_local_steps=args.max_local_steps,
         topology=args.topology,
         er_p=args.er_p,
         ws_k=args.ws_k,

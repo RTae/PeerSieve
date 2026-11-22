@@ -412,6 +412,29 @@ def test_stabilized_ab_suite_count_and_sharding() -> None:
     assert len({name for name, _ in l1}) == 8
     assert all(cfg.trustgraph_delta_mode == "receiver" for _, cfg in l1)
 
+    from dataclasses import asdict
+    from experiments.phase1.summarize import method_label
+
+    l1b = build_suite_runs("fpr_lever1b", ExperimentConfig())
+    assert len(l1b) == 8
+    assert len({name for name, _ in l1b}) == 8
+    assert all(cfg.trustgraph_delta_mode == "receiver" for _, cfg in l1b)
+    l1b_keys = {
+        (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
+        for _, cfg in l1b
+    }
+    assert len(l1b_keys) == 8
+
+    l2 = build_suite_runs("fpr_lever2", ExperimentConfig())
+    assert len(l2) == 8
+    assert len({name for name, _ in l2}) == 8
+    assert all(cfg.trustgraph_delta_mode == "sender" for _, cfg in l2)
+    l2_keys = {
+        (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
+        for _, cfg in l2
+    }
+    assert len(l2_keys) == 8
+
 
 def test_trustgraph_receiver_anchored_delta_mode() -> None:
     self_prev = torch.tensor([0.0, 0.0, 0.0])
@@ -466,3 +489,34 @@ def test_local_grad_clip_bounds_step_magnitude() -> None:
     upd_clipped = float(torch.linalg.vector_norm(model_to_vector(m_clipped) - before).item())
     assert upd_clipped <= 0.05 * 1.0 + 1e-4
     assert upd_unclipped > upd_clipped * 5.0
+
+
+def test_train_local_epoch_max_steps_caps_updates() -> None:
+    from src.models import train_local_epoch
+
+    torch.manual_seed(0)
+    m_full = build_model("cnn2x2_gn")
+    m_cap = build_model("cnn2x2_gn")
+    m_cap.load_state_dict(m_full.state_dict())
+    m_exact = build_model("cnn2x2_gn")
+    m_exact.load_state_dict(m_full.state_dict())
+
+    x = torch.randn(32, 3, 32, 32)
+    y = torch.randint(0, 10, (32,))
+
+    # With batch_size=8 and 32 samples, a full epoch takes 4 steps; max_steps=1 stops after 1 batch.
+    train_local_epoch(m_full, x, y, lr=0.01, momentum=0.0, weight_decay=0.0, batch_size=8, epochs=1, max_steps=0, generator=torch.Generator().manual_seed(7))
+    torch.manual_seed(123)
+    train_local_epoch(m_cap, x, y, lr=0.01, momentum=0.0, weight_decay=0.0, batch_size=8, epochs=1, max_steps=1, generator=torch.Generator().manual_seed(7))
+
+    # Manually replicate the exact first batch of the same seeded permutation (matching dropout seed).
+    perm = torch.randperm(32, generator=torch.Generator().manual_seed(7))
+    torch.manual_seed(123)
+    m_exact.train()
+    opt = torch.optim.SGD(m_exact.parameters(), lr=0.01, momentum=0.0, weight_decay=0.0)
+    opt.zero_grad(set_to_none=True)
+    torch.nn.functional.cross_entropy(m_exact(x[perm[:8]]), y[perm[:8]]).backward()
+    opt.step()
+
+    assert torch.allclose(model_to_vector(m_cap), model_to_vector(m_exact), atol=1e-6)
+    assert not torch.allclose(model_to_vector(m_cap), model_to_vector(m_full), atol=1e-4)

@@ -50,6 +50,12 @@ def method_label(cfg: dict[str, object]) -> str:
     bep = int(cfg.get("byz_local_epochs", 0))
     if bep > 0:
         extra.append(f"bep={bep}")
+    bs = int(cfg.get("batch_size", 64))
+    if bs != 64:
+        extra.append(f"bs={bs}")
+    mls = int(cfg.get("max_local_steps", 0))
+    if mls > 0:
+        extra.append(f"steps={mls}")
     spn = int(cfg.get("samples_per_node", 500))
     if spn != 500:
         extra.append(f"spn={spn}")

@@ -58,6 +58,7 @@ class ExperimentConfig:
     grad_clip_norm: float = 0.0
     val_grad_weight_decay: bool = False
     byz_local_epochs: int = 0
+    max_local_steps: int = 0
     # Topology
     topology: str = "random"  # ring | random | small_world
     er_p: float = 0.3
@@ -268,6 +269,7 @@ def _local_training_phase(
             epochs=node_epochs,
             augment=cfg.augment,
             grad_clip_norm=cfg.grad_clip_norm,
+            max_steps=cfg.max_local_steps,
             generator=train_gen,
         )
         post_vec = model_to_vector(work_model)
