@@ -407,6 +407,34 @@ def test_stabilized_ab_suite_count_and_sharding() -> None:
     assert len({name for name, _ in pm50}) == 50
     assert all(cfg.samples_per_node == 2500 and cfg.rounds == 25 and cfg.grad_clip_norm == 10.0 for _, cfg in pm50)
 
+    l1 = build_suite_runs("fpr_lever1", ExperimentConfig())
+    assert len(l1) == 8
+    assert len({name for name, _ in l1}) == 8
+    assert all(cfg.trustgraph_delta_mode == "receiver" for _, cfg in l1)
+
+
+def test_trustgraph_receiver_anchored_delta_mode() -> None:
+    self_prev = torch.tensor([0.0, 0.0, 0.0])
+    self_update = torch.tensor([0.2, 0.0, 0.0])
+    self_post = self_prev + self_update
+    # Receiver wants to move along +x (val_grad = [-1, 0, 0] -> descent_neg = [+1, 0, 0]).
+    val_grad = torch.tensor([-1.0, 0.0, 0.0])
+    # Neighbor j ALREADY moved to x=+1.0 in prior rounds, and took a noisy tiny step [-0.05, 0.1, 0] this round.
+    nbr_post = torch.tensor([0.95, 0.1, 0.0])
+    nbr_sender_update = torch.tensor([-0.05, 0.1, 0.0])
+
+    cfg_sender = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", trustgraph_delta_mode="sender")
+    res_s = aggregate_trustgraph(
+        self_post, val_grad, [1], {1: nbr_post}, {1: nbr_sender_update}, cfg_sender, self_prev=self_prev, self_update=self_update
+    )
+    assert res_s.scores[1] < 0.0 and res_s.neighbor_weights[1] == 0.0
+
+    cfg_rx = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", trustgraph_delta_mode="receiver")
+    res_r = aggregate_trustgraph(
+        self_post, val_grad, [1], {1: nbr_post}, {1: nbr_sender_update}, cfg_rx, self_prev=self_prev, self_update=self_update
+    )
+    assert res_r.scores[1] > 0.99 and res_r.neighbor_weights[1] > 0.99
+
 
 def test_validation_gradient_weight_decay_matches_l2_term() -> None:
     torch.manual_seed(0)

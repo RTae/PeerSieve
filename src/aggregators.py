@@ -23,6 +23,7 @@ class AggregatorConfig:
     trustgraph_clip_norm: bool = False  # receiver-norm cap on accepted neighbor contributions
     trustgraph_clip_mode: str = "update"  # update (PeerSieve Eq. 4) | model (consensus-preserving)
     trustgraph_clip_factor: float = 2.0  # multiplier on r_i for model-space displacement cap
+    trustgraph_delta_mode: str = "sender"  # sender (theta_j^{t+1/2}-theta_j^t) | receiver (theta_j^{t+1/2}-theta_i^t)
     # BALANCE specific (Fang et al., CCS 2024)
     balance_gamma: float = 0.3
     balance_kappa: float = 1.0
@@ -41,6 +42,8 @@ class AggregatorConfig:
             raise ValueError(f"Unknown trustgraph_metric: {self.trustgraph_metric!r}")
         if self.trustgraph_clip_mode not in {"update", "model"}:
             raise ValueError(f"Unknown trustgraph_clip_mode: {self.trustgraph_clip_mode!r}")
+        if self.trustgraph_delta_mode not in {"sender", "receiver"}:
+            raise ValueError(f"Unknown trustgraph_delta_mode: {self.trustgraph_delta_mode!r}")
         if self.krum_mode not in {"multi", "single"}:
             raise ValueError(f"Unknown krum_mode: {self.krum_mode!r}")
 
@@ -123,11 +126,15 @@ def aggregate_trustgraph(
 
     ref_vec = -val_grad if cfg.val_grad_sign == "descent_neg" else val_grad
 
+    if cfg.trustgraph_delta_mode == "receiver" and self_prev is None:
+        raise ValueError("self_prev is required when trustgraph_delta_mode='receiver'.")
+
     scores: dict[int, float] = {}
     raw_weights: dict[int, float] = {}
     for j in neighbor_ids:
         if cfg.trustgraph_metric == "cosine":
-            s_ij = _cosine_similarity(neighbor_updates[j], ref_vec)
+            cand_delta = (neighbor_posts[j] - self_prev) if cfg.trustgraph_delta_mode == "receiver" else neighbor_updates[j]
+            s_ij = _cosine_similarity(cand_delta, ref_vec)
             scores[j] = s_ij
             if cfg.trustgraph_use_relu:
                 raw_weights[j] = max(0.0, s_ij - cfg.trustgraph_score_threshold)

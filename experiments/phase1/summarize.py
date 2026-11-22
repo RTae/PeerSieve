@@ -64,6 +64,8 @@ def method_label(cfg: dict[str, object]) -> str:
         if cfg.get("trustgraph_clip_norm", False):
             clip_mode = str(cfg.get("trustgraph_clip_mode", "update"))
             parts.append("mclip" if clip_mode == "model" else "clip")
+        if str(cfg.get("trustgraph_delta_mode", "sender")) == "receiver":
+            parts.append("rxdelta")
         thresh = float(cfg.get("trustgraph_score_threshold", 0.0))
         if abs(thresh) > 1e-9:
             parts.append(f"t={thresh:g}")

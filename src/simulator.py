@@ -78,6 +78,7 @@ class ExperimentConfig:
     trustgraph_clip_norm: bool = False
     trustgraph_clip_mode: str = "update"
     trustgraph_clip_factor: float = 2.0
+    trustgraph_delta_mode: str = "sender"
     balance_gamma: float = 0.3
     balance_kappa: float = 1.0
     krum_mode: str = "multi"
@@ -101,6 +102,7 @@ class ExperimentConfig:
             trustgraph_clip_norm=self.trustgraph_clip_norm,
             trustgraph_clip_mode=self.trustgraph_clip_mode,
             trustgraph_clip_factor=self.trustgraph_clip_factor,
+            trustgraph_delta_mode=self.trustgraph_delta_mode,
             balance_gamma=self.balance_gamma,
             balance_kappa=self.balance_kappa,
             krum_mode=self.krum_mode,

@@ -624,6 +624,46 @@ def _build_paper_match_50k(base: ExperimentConfig) -> list[tuple[str, Experiment
     return runs
 
 
+def _build_fpr_lever1(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """FPR Lever 1 diagnostic (8 runs = 1/GPU on 8x A100, ~6 min): receiver-anchored displacement.
+
+    Compares scoring theta_j^{t+1/2} - theta_i^t ('receiver') instead of theta_j^{t+1/2} - theta_j^t
+    ('sender') on full 50k CIFAR-10 (resnet18_pretrained, 25 rounds, grad_clip_norm=10.0, tau=0.003).
+    """
+    base_50k = replace(
+        base,
+        model_name="resnet18_pretrained",
+        samples_per_node=2500,
+        rounds=25,
+        lr=0.005,
+        lr_schedule="cosine",
+        augment=True,
+        grad_clip_norm=10.0,
+        alpha_dir=0.5,
+        val_split="iid",
+        topology="random",
+        byzantine_frac=0.3,
+        eval_batch_size=256,
+        aggregator="trustgraph",
+        val_grad_sign="descent_neg",
+        trustgraph_clip_norm=True,
+        trustgraph_clip_mode="model",
+        trustgraph_clip_factor=2.0,
+        trustgraph_score_threshold=0.003,
+        trustgraph_delta_mode="receiver",
+    )
+    return [
+        ("lever1/none__iidval", replace(base_50k, attack="none", val_split="iid")),
+        ("lever1/none__local", replace(base_50k, attack="none", val_split="local")),
+        ("lever1/label_flip_all_byz30__iidval", replace(base_50k, attack="label_flip_all", byz_local_epochs=2, val_split="iid")),
+        ("lever1/label_flip_all_byz50__iidval", replace(base_50k, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=0.5, val_split="iid")),
+        ("lever1/label_flip_all_byz50__local", replace(base_50k, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=0.5, val_split="local")),
+        ("lever1/label_flip_all_byz50_bep1__iidval", replace(base_50k, attack="label_flip_all", byz_local_epochs=0, byzantine_frac=0.5, val_split="iid")),
+        ("lever1/model_poison__iidval", replace(base_50k, attack="model_poison", val_split="iid")),
+        ("lever1/random_noise__iidval", replace(base_50k, attack="random_noise", val_split="iid")),
+    ]
+
+
 SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]]]] = {
     "smoke": _build_smoke,
     "sign_check": _build_sign_check,
@@ -638,6 +678,7 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
     "paper_match": _build_paper_match,
     "fpr_ceiling_diag": _build_fpr_ceiling_diag,
     "paper_match_50k": _build_paper_match_50k,
+    "fpr_lever1": _build_fpr_lever1,
 }
 
 
@@ -705,6 +746,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--trustgraph-clip-norm", action="store_true")
     p.add_argument("--trustgraph-clip-mode", choices=["update", "model"], default="update")
     p.add_argument("--trustgraph-clip-factor", type=float, default=2.0)
+    p.add_argument("--trustgraph-delta-mode", choices=["sender", "receiver"], default="sender")
     p.add_argument("--balance-gamma", type=float, default=0.3)
     p.add_argument("--balance-kappa", type=float, default=1.0)
     p.add_argument("--krum-mode", choices=["multi", "single"], default="multi")
@@ -759,6 +801,7 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         trustgraph_clip_norm=args.trustgraph_clip_norm,
         trustgraph_clip_mode=args.trustgraph_clip_mode,
         trustgraph_clip_factor=args.trustgraph_clip_factor,
+        trustgraph_delta_mode=args.trustgraph_delta_mode,
         balance_gamma=args.balance_gamma,
         balance_kappa=args.balance_kappa,
         krum_mode=args.krum_mode,
