@@ -6,9 +6,9 @@ Publication-style figures follow the `paper-figures` (`figures4papers`) house st
 
 - **Style module (unedited copy):** `experiments/phase1/figstyle.py`
 - **Project role module:** `experiments/phase1/figroles.py`
-- **Plotting script:** `experiments/phase1/plot_figures.py`
-- **Committed source data:** `report/data/phase1_paper_match_3seed.json`, `report/data/phase1_stabilized_ab_3seed.json`
-- **Outputs:** 300 dpi PNG (with header & footnote) + header-free cropped PDF under `report/figures/`.
+- **Plotting scripts:** `experiments/phase1/plot_figures.py` (`10k`), `experiments/phase1/plot_figures_50k.py` (full `50k`)
+- **Committed source data:** `report/data/phase1_paper_match_3seed.json`, `report/data/phase1_stabilized_ab_3seed.json`, `report/data/phase1_paper_match_50k_3seed.json`
+- **Outputs:** 300 dpi PNG (with header & footnote) + header-free cropped PDF under `report/figures/` (`10k`) and `report/figures_50k/` (full `50k`).
 
 ### Fixed Series Encodings (`figroles.py`)
 

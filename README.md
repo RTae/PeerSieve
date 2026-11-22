@@ -2,12 +2,13 @@
 
 Byzantine-resilient decentralized federated learning (DFL) research codebase built with PyTorch and managed with `uv`.
 
-- **Phase 1 (Complete — 721 A100 Runs Across 3-Seed Audits & Paper-Panel Reproduction):**
+- **Phase 1 (Complete — 887 A100 Runs Across Literal Audit, Stabilized Option C, & 10k/50k Paper-Panel Baselines):**
   - Literal 3-seed CIFAR-10 reproduction audit (`225` runs) of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026): [report/phase1_final.md](report/phase1_final.md).
   - Stabilized 3-seed Option C reproduction (`330` runs across `cnn2x2_gn` + unclipped `resnet18_pretrained`): [report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md).
   - Phase 1c gradient-clipping & validation-regime calibration (`16` runs): [report/phase1c_calibration.md](report/phase1c_calibration.md).
-  - Calibrated 3-seed paper-panel reproduction (`150` runs, `0/150` NaNs, publication-style Fig. 2–4 PNG + PDF): [report/phase1_paper_match.md](report/phase1_paper_match.md).
-  - Phase 1d 50k ceiling & FPR root-cause diagnostic (`16` runs, `0/16` NaNs, `93.06%` clean / `90.8–92.6%` under attacks): [report/phase1d_fpr_ceiling_diag.md](report/phase1d_fpr_ceiling_diag.md).
+  - Calibrated 3-seed `10k` paper-panel reproduction (`150` runs, `0/150` NaNs, `figures4papers` Fig. 2–4): [report/phase1_paper_match.md](report/phase1_paper_match.md).
+  - Phase 1d 50k ceiling & FPR root-cause diagnostic (`16` runs, `0/16` NaNs): [report/phase1d_fpr_ceiling_diag.md](report/phase1d_fpr_ceiling_diag.md).
+  - **Locked strong full-`50k` 3-seed baseline (`150` runs, `0/150` NaNs, `91.5–93.3%` accuracy, `figures4papers` Fig. 2–4 & Table 1):** [report/phase1_paper_match_50k.md](report/phase1_paper_match_50k.md).
 - **Phase 2 (Core Mechanisms Verified Locally; 8-GPU LLM Evaluation Planned):**
   - Core PeerSieve modules implemented & verified against Proposal Table 2 (including 4-process `torch.distributed` Gloo tests): [report/phase2_local_verification.md](report/phase2_local_verification.md).
   - Planned next: eight-GPU TinyLlama-1.1B / Dolly-15k evaluation on `octave`.
@@ -35,7 +36,8 @@ Byzantine-resilient decentralized federated learning (DFL) research codebase bui
 │   ├── phase1/
 │   │   ├── run.py              # CLI runner (single runs, named suites, multi-GPU sharding, --skip-existing)
 │   │   ├── summarize.py        # Aggregates summary.json files into Markdown tables (mean ± std, NaNs)
-│   │   ├── plot_figures.py     # Draws 300 dpi PNG + header-free PDF figures from report/data/*.json
+│   │   ├── plot_figures.py     # Draws 10k 300 dpi PNG + header-free PDF figures from report/data/*.json
+│   │   ├── plot_figures_50k.py # Draws full-50k 300 dpi PNG + header-free PDF figures (figures4papers style)
 │   │   ├── figstyle.py         # figures4papers house style (unedited skill copy)
 │   │   ├── figroles.py         # Fixed method color/marker/dash encodings
 │   │   └── slurm_run.sh        # Multi-GPU Slurm launcher with hardware/git run-record capture
@@ -46,14 +48,16 @@ Byzantine-resilient decentralized federated learning (DFL) research codebase bui
 │   └── test_phase2.py          # Phase 2 unit and 4-process Gloo quarantine/referral tests
 └── report/
     ├── data/                        # Committed 3-seed aggregated JSON datasets
-    ├── figures/                     # Publication-style 300 dpi PNG + header-free PDF figures
+    ├── figures/                     # 10k figures4papers 300 dpi PNG + header-free PDF figures
+    ├── figures_50k/                 # Full-50k figures4papers 300 dpi PNG + header-free PDF figures
     ├── phase1_smoke.md              # Local CPU 5-round CIFAR-10 smoke test & diagnostics
     ├── phase1_step_a.md             # Single-seed (seed 42) 75-run A100 literal reproduction report
     ├── phase1_final.md              # Final 3-seed (225-run) A100 literal reproduction report
     ├── phase1_stabilized_ab.md      # 3-seed (330-run) stabilized CNN + unclipped ResNet-18 report
     ├── phase1c_calibration.md       # Phase 1c grad-clip, validation-regime, & BALANCE calibration report
-    ├── phase1_paper_match.md        # 3-seed (150-run, 0-NaN) paper-panel reproduction & figures
+    ├── phase1_paper_match.md        # 3-seed (150-run, 0-NaN) 10k paper-panel reproduction & figures
     ├── phase1d_fpr_ceiling_diag.md  # Phase 1d 50k ceiling, tau=0.003 FPR, & attack-separation diagnostic
+    ├── phase1_paper_match_50k.md    # Locked 3-seed (150-run, 0-NaN) full-50k TrustGraph-DFL baseline & figures
     └── phase2_local_verification.md # Pre-GPU verification of all 4 PeerSieve mechanisms + Gloo tests
 ```
 
