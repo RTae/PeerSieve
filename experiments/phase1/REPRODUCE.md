@@ -4,7 +4,7 @@ This guide covers environment checks, paper-aligned experiment suites, multi-GPU
 
 ## Environment and quick check
 
-Install dependencies with `uv`, verify the unit and synthetic integration tests, and run the fast smoke suite to confirm the setup.
+Install dependencies with `uv`, run the unit and synthetic integration tests, and run the 4-run smoke suite.
 
 ```bash
 uv sync
@@ -16,7 +16,7 @@ uv run python -m experiments.phase1.run --mode suite --suite smoke --dataset cif
 
 ## Running the experiment suites
 
-All paper-aligned suites live in [suites.py](suites.py) and execute through `experiments.phase1.run`.
+[suites.py](suites.py) defines all paper-aligned experiment suites, and `experiments.phase1.run` runs them.
 
 ```bash
 # Full 50k ResNet-18 suite covering Fig. 2, Fig. 3a, Table 1, Fig. 3b, and Section 5.5 (14 runs/seed, 42 total runs)
@@ -36,7 +36,7 @@ uv run python -m experiments.phase1.run --mode suite --suite fig3b_fpr_rxdelta \
   --dataset cifar10 --eval-every 5 --seeds 42 --output-root outputs/fig3b_fpr_rxdelta
 ```
 
-On the cluster, [slurm_run.sh](slurm_run.sh) shards a suite across all GPUs allocated to the Slurm job and saves job metadata, GPU topology, and `nvidia-smi` records.
+On the cluster, [slurm_run.sh](slurm_run.sh) shards a suite across all GPUs allocated to the Slurm job and records job metadata, GPU topology, and `nvidia-smi` output.
 
 ```bash
 mkdir -p logs
@@ -48,11 +48,11 @@ sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
 
 ## Summarizing results and regenerating figures
 
-Summarize any output directory into aggregated tables, and regenerate all four PNG and header-free PDF figures in `report/figures/` from the committed datasets.
+Generate Markdown summary tables from any run output directory with `summarize.py`. Regenerate all four PNG and header-free PDF figures in `report/figures/` from the committed JSON datasets with `plot_figures.py`.
 
 ```bash
 uv run python -m experiments.phase1.summarize outputs/phase1_50k --title "TrustGraph-DFL Summary"
 uv run python -m experiments.phase1.plot_figures
 ```
 
-Verify that exported PDFs contain no header or footnote text by inspecting them with `pdftotext`.
+Run `pdftotext` on the exported PDFs to confirm they contain no header or footnote text.
