@@ -53,9 +53,6 @@ def method_label(cfg: dict[str, object]) -> str:
     bs = int(cfg.get("batch_size", 64))
     if bs != 64:
         extra.append(f"bs={bs}")
-    mls = int(cfg.get("max_local_steps", 0))
-    if mls > 0:
-        extra.append(f"steps={mls}")
     spn = int(cfg.get("samples_per_node", 500))
     if spn != 500:
         extra.append(f"spn={spn}")
@@ -72,12 +69,6 @@ def method_label(cfg: dict[str, object]) -> str:
             parts.append("mclip" if clip_mode == "model" else "clip")
         if str(cfg.get("trustgraph_delta_mode", "sender")) == "receiver":
             parts.append("rxdelta")
-        scope = str(cfg.get("trustgraph_score_scope", "global"))
-        if scope != "global":
-            parts.append(f"scope={scope}")
-        ema = float(cfg.get("trustgraph_ema_beta", 0.0))
-        if ema > 0.0:
-            parts.append(f"ema={ema:g}")
         thresh = float(cfg.get("trustgraph_score_threshold", 0.0))
         if abs(thresh) > 1e-9:
             parts.append(f"t={thresh:g}")

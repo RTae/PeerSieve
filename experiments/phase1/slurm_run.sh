@@ -6,7 +6,7 @@
 #   mkdir -p logs
 #   sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
 #     --cpus-per-task=32 --mem=128G --time=00:45:00 --open-mode=append --output=logs/%x-%j.out \
-#     experiments/phase1/slurm_run.sh --mode suite --suite full --skip-existing --rounds 200 --eval-every 10 --seeds 42 43 44
+#     experiments/phase1/slurm_run.sh --mode suite --suite paper_resnet18_50k --skip-existing --eval-every 5 --seeds 42 43 44
 
 set -euo pipefail
 

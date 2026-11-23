@@ -41,7 +41,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--grad-clip-norm", type=float, default=0.0)
     p.add_argument("--val-grad-weight-decay", action="store_true")
     p.add_argument("--byz-local-epochs", type=int, default=0)
-    p.add_argument("--max-local-steps", type=int, default=0)
     p.add_argument("--topology", choices=["ring", "random", "small_world"], default="random")
     p.add_argument("--er-p", type=float, default=0.3)
     p.add_argument("--ws-k", type=int, default=4)
@@ -68,12 +67,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--trustgraph-clip-mode", choices=["update", "model"], default="update")
     p.add_argument("--trustgraph-clip-factor", type=float, default=2.0)
     p.add_argument("--trustgraph-delta-mode", choices=["sender", "receiver"], default="sender")
-    p.add_argument(
-        "--trustgraph-score-scope",
-        choices=["global", "layer_mean", "backbone_only", "head_only"],
-        default="global",
-    )
-    p.add_argument("--trustgraph-ema-beta", type=float, default=0.0)
     p.add_argument("--seeds", type=int, nargs="+", default=[42])
     p.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     p.add_argument("--eval-every", type=int, default=5)
@@ -107,7 +100,6 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         grad_clip_norm=args.grad_clip_norm,
         val_grad_weight_decay=args.val_grad_weight_decay,
         byz_local_epochs=args.byz_local_epochs,
-        max_local_steps=args.max_local_steps,
         topology=args.topology,
         er_p=args.er_p,
         ws_k=args.ws_k,
@@ -126,8 +118,6 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         trustgraph_clip_mode=args.trustgraph_clip_mode,
         trustgraph_clip_factor=args.trustgraph_clip_factor,
         trustgraph_delta_mode=args.trustgraph_delta_mode,
-        trustgraph_score_scope=args.trustgraph_score_scope,
-        trustgraph_ema_beta=args.trustgraph_ema_beta,
         device=args.device,
         eval_every=args.eval_every,
         verbose=not args.quiet,

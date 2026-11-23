@@ -1,4 +1,4 @@
-"""Named Phase 1 TrustGraph-DFL experiment suite builders."""
+"""Named Phase 1 TrustGraph-DFL experiment suites aligned with TrustGraph-DFL.pdf."""
 
 from __future__ import annotations
 
@@ -45,14 +45,13 @@ def _tg_50k_overrides(**overrides: object) -> dict[str, object]:
         "trustgraph_clip_factor": 2.0,
         "trustgraph_score_threshold": 0.003,
         "trustgraph_delta_mode": "sender",
-        "trustgraph_score_scope": "global",
     }
     cfg.update(overrides)
     return cfg
 
 
 def _build_smoke(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Fast 4-run TrustGraph-DFL smoke suite (2 attacks x 2 gradient signs)."""
+    """Fast 4-run TrustGraph-DFL sanity suite (2 attacks x 2 gradient signs)."""
     smoke_base = replace(
         base,
         topology="random",
@@ -66,47 +65,47 @@ def _build_smoke(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
     ]
 
 
-def _build_literal_full(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Literal 31-config TrustGraph-DFL audit suite (10k CIFAR-10, 2-conv CNN, 200 rounds)."""
+def _build_paper_cnn_10k(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Literal Section 5 audit (31 configs: 10k CIFAR-10, 2-conv CNN, 200 rounds)."""
     runs: list[tuple[str, ExperimentConfig]] = []
 
-    # 1) Main attacks (8): random ER(0.3), 30% Byzantine, 4 attacks x 2 TrustGraph signs
+    # 1) Fig. 3a main attacks (8): random ER(0.3), 30% Byzantine, 4 attacks x 2 TrustGraph signs
     for atk in ("none", "label_flip", "model_poison", "random_noise"):
         for tag, overrides in TRUSTGRAPH_SIGN_VARIANTS:
             runs.append(
-                (f"main_attacks/{atk}__{tag}", replace(base, topology="random", byzantine_frac=0.3, attack=atk, **overrides))
+                (f"fig3a_attacks/{atk}__{tag}", replace(base, topology="random", byzantine_frac=0.3, attack=atk, **overrides))
             )
 
-    # 2) Additional topologies (4): ring & small_world under label_flip, 30% Byzantine
+    # 2) Table 1 topologies (4): ring & small_world under label_flip, 30% Byzantine
     for topo in ("ring", "small_world"):
         for tag, overrides in TRUSTGRAPH_SIGN_VARIANTS:
             runs.append(
                 (
-                    f"topologies/{topo}__label_flip__{tag}",
+                    f"table1_topologies/{topo}__label_flip__{tag}",
                     replace(base, topology=topo, byzantine_frac=0.3, attack="label_flip", **overrides),
                 )
             )
 
-    # 3) FPR sweep (10): random ER(0.3), label_flip, 10%-50% Byzantine x 2 signs
+    # 3) Fig. 3b Byzantine sweep (10): random ER(0.3), label_flip, 10%-50% Byzantine x 2 signs
     for frac in (0.1, 0.2, 0.3, 0.4, 0.5):
         pct = int(round(frac * 100))
         for tag, overrides in TRUSTGRAPH_SIGN_VARIANTS:
             runs.append(
                 (
-                    f"fpr_sweep/byz{pct}__{tag}",
+                    f"fig3b_byz_sweep/byz{pct}__{tag}",
                     replace(base, topology="random", byzantine_frac=frac, attack="label_flip", **overrides),
                 )
             )
 
-    # 4) Ablations & targeted TrustGraph-DFL diagnostics (9)
+    # 4) Section 5.5 ablations & targeted TrustGraph-DFL diagnostics (9)
     rand_base = replace(base, topology="random", byzantine_frac=0.3)
     tg_mp = replace(rand_base, attack="model_poison", aggregator="trustgraph", val_grad_sign="descent_neg")
     runs.extend(
         [
-            ("ablations/no_relu__model_poison", replace(tg_mp, trustgraph_use_relu=False)),
-            ("ablations/euclidean__model_poison", replace(tg_mp, trustgraph_metric="euclidean")),
-            ("ablations/alpha03__model_poison", replace(tg_mp, alpha=0.3)),
-            ("ablations/alpha07__model_poison", replace(tg_mp, alpha=0.7)),
+            ("sec5_5_ablations/no_relu__model_poison", replace(tg_mp, trustgraph_use_relu=False)),
+            ("sec5_5_ablations/euclidean__model_poison", replace(tg_mp, trustgraph_metric="euclidean")),
+            ("sec5_5_ablations/alpha03__model_poison", replace(tg_mp, alpha=0.3)),
+            ("sec5_5_ablations/alpha07__model_poison", replace(tg_mp, alpha=0.7)),
             ("diagnostics/valiid__label_flip__tg_descent_neg", replace(tg_mp, attack="label_flip", val_split="iid")),
             ("diagnostics/valiid__model_poison__tg_descent_neg", replace(tg_mp, attack="model_poison", val_split="iid")),
             ("diagnostics/label_flip_all__tg_descent_neg", replace(tg_mp, attack="label_flip_all")),
@@ -117,62 +116,66 @@ def _build_literal_full(base: ExperimentConfig) -> list[tuple[str, ExperimentCon
     return runs
 
 
-def _build_paper_match_50k(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Locked strong full-50k CIFAR-10 TrustGraph-DFL baseline (14 runs/seed)."""
+def _build_fig3a_attacks(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Fig. 2 / Fig. 3a (4 runs): clean + 30% Byzantine attacks on 50k ResNet-18."""
     base_50k = _base_50k(base)
     tg_strong = _tg_50k_overrides()
-
-    runs: list[tuple[str, ExperimentConfig]] = []
-    # Panel 1 (4): Fig. 1 main attacks on Random ER (p=0.3, 30% Byzantine)
-    for atk in ("none", "label_flip_all", "model_poison", "random_noise"):
-        bep = 2 if atk == "label_flip_all" else 0
-        runs.append((f"main/{atk}__tg_strong", replace(base_50k, attack=atk, byz_local_epochs=bep, **tg_strong)))
-
-    # Panel 2 (2): Ring & Small-World topologies under label_flip_all (30% Byzantine, bep=2)
-    for topo in ("ring", "small_world"):
-        runs.append(
-            (
-                f"topologies/{topo}__label_flip_all__tg_strong",
-                replace(base_50k, topology=topo, attack="label_flip_all", byz_local_epochs=2, **tg_strong),
-            )
-        )
-
-    # Panel 3 (4): Byzantine stress sweep 10/20/40/50% under label_flip_all (30% in Panel 1)
-    for frac in (0.1, 0.2, 0.4, 0.5):
-        pct = int(round(frac * 100))
-        runs.append(
-            (
-                f"fpr/byz{pct}__tg_strong",
-                replace(base_50k, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=frac, **tg_strong),
-            )
-        )
-
-    # Panel 4 (4): Section 5.5 ablations under model_poison (30% Byzantine)
-    tg_mp = replace(base_50k, attack="model_poison", **tg_strong)
-    runs.extend(
-        [
-            ("ablations/no_relu__model_poison", replace(tg_mp, trustgraph_use_relu=False)),
-            ("ablations/euclidean__model_poison", replace(tg_mp, trustgraph_metric="euclidean", trustgraph_score_threshold=0.0)),
-            ("ablations/alpha03__model_poison", replace(tg_mp, alpha=0.3)),
-            ("ablations/alpha07__model_poison", replace(tg_mp, alpha=0.7)),
-        ]
-    )
-    return runs
-
-
-def _build_fpr_lever1(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Lever 1 (8 runs): receiver-anchored displacement (theta_j^{t+1/2} - theta_i^t)."""
-    cfg = _base_50k(base, **_tg_50k_overrides(trustgraph_delta_mode="receiver"))
     return [
-        ("lever1/none__iidval", replace(cfg, attack="none", val_split="iid")),
-        ("lever1/none__local", replace(cfg, attack="none", val_split="local")),
-        ("lever1/label_flip_all_byz30__iidval", replace(cfg, attack="label_flip_all", byz_local_epochs=2, val_split="iid")),
-        ("lever1/label_flip_all_byz50__iidval", replace(cfg, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=0.5, val_split="iid")),
-        ("lever1/label_flip_all_byz50__local", replace(cfg, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=0.5, val_split="local")),
-        ("lever1/label_flip_all_byz50_bep1__iidval", replace(cfg, attack="label_flip_all", byz_local_epochs=0, byzantine_frac=0.5, val_split="iid")),
-        ("lever1/model_poison__iidval", replace(cfg, attack="model_poison", val_split="iid")),
-        ("lever1/random_noise__iidval", replace(cfg, attack="random_noise", val_split="iid")),
+        (
+            f"fig3a_attacks/{atk}__tg_strong",
+            replace(base_50k, attack=atk, byz_local_epochs=(2 if atk == "label_flip_all" else 0), **tg_strong),
+        )
+        for atk in ("none", "label_flip_all", "model_poison", "random_noise")
     ]
+
+
+def _build_table1_topologies(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Table 1 (3 runs): Ring, Random, Small-World under 30% label_flip_all on 50k ResNet-18."""
+    base_50k = _base_50k(base)
+    tg_strong = _tg_50k_overrides()
+    return [
+        (
+            f"table1_topologies/{topo}__label_flip_all__tg_strong",
+            replace(base_50k, topology=topo, attack="label_flip_all", byz_local_epochs=2, **tg_strong),
+        )
+        for topo in ("ring", "random", "small_world")
+    ]
+
+
+def _build_fig3b_byz_sweep(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Fig. 3b (5 runs): 10% to 50% Byzantine stress sweep under label_flip_all on 50k ResNet-18."""
+    base_50k = _base_50k(base)
+    tg_strong = _tg_50k_overrides()
+    return [
+        (
+            f"fig3b_byz_sweep/byz{int(round(frac * 100))}__tg_strong",
+            replace(base_50k, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=frac, **tg_strong),
+        )
+        for frac in (0.1, 0.2, 0.3, 0.4, 0.5)
+    ]
+
+
+def _build_sec5_5_ablations(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Section 5.5 (5 runs): full alpha=0.5, alpha=0.3, alpha=0.7, Euclidean, No ReLU under model_poison."""
+    base_50k = _base_50k(base)
+    tg_mp = replace(base_50k, attack="model_poison", **_tg_50k_overrides())
+    return [
+        ("sec5_5_ablations/full_alpha05__model_poison", tg_mp),
+        ("sec5_5_ablations/alpha03__model_poison", replace(tg_mp, alpha=0.3)),
+        ("sec5_5_ablations/alpha07__model_poison", replace(tg_mp, alpha=0.7)),
+        ("sec5_5_ablations/euclidean__model_poison", replace(tg_mp, trustgraph_metric="euclidean", trustgraph_score_threshold=0.0)),
+        ("sec5_5_ablations/no_relu__model_poison", replace(tg_mp, trustgraph_use_relu=False)),
+    ]
+
+
+def _build_paper_resnet18_50k(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Full 50k ResNet-18 evaluation (14 deduplicated runs: Fig. 3a, Table 1, Fig. 3b, Section 5.5)."""
+    runs: list[tuple[str, ExperimentConfig]] = []
+    runs.extend(_build_fig3a_attacks(base))
+    runs.extend(r for r in _build_table1_topologies(base) if r[1].topology != "random")
+    runs.extend(r for r in _build_fig3b_byz_sweep(base) if int(round(r[1].byzantine_frac * 100)) != 30)
+    runs.extend(r for r in _build_sec5_5_ablations(base) if not r[0].startswith("sec5_5_ablations/full_alpha05"))
+    return runs
 
 
 def _four_attack_grid(prefix: str, tag: str, cfg: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
@@ -184,59 +187,40 @@ def _four_attack_grid(prefix: str, tag: str, cfg: ExperimentConfig) -> list[tupl
     ]
 
 
-def _build_fpr_lever1b(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Lever 1b (8 runs): tau in {0.02, 0.035} sweep under receiver-anchored displacement."""
-    base_rx = _base_50k(base, **_tg_50k_overrides(trustgraph_delta_mode="receiver"))
-    runs: list[tuple[str, ExperimentConfig]] = []
-    for tau, tag in ((0.02, "t020"), (0.035, "t035")):
-        runs.extend(_four_attack_grid("lever1b", tag, replace(base_rx, trustgraph_score_threshold=tau)))
-    return runs
-
-
-def _build_fpr_lever2(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Lever 2 (8 runs): fewer local SGD steps per round in strict sender mode."""
-    base_sender = _base_50k(base, **_tg_50k_overrides())
-    runs: list[tuple[str, ExperimentConfig]] = []
-    runs.extend(_four_attack_grid("lever2", "bs256_r25", replace(base_sender, batch_size=256, rounds=25, max_local_steps=0, eval_every=5)))
-    runs.extend(_four_attack_grid("lever2", "steps4_r100", replace(base_sender, batch_size=64, rounds=100, max_local_steps=4, eval_every=10)))
-    return runs
-
-
-def _build_fpr_lever3(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Lever 3 (8 runs): layer-mean and subspace (backbone_only / head_only) cosine in sender mode."""
-    base_sender = _base_50k(base, **_tg_50k_overrides())
-    lm = replace(base_sender, trustgraph_score_scope="layer_mean")
-    bb = replace(base_sender, trustgraph_score_scope="backbone_only")
-    hd = replace(base_sender, trustgraph_score_scope="head_only")
-    return _four_attack_grid("lever3", "layer_mean", lm) + [
-        ("lever3/backbone_only__none", replace(bb, attack="none")),
-        ("lever3/backbone_only__label_flip_all_byz30", replace(bb, attack="label_flip_all", byz_local_epochs=2)),
-        ("lever3/backbone_only__model_poison", replace(bb, attack="model_poison")),
-        ("lever3/head_only__label_flip_all_byz30", replace(hd, attack="label_flip_all", byz_local_epochs=2)),
+def _build_fig3b_fpr_rxdelta(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Fig. 3b FPR diagnostic (8 runs): receiver-anchored delta (theta_j^{t+1/2} - theta_i^t)."""
+    cfg = _base_50k(base, **_tg_50k_overrides(trustgraph_delta_mode="receiver"))
+    return [
+        ("fig3b_fpr_rxdelta/none__iidval", replace(cfg, attack="none", val_split="iid")),
+        ("fig3b_fpr_rxdelta/none__local", replace(cfg, attack="none", val_split="local")),
+        ("fig3b_fpr_rxdelta/label_flip_all_byz30__iidval", replace(cfg, attack="label_flip_all", byz_local_epochs=2, val_split="iid")),
+        ("fig3b_fpr_rxdelta/label_flip_all_byz50__iidval", replace(cfg, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=0.5, val_split="iid")),
+        ("fig3b_fpr_rxdelta/label_flip_all_byz50__local", replace(cfg, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=0.5, val_split="local")),
+        ("fig3b_fpr_rxdelta/label_flip_all_byz50_bep1__iidval", replace(cfg, attack="label_flip_all", byz_local_epochs=0, byzantine_frac=0.5, val_split="iid")),
+        ("fig3b_fpr_rxdelta/model_poison__iidval", replace(cfg, attack="model_poison", val_split="iid")),
+        ("fig3b_fpr_rxdelta/random_noise__iidval", replace(cfg, attack="random_noise", val_split="iid")),
     ]
 
 
-def _build_fpr_lever4(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Lever 4 (8 runs): multi-round zero-initialized EMA on consistency scores (beta in {0.7, 0.85})."""
-    base_sender = _base_50k(base, **_tg_50k_overrides())
+def _build_fig3b_fpr_rxdelta_tau(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Fig. 3b FPR diagnostic (8 runs): tau in {0.02, 0.035} sweep under receiver-anchored delta."""
+    base_rx = _base_50k(base, **_tg_50k_overrides(trustgraph_delta_mode="receiver"))
     runs: list[tuple[str, ExperimentConfig]] = []
-    for beta, tag in ((0.7, "ema70"), (0.85, "ema85")):
-        runs.extend(_four_attack_grid("lever4", tag, replace(base_sender, trustgraph_ema_beta=beta)))
+    for tau, tag in ((0.02, "t020"), (0.035, "t035")):
+        runs.extend(_four_attack_grid("fig3b_fpr_rxdelta_tau", tag, replace(base_rx, trustgraph_score_threshold=tau)))
     return runs
 
 
 SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]]]] = {
     "smoke": _build_smoke,
-    "full": _build_literal_full,
-    "literal": _build_literal_full,
-    "step_a": _build_literal_full,
-    "paper_match_50k": _build_paper_match_50k,
-    "baseline_50k": _build_paper_match_50k,
-    "fpr_lever1": _build_fpr_lever1,
-    "fpr_lever1b": _build_fpr_lever1b,
-    "fpr_lever2": _build_fpr_lever2,
-    "fpr_lever3": _build_fpr_lever3,
-    "fpr_lever4": _build_fpr_lever4,
+    "paper_cnn_10k": _build_paper_cnn_10k,
+    "paper_resnet18_50k": _build_paper_resnet18_50k,
+    "fig3a_attacks": _build_fig3a_attacks,
+    "table1_topologies": _build_table1_topologies,
+    "fig3b_byz_sweep": _build_fig3b_byz_sweep,
+    "sec5_5_ablations": _build_sec5_5_ablations,
+    "fig3b_fpr_rxdelta": _build_fig3b_fpr_rxdelta,
+    "fig3b_fpr_rxdelta_tau": _build_fig3b_fpr_rxdelta_tau,
 }
 
 
