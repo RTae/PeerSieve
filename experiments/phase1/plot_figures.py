@@ -324,9 +324,9 @@ def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
     base_mp = _find_baseline_row(data, "model_poison")
     base_curve = data["baseline_50k_3seed"]["curves"]["model_poison__tg_strong"]
 
-    l1_mp = _find_run(runs, "lever1/model_poison__iidval")
-    l1b_t020_mp = _find_run(runs, "lever1b/t020__model_poison")
-    l1b_t035_mp = _find_run(runs, "lever1b/t035__model_poison")
+    rx_t003_mp = _find_run(runs, "fig3b_fpr_rxdelta/model_poison__iidval")
+    rx_t020_mp = _find_run(runs, "fig3b_fpr_rxdelta_tau/t020__model_poison")
+    rx_t035_mp = _find_run(runs, "fig3b_fpr_rxdelta_tau/t035__model_poison")
 
     fig, (ax_trade, ax_traj) = plt.subplots(1, 2, figsize=(15.6, 6.5))
     fs.light_grid(ax_trade, "y")
@@ -337,9 +337,9 @@ def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
 
     base_pt = (float(base_mp["fpr_mean"]), float(base_mp["byz_accept_mean"]))
     rx_pts = [
-        (r"$\tau=0.003$", 100.0 * float(l1_mp["fpr_cumulative"]), 100.0 * float(l1_mp["byz_accept_cumulative"]), (10, 5)),
-        (r"$\tau=0.020$", 100.0 * float(l1b_t020_mp["fpr_cumulative"]), 100.0 * float(l1b_t020_mp["byz_accept_cumulative"]), (10, 5)),
-        (r"$\tau=0.035$", 100.0 * float(l1b_t035_mp["fpr_cumulative"]), 100.0 * float(l1b_t035_mp["byz_accept_cumulative"]), (-6, -22)),
+        (r"$\tau=0.003$", 100.0 * float(rx_t003_mp["fpr_cumulative"]), 100.0 * float(rx_t003_mp["byz_accept_cumulative"]), (10, 5)),
+        (r"$\tau=0.020$", 100.0 * float(rx_t020_mp["fpr_cumulative"]), 100.0 * float(rx_t020_mp["byz_accept_cumulative"]), (10, 5)),
+        (r"$\tau=0.035$", 100.0 * float(rx_t035_mp["fpr_cumulative"]), 100.0 * float(rx_t035_mp["byz_accept_cumulative"]), (-6, -22)),
     ]
 
     print("\n=== Fig. 4(a) Sender vs. rxdelta Trade-off on model_poison (30% Byz, 50k CIFAR-10) ===")
@@ -381,9 +381,9 @@ def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
         h = run["history"]
         return np.array([float(x["round"]) + 1.0 for x in h]), np.array([100.0 * float(x["fpr_round"]) for x in h])
 
-    r_l1, fpr_l1 = _traj(l1_mp)
-    r_l1b_020, fpr_l1b_020 = _traj(l1b_t020_mp)
-    r_l1b_035, fpr_l1b_035 = _traj(l1b_t035_mp)
+    r_rx003, fpr_rx003 = _traj(rx_t003_mp)
+    r_rx020, fpr_rx020 = _traj(rx_t020_mp)
+    r_rx035, fpr_rx035 = _traj(rx_t035_mp)
     marks = [0, 4, 9, 14, 19, 24]
 
     ax_traj.plot(
@@ -392,24 +392,24 @@ def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
     )
     ax_traj.fill_between(rounds_b, np.clip(fpr_b_m - fpr_b_s, 0, 100), np.clip(fpr_b_m + fpr_b_s, 0, 100), color=fs.PALETTE["gray"], alpha=0.14)
     ax_traj.plot(
-        r_l1b_035, fpr_l1b_035, label=r"rxdelta ($\tau=0.035$)",
+        r_rx035, fpr_rx035, label=r"rxdelta ($\tau=0.035$)",
         color=fs.PALETTE["teal"], linestyle="--", marker="D", markevery=marks, markersize=7.0, linewidth=2.4, zorder=4,
     )
     ax_traj.plot(
-        r_l1b_020, fpr_l1b_020, label=r"rxdelta ($\tau=0.020$)",
+        r_rx020, fpr_rx020, label=r"rxdelta ($\tau=0.020$)",
         color=fs.PALETTE["blue_secondary"], linestyle="-.", marker="^", markevery=marks, markersize=7.5, linewidth=2.4, zorder=5,
     )
     ax_traj.plot(
-        r_l1, fpr_l1, label=r"rxdelta ($\tau=0.003$)",
+        r_rx003, fpr_rx003, label=r"rxdelta ($\tau=0.003$)",
         color=fs.PALETTE["blue_main"], linestyle="-", marker="s", markevery=marks, markersize=7.5, linewidth=2.8, zorder=6,
     )
 
     print("\n=== Fig. 4(b) Per-Round FPR Trajectory on model_poison (r=1, 5, 10, 15, 25) ===")
     for name, arr in (
         ("Base sender (3-seed)", fpr_b_m),
-        ("rxdelta (tau=0.035)", fpr_l1b_035),
-        ("rxdelta (tau=0.020)", fpr_l1b_020),
-        ("rxdelta (tau=0.003)", fpr_l1),
+        ("rxdelta (tau=0.035)", fpr_rx035),
+        ("rxdelta (tau=0.020)", fpr_rx020),
+        ("rxdelta (tau=0.003)", fpr_rx003),
     ):
         print(f"  {name:24s}: r1={arr[0]:5.1f}% r5={arr[4]:5.1f}% r10={arr[9]:5.1f}% r15={arr[14]:5.1f}% r25={arr[-1]:5.1f}%")
 

@@ -1,18 +1,18 @@
 {
-  "description": "Receiver-anchored (rxdelta) honest FPR evaluation on full 50k CIFAR-10 ResNet-18 (seed 42)",
+  "description": "Receiver-anchored (rxdelta) FPR evaluation on full 50k CIFAR-10 ResNet-18 (seed 42)",
   "commits": {
-    "lever1": "3361b95",
-    "lever1b": "cb28406",
-    "baseline_50k": "a0be515"
+    "fig3b_fpr_rxdelta": "3361b95",
+    "fig3b_fpr_rxdelta_tau": "cb28406",
+    "paper_resnet18_50k": "a0be515"
   },
   "jobs": {
-    "lever1": {
+    "fig3b_fpr_rxdelta": {
       "job_id": 327344,
-      "suite": "fpr_lever1"
+      "suite": "fig3b_fpr_rxdelta"
     },
-    "lever1b": {
+    "fig3b_fpr_rxdelta_tau": {
       "job_id": 327496,
-      "suite": "fpr_lever1b"
+      "suite": "fig3b_fpr_rxdelta_tau"
     }
   },
   "sacct": [
@@ -20,18 +20,9 @@
     "327344|peersieve_p1_l1|COMPLETED|00:12:37|0:0|",
     "327344.batch|batch|COMPLETED|00:12:37|0:0|20784164K",
     "327344.extern|extern|COMPLETED|00:12:37|0:0|0",
-    "327354|peersieve_p1_l2|COMPLETED|00:06:35|0:0|",
-    "327354.batch|batch|COMPLETED|00:06:35|0:0|20581784K",
-    "327354.extern|extern|COMPLETED|00:06:36|0:0|0",
-    "327486|peersieve_p1_l3|COMPLETED|00:13:47|0:0|",
-    "327486.batch|batch|COMPLETED|00:13:47|0:0|20762556K",
-    "327486.extern|extern|COMPLETED|00:13:47|0:0|0",
     "327496|peersieve_p1_l1b|COMPLETED|00:08:14|0:0|",
     "327496.batch|batch|COMPLETED|00:08:14|0:0|20711916K",
-    "327496.extern|extern|COMPLETED|00:08:14|0:0|0",
-    "327500|peersieve_p1_l4|COMPLETED|00:10:14|0:0|",
-    "327500.batch|batch|COMPLETED|00:10:14|0:0|20682148K",
-    "327500.extern|extern|COMPLETED|00:10:14|0:0|0"
+    "327496.extern|extern|COMPLETED|00:08:14|0:0|0"
   ],
   "total_runs": 16,
   "nan_runs": 0,
@@ -693,8 +684,8 @@
   },
   "runs": [
     {
-      "lever": "lever1",
-      "run_name": "fpr_lever1/lever1/label_flip_all_byz30__iidval",
+      "suite": "fig3b_fpr_rxdelta",
+      "run_name": "fig3b_fpr_rxdelta/label_flip_all_byz30__iidval",
       "config": {
         "attack": "label_flip_all",
         "byzantine_frac": 0.3,
@@ -947,8 +938,8 @@
       ]
     },
     {
-      "lever": "lever1",
-      "run_name": "fpr_lever1/lever1/label_flip_all_byz50__iidval",
+      "suite": "fig3b_fpr_rxdelta",
+      "run_name": "fig3b_fpr_rxdelta/label_flip_all_byz50__iidval",
       "config": {
         "attack": "label_flip_all",
         "byzantine_frac": 0.5,
@@ -1201,8 +1192,8 @@
       ]
     },
     {
-      "lever": "lever1",
-      "run_name": "fpr_lever1/lever1/label_flip_all_byz50__local",
+      "suite": "fig3b_fpr_rxdelta",
+      "run_name": "fig3b_fpr_rxdelta/label_flip_all_byz50__local",
       "config": {
         "attack": "label_flip_all",
         "byzantine_frac": 0.5,
@@ -1455,8 +1446,8 @@
       ]
     },
     {
-      "lever": "lever1",
-      "run_name": "fpr_lever1/lever1/label_flip_all_byz50_bep1__iidval",
+      "suite": "fig3b_fpr_rxdelta",
+      "run_name": "fig3b_fpr_rxdelta/label_flip_all_byz50_bep1__iidval",
       "config": {
         "attack": "label_flip_all",
         "byzantine_frac": 0.5,
@@ -1709,8 +1700,8 @@
       ]
     },
     {
-      "lever": "lever1",
-      "run_name": "fpr_lever1/lever1/model_poison__iidval",
+      "suite": "fig3b_fpr_rxdelta",
+      "run_name": "fig3b_fpr_rxdelta/model_poison__iidval",
       "config": {
         "attack": "model_poison",
         "byzantine_frac": 0.3,
@@ -1963,8 +1954,8 @@
       ]
     },
     {
-      "lever": "lever1",
-      "run_name": "fpr_lever1/lever1/none__iidval",
+      "suite": "fig3b_fpr_rxdelta",
+      "run_name": "fig3b_fpr_rxdelta/none__iidval",
       "config": {
         "attack": "none",
         "byzantine_frac": 0.3,
@@ -2217,8 +2208,8 @@
       ]
     },
     {
-      "lever": "lever1",
-      "run_name": "fpr_lever1/lever1/none__local",
+      "suite": "fig3b_fpr_rxdelta",
+      "run_name": "fig3b_fpr_rxdelta/none__local",
       "config": {
         "attack": "none",
         "byzantine_frac": 0.3,
@@ -2471,8 +2462,8 @@
       ]
     },
     {
-      "lever": "lever1",
-      "run_name": "fpr_lever1/lever1/random_noise__iidval",
+      "suite": "fig3b_fpr_rxdelta",
+      "run_name": "fig3b_fpr_rxdelta/random_noise__iidval",
       "config": {
         "attack": "random_noise",
         "byzantine_frac": 0.3,
@@ -2725,8 +2716,8 @@
       ]
     },
     {
-      "lever": "lever1b",
-      "run_name": "fpr_lever1b/lever1b/t020__label_flip_all_byz30",
+      "suite": "fig3b_fpr_rxdelta_tau",
+      "run_name": "fig3b_fpr_rxdelta_tau/t020__label_flip_all_byz30",
       "config": {
         "attack": "label_flip_all",
         "byzantine_frac": 0.3,
@@ -2979,8 +2970,8 @@
       ]
     },
     {
-      "lever": "lever1b",
-      "run_name": "fpr_lever1b/lever1b/t020__model_poison",
+      "suite": "fig3b_fpr_rxdelta_tau",
+      "run_name": "fig3b_fpr_rxdelta_tau/t020__model_poison",
       "config": {
         "attack": "model_poison",
         "byzantine_frac": 0.3,
@@ -3233,8 +3224,8 @@
       ]
     },
     {
-      "lever": "lever1b",
-      "run_name": "fpr_lever1b/lever1b/t020__none",
+      "suite": "fig3b_fpr_rxdelta_tau",
+      "run_name": "fig3b_fpr_rxdelta_tau/t020__none",
       "config": {
         "attack": "none",
         "byzantine_frac": 0.3,
@@ -3487,8 +3478,8 @@
       ]
     },
     {
-      "lever": "lever1b",
-      "run_name": "fpr_lever1b/lever1b/t020__random_noise",
+      "suite": "fig3b_fpr_rxdelta_tau",
+      "run_name": "fig3b_fpr_rxdelta_tau/t020__random_noise",
       "config": {
         "attack": "random_noise",
         "byzantine_frac": 0.3,
@@ -3741,8 +3732,8 @@
       ]
     },
     {
-      "lever": "lever1b",
-      "run_name": "fpr_lever1b/lever1b/t035__label_flip_all_byz30",
+      "suite": "fig3b_fpr_rxdelta_tau",
+      "run_name": "fig3b_fpr_rxdelta_tau/t035__label_flip_all_byz30",
       "config": {
         "attack": "label_flip_all",
         "byzantine_frac": 0.3,
@@ -3995,8 +3986,8 @@
       ]
     },
     {
-      "lever": "lever1b",
-      "run_name": "fpr_lever1b/lever1b/t035__model_poison",
+      "suite": "fig3b_fpr_rxdelta_tau",
+      "run_name": "fig3b_fpr_rxdelta_tau/t035__model_poison",
       "config": {
         "attack": "model_poison",
         "byzantine_frac": 0.3,
@@ -4249,8 +4240,8 @@
       ]
     },
     {
-      "lever": "lever1b",
-      "run_name": "fpr_lever1b/lever1b/t035__none",
+      "suite": "fig3b_fpr_rxdelta_tau",
+      "run_name": "fig3b_fpr_rxdelta_tau/t035__none",
       "config": {
         "attack": "none",
         "byzantine_frac": 0.3,
@@ -4503,8 +4494,8 @@
       ]
     },
     {
-      "lever": "lever1b",
-      "run_name": "fpr_lever1b/lever1b/t035__random_noise",
+      "suite": "fig3b_fpr_rxdelta_tau",
+      "run_name": "fig3b_fpr_rxdelta_tau/t035__random_noise",
       "config": {
         "attack": "random_noise",
         "byzantine_frac": 0.3,
