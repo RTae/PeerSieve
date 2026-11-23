@@ -152,15 +152,15 @@ The table below measures the exact difference between each target reported in [T
 
 | Metric | Paper target | Literal 10k CNN | Adjusted 50k ResNet-18 | Measured gap (50k vs. paper) |
 |---|---|---|---|---|
-| No-attack accuracy (Fig. 2, Fig. 3a) | About 93.0% | 46.46% peer / 54.84% cons | 91.39% peer / 92.87% cons | -1.6 pts peer, -0.1 pts cons |
-| Label flip, 30% Random (Table 1, §5.2) | 91.2% | 42.07% peer / 52.83% cons | 89.28% peer / 92.38% cons | -1.9 pts peer, +1.2 pts cons |
-| Model poison, 30% Random (§5.2) | 89.5% | 3/3 `NaN` crashes | 88.88% peer / 91.53% cons | -0.6 pts peer, +2.0 pts cons |
-| Random noise, 30% Random (§5.3) | 89% to 93% | 3/3 `NaN` crashes | 88.98% peer / 92.33% cons | Inside 89% to 93% range |
-| Ring topology, 30% label flip (Table 1) | 89.1% | 38.8% peer / 50.6% cons | 84.70% peer / 91.69% cons | -4.4 pts peer, +2.6 pts cons |
-| Small-World, 30% label flip (Table 1) | 90.4% | 43.2% peer / 52.7% cons | 89.48% peer / 92.36% cons | -0.9 pts peer, +2.0 pts cons |
-| FPR at 50% Byzantine, `sender` (Abstract, Fig. 3b) | About 9.0% | 51.23% | 36.17% | +27.2 pts higher FPR |
-| FPR at 50% Byzantine, `rxdelta` + `val=iid` | About 9.0% | Not tested | 6.47% to 6.82% | -2.2 to -2.5 pts (matches target) |
-| Ablation drop, No ReLU / Euclidean (§5.5) | -4.2% / -2.8% | `NaN` crashes | -35.9% / -9.0% | Same ranking, larger drop |
+| No-attack accuracy (Fig. 2, Fig. 3a) | About 93.0% | 46.46% per-peer, 54.84% consensus | 91.39% per-peer, 92.87% consensus | -1.6 per-peer, -0.1 consensus |
+| Label flip, 30% Random (Table 1, §5.2) | 91.2% | 42.07% per-peer, 52.83% consensus | 89.28% per-peer, 92.38% consensus | -1.9 per-peer, +1.2 consensus |
+| Model poison, 30% Random (§5.2) | 89.5% | 3/3 `NaN` crashes | 88.88% per-peer, 91.53% consensus | -0.6 per-peer, +2.0 consensus |
+| Random noise, 30% Random (§5.3) | 89% to 93% | 3/3 `NaN` crashes | 88.98% per-peer, 92.33% consensus | Inside 89% to 93% range |
+| Ring topology, 30% label flip (Table 1) | 89.1% | 38.8% per-peer, 50.6% consensus | 84.70% per-peer, 91.69% consensus | -4.4 per-peer, +2.6 consensus |
+| Small-World, 30% label flip (Table 1) | 90.4% | 43.2% per-peer, 52.7% consensus | 89.48% per-peer, 92.36% consensus | -0.9 per-peer, +2.0 consensus |
+| FPR at 50% Byzantine, `sender` (Abstract, Fig. 3b) | About 9.0% | 51.23% | 36.17% | +27.2 points higher FPR |
+| FPR at 50% Byzantine, `rxdelta` with `val=iid` | About 9.0% | Not tested | 6.47% to 6.82% | -2.2 to -2.5 points (matches target) |
+| Ablation drop, No ReLU and Euclidean (§5.5) | -4.2% and -2.8% | `NaN` crashes | -35.9% and -9.0% | Same ranking, larger drop |
 
 Four practical limitations remain.
 
