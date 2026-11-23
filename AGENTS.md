@@ -2,7 +2,7 @@
 
 ## Scope and source files
 
-This repository contains the PyTorch CIFAR-10 reproduction, robustness audit, and receiver-anchored (`rxdelta`) honest False Positive Rate (FPR) study of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026), managed with `uv`.
+This repository contains the PyTorch CIFAR-10 reproduction, robustness audit, and receiver-anchored (`rxdelta`) False Positive Rate (FPR) study of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026), managed with `uv`.
 
 - **`src/`:** Core synchronous TrustGraph-DFL components — [aggregators.py](src/aggregators.py) (`aggregate_trustgraph`), [attacks.py](src/attacks.py), [data.py](src/data.py), [models.py](src/models.py) (`SimpleCIFARCNN`, `GroupNormCIFARCNN`, `PretrainedResNet18CIFAR`), [simulator.py](src/simulator.py), and [topology.py](src/topology.py).
 - **`experiments/phase1/`:** Suite definitions ([suites.py](experiments/phase1/suites.py)), CLI & multi-GPU sharded runner ([run.py](experiments/phase1/run.py)), summary aggregator ([summarize.py](experiments/phase1/summarize.py)), publication figure generator ([plot_figures.py](experiments/phase1/plot_figures.py)), house style ([figstyle.py](experiments/phase1/figstyle.py), leave unedited), fixed visual encodings ([figroles.py](experiments/phase1/figroles.py)), reproduction guide ([REPRODUCE.md](experiments/phase1/REPRODUCE.md)), and Slurm launcher ([slurm_run.sh](experiments/phase1/slurm_run.sh)).
@@ -19,7 +19,7 @@ Keep `outputs/`, `data/`, and `logs/` out of Git. Do not restore deleted interme
   - Magnitude control: unclipped cosine vs. model-space receiver-norm cap (`mclip 2 r_i`) and `grad_clip_norm=10.0`.
   - Validation split: literal `val=local` (10% local non-IID shard) vs. balanced `val=iid` (250 stratified samples/node on 50k).
   - Reference anchor: strict `sender` ($\theta_j^{t+1/2}-\theta_j^t$) vs. receiver-anchored `rxdelta` ($\theta_j^{t+1/2}-\theta_i^t$).
-  - Accuracy metrics: per-peer benign mean (`Final Acc`) vs. consensus parameter average (`Cons Acc`), alongside honest FPR and Byzantine acceptance rate.
+  - Accuracy metrics: per-peer benign mean (`Final Acc`) vs. consensus parameter average (`Cons Acc`), alongside FPR and Byzantine acceptance rate.
 - Keep `experiments/phase1/figstyle.py` unchanged when drawing figures unless explicitly instructed. Generate figures strictly from committed `report/data/*.json` via `uv run python -m experiments.phase1.plot_figures`, visually inspect generated PNGs for layout clarity, and verify exported PDFs contain no header or footnote text (`pdftotext`).
 
 ## Lab hardware and Slurm

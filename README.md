@@ -72,7 +72,7 @@ All named experiment suites live in [experiments/phase1/suites.py](experiments/p
 | `table1_topologies` | 3 | Table 1 Ring, Random, and Small-World under 30% label flip (50k ResNet-18) |
 | `fig3b_byz_sweep` | 5 | Fig. 3b 10% to 50% Byzantine stress sweep (50k ResNet-18) |
 | `sec5_5_ablations` | 5 | Section 5.5 ablations (full, self-weights 0.3 and 0.7, Euclidean, No ReLU) |
-| `fig3b_fpr_rxdelta` | 8 | Fig. 3b honest FPR with receiver-anchored delta (`rxdelta`, $\tau=0.003$) |
+| `fig3b_fpr_rxdelta` | 8 | Fig. 3b FPR with receiver-anchored delta (`rxdelta`, $\tau=0.003$) |
 | `fig3b_fpr_rxdelta_tau` | 8 | Fig. 3b receiver-anchored threshold sweep ($\tau \in \{0.020, 0.035\}$) |
 
 ### Common CLI flags
@@ -126,7 +126,7 @@ The complete metric-by-metric reproduction report, diagnostic tables, and adjust
 ├── tests/
 │   └── test_phase1.py              # Unit and offline synthetic DFL integration suite
 └── report/
-    ├── phase1_report.md            # Final reproduction and honest FPR report
+    ├── phase1_report.md            # Final reproduction and FPR report
     ├── data/                       # Committed 50k 3-seed and rxdelta FPR JSON datasets
     └── figures/                    # 300 dpi PNG and header-free PDF figures
 ```
