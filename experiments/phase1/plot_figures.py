@@ -203,12 +203,12 @@ def plot_fig2_topologies_and_stress(
     for arr, sd, lbl, col, ls, mk in (
         (cons_m, cons_sd, "Consensus Acc (%)", fs.PALETTE["blue_main"], "-", "o"),
         (peer_m, peer_sd, "Per-Peer Mean Acc (%)", fs.PALETTE["blue_secondary"], "--", "s"),
-        (fpr_m, fpr_sd, "Cumulative Honest FPR (%)", fs.PALETTE["teal"], "-.", "D"),
+        (fpr_m, fpr_sd, "Cumulative FPR (%)", fs.PALETTE["teal"], "-.", "D"),
     ):
         ax_sweep.plot(fracs, arr, label=lbl, color=col, linestyle=ls, marker=mk, markersize=8.0, linewidth=2.6, zorder=4)
         ax_sweep.fill_between(fracs, np.clip(arr - sd, 0, 100), np.clip(arr + sd, 0, 100), color=col, alpha=0.14)
 
-    ax_sweep.set_title("(b) Accuracy & Honest FPR vs. Byzantine Fraction", pad=10, fontweight="bold")
+    ax_sweep.set_title("(b) Accuracy & FPR vs. Byzantine Fraction", pad=10, fontweight="bold")
     ax_sweep.set_xlabel("Byzantine Peer Fraction (%)")
     ax_sweep.set_ylabel("Percentage (%)")
     ax_sweep.set_xticks(fracs)
@@ -234,7 +234,7 @@ def plot_fig3_ablations_and_fpr_dynamics(
     data: dict[str, object],
     out_dir: Path,
 ) -> None:
-    """Fig. 3: Section 5.5 ablations (model_poison) + per-round honest FPR trajectory."""
+    """Fig. 3: Section 5.5 ablations (model_poison) + per-round FPR trajectory."""
     fig, (ax_abl, ax_dyn) = plt.subplots(1, 2, figsize=(14.8, 6.4))
     fs.light_grid(ax_abl, "y")
     fs.light_grid(ax_dyn, "y")
@@ -277,7 +277,7 @@ def plot_fig3_ablations_and_fpr_dynamics(
     ax_abl.set_ylim(0, 108)
 
     curves = data["curves"]
-    print("\n=== Fig. 3(b) (50k) Per-Round Honest FPR Trajectory for TrustGraph-DFL ===")
+    print("\n=== Fig. 3(b) (50k) Per-Round FPR Trajectory for TrustGraph-DFL ===")
     for atk in fr.ATTACK_ORDER:
         c = curves[f"{atk}__tg_strong"]
         rds = np.array(c["fpr_rounds"], dtype=float)
@@ -297,9 +297,9 @@ def plot_fig3_ablations_and_fpr_dynamics(
         ax_dyn.fill_between(rds, np.clip(fm - fsd, 0, 100), np.clip(fm + fsd, 0, 100), color=col, alpha=0.12)
         print(f"  {atk:16s}: r1={fm[0]:.1f}% r5={fm[4]:.1f}% r15={fm[14]:.1f}% r25={fm[-1]:.1f}%")
 
-    ax_dyn.set_title("(b) Per-Round Honest FPR Climbs Near Convergence", pad=10, fontweight="bold")
+    ax_dyn.set_title("(b) Per-Round FPR Climbs Near Convergence", pad=10, fontweight="bold")
     ax_dyn.set_xlabel("Communication Round")
-    ax_dyn.set_ylabel("Per-Round Honest FPR (%)")
+    ax_dyn.set_ylabel("Per-Round FPR (%)")
     ax_dyn.set_xlim(0.5, 25.5)
     ax_dyn.set_xticks([1, 5, 10, 15, 20, 25])
     ax_dyn.set_ylim(0, 75)
@@ -307,12 +307,12 @@ def plot_fig3_ablations_and_fpr_dynamics(
 
     top = fs.header(
         fig,
-        "TrustGraph-DFL Ablations and Per-Round Honest FPR Dynamics (Full 50k CIFAR-10)",
+        "TrustGraph-DFL Ablations and Per-Round FPR Dynamics (Full 50k CIFAR-10)",
         "Pretrained ResNet-18 (2,500/node, Dir alpha=0.5, random ER p=0.3, 30% Byzantine, 25 rounds, 3 seeds)",
     )
     bot = fs.footnote(
         fig,
-        "Left: Removing ReLU drops consensus by 35.9 pp; Euclidean drops 9.0 pp. Right: Honest FPR starts at 0% at round 1 and climbs near convergence.",
+        "Left: Removing ReLU drops consensus by 35.9 pp; Euclidean drops 9.0 pp. Right: FPR starts at 0% at round 1 and climbs near convergence.",
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.4, wspace=0.22)
     fs.save(fig, out_dir, "fig3-ablations-and-fpr-dynamics-50k")
@@ -366,7 +366,7 @@ def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
         ax_trade.annotate(lbl, xy=(x_v, y_v), xytext=off, textcoords="offset points", fontsize=12.0, color=fs.PALETTE["blue_main"], fontweight="bold")
 
     ax_trade.set_title("(a) FPR vs. Byzantine Acceptance (Model Poisoning)", pad=10, fontweight="bold")
-    ax_trade.set_xlabel("Cumulative Honest FPR (%)")
+    ax_trade.set_xlabel("Cumulative FPR (%)")
     ax_trade.set_ylabel("Byzantine Acceptance Rate (%)")
     ax_trade.set_xlim(1, 52)
     ax_trade.set_ylim(20, 50)
@@ -404,7 +404,7 @@ def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
         color=fs.PALETTE["blue_main"], linestyle="-", marker="s", markevery=marks, markersize=7.5, linewidth=2.8, zorder=6,
     )
 
-    print("\n=== Fig. 4(b) Per-Round Honest FPR Trajectory on model_poison (r=1, 5, 10, 15, 25) ===")
+    print("\n=== Fig. 4(b) Per-Round FPR Trajectory on model_poison (r=1, 5, 10, 15, 25) ===")
     for name, arr in (
         ("Base sender (3-seed)", fpr_b_m),
         ("rxdelta (tau=0.035)", fpr_l1b_035),
@@ -413,9 +413,9 @@ def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
     ):
         print(f"  {name:24s}: r1={arr[0]:5.1f}% r5={arr[4]:5.1f}% r10={arr[9]:5.1f}% r15={arr[14]:5.1f}% r25={arr[-1]:5.1f}%")
 
-    ax_traj.set_title("(b) Per-Round Honest FPR Over Training", pad=10, fontweight="bold")
+    ax_traj.set_title("(b) Per-Round FPR Over Training", pad=10, fontweight="bold")
     ax_traj.set_xlabel("Communication Round")
-    ax_traj.set_ylabel("Per-Round Honest FPR (%)")
+    ax_traj.set_ylabel("Per-Round FPR (%)")
     ax_traj.set_xlim(0.5, 25.5)
     ax_traj.set_xticks([1, 5, 10, 15, 20, 25])
     ax_traj.set_ylim(-3, 84)
@@ -428,7 +428,7 @@ def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
     )
     bot = fs.footnote(
         fig,
-        "rxdelta (tau=0.003) brings honest FPR from 43.9% to 7.4% (inside the 3-9% paper target); tau=0.035 beats sender on both FPR (25.7%) and Byz accept (31.7%).",
+        "rxdelta (tau=0.003) brings FPR from 43.9% to 7.4% (inside the 3-9% paper target); tau=0.035 beats sender on both FPR (25.7%) and Byz accept (31.7%).",
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
     fs.save(fig, out_dir, "fig4-fpr-rxdelta-50k")

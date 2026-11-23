@@ -1,4 +1,4 @@
-# Reproducing TrustGraph-DFL Phase 1 experiments
+# Phase 1 experiments
 
 This guide covers environment checks, paper-aligned experiment suites, multi-GPU Slurm execution, and figure regeneration for [report/phase1_report.md](../../report/phase1_report.md).
 
@@ -31,7 +31,7 @@ uv run python -m experiments.phase1.run --mode suite --suite fig3a_attacks \
 uv run python -m experiments.phase1.run --mode suite --suite paper_cnn_10k \
   --dataset cifar10 --rounds 200 --eval-every 10 --seeds 42 43 44 --output-root outputs/phase1_10k
 
-# Fig. 3b honest FPR runs with receiver-anchored delta (8 runs each: fig3b_fpr_rxdelta, fig3b_fpr_rxdelta_tau)
+# Fig. 3b FPR runs with receiver-anchored delta (8 runs each: fig3b_fpr_rxdelta, fig3b_fpr_rxdelta_tau)
 uv run python -m experiments.phase1.run --mode suite --suite fig3b_fpr_rxdelta \
   --dataset cifar10 --eval-every 5 --seeds 42 --output-root outputs/fig3b_fpr_rxdelta
 ```
