@@ -794,6 +794,49 @@ def _build_fpr_lever3(base: ExperimentConfig) -> list[tuple[str, ExperimentConfi
     ]
 
 
+def _build_fpr_lever4(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """FPR Lever 4 diagnostic (8 runs = 1/GPU on 8x A100): multi-round EMA on consistency scores.
+
+    Applies zero-initialized EMA R_ij^t = beta*R_ij^{t-1} + (1-beta)*s_ij^t with beta in {0.7, 0.85}
+    across the 4 main attacks in strict sender mode (val=iid, tau=0.003, 50k CIFAR-10, 25 rounds).
+    """
+    base_sender = replace(
+        base,
+        model_name="resnet18_pretrained",
+        samples_per_node=2500,
+        rounds=25,
+        lr=0.005,
+        lr_schedule="cosine",
+        augment=True,
+        grad_clip_norm=10.0,
+        alpha_dir=0.5,
+        val_split="iid",
+        topology="random",
+        byzantine_frac=0.3,
+        eval_batch_size=256,
+        aggregator="trustgraph",
+        val_grad_sign="descent_neg",
+        trustgraph_clip_norm=True,
+        trustgraph_clip_mode="model",
+        trustgraph_clip_factor=2.0,
+        trustgraph_score_threshold=0.003,
+        trustgraph_delta_mode="sender",
+        trustgraph_score_scope="global",
+    )
+    runs: list[tuple[str, ExperimentConfig]] = []
+    for beta, b_tag in ((0.7, "ema70"), (0.85, "ema85")):
+        cfg_b = replace(base_sender, trustgraph_ema_beta=beta)
+        runs.extend(
+            [
+                (f"lever4/{b_tag}__none", replace(cfg_b, attack="none")),
+                (f"lever4/{b_tag}__label_flip_all_byz30", replace(cfg_b, attack="label_flip_all", byz_local_epochs=2)),
+                (f"lever4/{b_tag}__model_poison", replace(cfg_b, attack="model_poison")),
+                (f"lever4/{b_tag}__random_noise", replace(cfg_b, attack="random_noise")),
+            ]
+        )
+    return runs
+
+
 SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]]]] = {
     "smoke": _build_smoke,
     "sign_check": _build_sign_check,
@@ -812,6 +855,7 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
     "fpr_lever1b": _build_fpr_lever1b,
     "fpr_lever2": _build_fpr_lever2,
     "fpr_lever3": _build_fpr_lever3,
+    "fpr_lever4": _build_fpr_lever4,
 }
 
 
@@ -886,6 +930,7 @@ def parse_args() -> argparse.Namespace:
         choices=["global", "layer_mean", "backbone_only", "head_only"],
         default="global",
     )
+    p.add_argument("--trustgraph-ema-beta", type=float, default=0.0)
     p.add_argument("--balance-gamma", type=float, default=0.3)
     p.add_argument("--balance-kappa", type=float, default=1.0)
     p.add_argument("--krum-mode", choices=["multi", "single"], default="multi")
@@ -943,6 +988,7 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         trustgraph_clip_factor=args.trustgraph_clip_factor,
         trustgraph_delta_mode=args.trustgraph_delta_mode,
         trustgraph_score_scope=args.trustgraph_score_scope,
+        trustgraph_ema_beta=args.trustgraph_ema_beta,
         balance_gamma=args.balance_gamma,
         balance_kappa=args.balance_kappa,
         krum_mode=args.krum_mode,

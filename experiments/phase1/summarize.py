@@ -75,6 +75,9 @@ def method_label(cfg: dict[str, object]) -> str:
         scope = str(cfg.get("trustgraph_score_scope", "global"))
         if scope != "global":
             parts.append(f"scope={scope}")
+        ema = float(cfg.get("trustgraph_ema_beta", 0.0))
+        if ema > 0.0:
+            parts.append(f"ema={ema:g}")
         thresh = float(cfg.get("trustgraph_score_threshold", 0.0))
         if abs(thresh) > 1e-9:
             parts.append(f"t={thresh:g}")

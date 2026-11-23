@@ -83,6 +83,7 @@ class ExperimentConfig:
     trustgraph_clip_factor: float = 2.0
     trustgraph_delta_mode: str = "sender"
     trustgraph_score_scope: str = "global"
+    trustgraph_ema_beta: float = 0.0
     balance_gamma: float = 0.3
     balance_kappa: float = 1.0
     krum_mode: str = "multi"
@@ -108,6 +109,7 @@ class ExperimentConfig:
             trustgraph_clip_factor=self.trustgraph_clip_factor,
             trustgraph_delta_mode=self.trustgraph_delta_mode,
             trustgraph_score_scope=self.trustgraph_score_scope,
+            trustgraph_ema_beta=self.trustgraph_ema_beta,
             balance_gamma=self.balance_gamma,
             balance_kappa=self.balance_kappa,
             krum_mode=self.krum_mode,
@@ -296,6 +298,7 @@ def _aggregation_phase(
     byz_frac_eff: float,
     device: torch.device,
     param_slices: list[ParamSlice] | None = None,
+    ema_scores_by_node: dict[int, dict[int, float]] | None = None,
 ) -> tuple[list[torch.Tensor], _AggregationMetrics]:
     """Run Phase 2/3 scoring and neighborhood aggregation across all benign peers."""
     next_models: list[torch.Tensor] = [vec.clone() for vec in prev_models]
@@ -313,6 +316,7 @@ def _aggregation_phase(
         nbr_posts = {j: post_models[j] for j in nbrs}
         nbr_updates = {j: updates[j] for j in nbrs}
         vg = val_grads.get(i, torch.empty(0, device=device))
+        node_ema = ema_scores_by_node[i] if ema_scores_by_node is not None else None
 
         res = aggregate_node(
             self_id=i,
@@ -328,7 +332,11 @@ def _aggregation_phase(
             self_prev=prev_models[i],
             self_update=updates[i],
             param_slices=param_slices,
+            ema_scores=node_ema,
         )
+        if node_ema is not None and cfg.aggregator == "trustgraph" and cfg.trustgraph_ema_beta > 0.0:
+            for j, sc in res.scores.items():
+                node_ema[j] = sc
         next_models[i] = res.new_model
         if res.self_fallback:
             self_fallbacks += 1
@@ -468,6 +476,7 @@ def run_experiment(
         history_file = open(out_path / "history.jsonl", "w", encoding="utf-8")
 
     history: list[dict[str, object]] = []
+    ema_scores_by_node: dict[int, dict[int, float]] = {i: {} for i in benign_ids}
     cum_benign_zero = 0.0
     cum_benign_pairs = 0
     cum_byz_accept = 0.0
@@ -506,6 +515,7 @@ def run_experiment(
                 byz_frac_eff=byz_frac_eff,
                 device=device,
                 param_slices=param_slices,
+                ema_scores_by_node=ema_scores_by_node,
             )
             if not had_nan and _has_nonfinite_models(node_models, benign_ids):
                 had_nan = True

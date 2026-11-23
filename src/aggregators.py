@@ -30,6 +30,7 @@ class AggregatorConfig:
     trustgraph_clip_factor: float = 2.0  # multiplier on r_i for model-space displacement cap
     trustgraph_delta_mode: str = "sender"  # sender (theta_j^{t+1/2}-theta_j^t) | receiver (theta_j^{t+1/2}-theta_i^t)
     trustgraph_score_scope: str = "global"  # global | layer_mean | backbone_only | head_only
+    trustgraph_ema_beta: float = 0.0  # 0.0 disables EMA; in (0, 1): R_ij^t = beta*R_ij^{t-1} + (1-beta)*s_ij^t
     # BALANCE specific (Fang et al., CCS 2024)
     balance_gamma: float = 0.3
     balance_kappa: float = 1.0
@@ -52,6 +53,8 @@ class AggregatorConfig:
             raise ValueError(f"Unknown trustgraph_delta_mode: {self.trustgraph_delta_mode!r}")
         if self.trustgraph_score_scope not in {"global", "layer_mean", "backbone_only", "head_only"}:
             raise ValueError(f"Unknown trustgraph_score_scope: {self.trustgraph_score_scope!r}")
+        if not (0.0 <= self.trustgraph_ema_beta < 1.0):
+            raise ValueError(f"trustgraph_ema_beta must be in [0, 1); got {self.trustgraph_ema_beta!r}")
         if self.krum_mode not in {"multi", "single"}:
             raise ValueError(f"Unknown krum_mode: {self.krum_mode!r}")
 
@@ -173,6 +176,7 @@ def aggregate_trustgraph(
     self_prev: torch.Tensor | None = None,
     self_update: torch.Tensor | None = None,
     param_slices: Sequence[ParamSlice] | None = None,
+    ema_scores: dict[int, float] | None = None,
 ) -> AggregationResult:
     """TrustGraph-DFL consistency-weighted neighborhood aggregation (Eq. 3-5).
 
@@ -181,6 +185,8 @@ def aggregate_trustgraph(
     - val_grad_sign="descent_neg": corrected descent direction -nabla F_i(theta_i^t; D_i^val)
     - trustgraph_clip_norm=True: PeerSieve Eq. (4) receiver-norm cap on neighbor updates
       a_ij = min(1, ||Delta_theta_i||_2 / ||Delta_theta_j||_2), blended in update space.
+    - trustgraph_ema_beta > 0: multi-round zero-initialized EMA on per-edge cosine scores
+      R_ij^t = beta * R_ij^{t-1} + (1 - beta) * s_ij^t.
     """
     if not neighbor_ids:
         return _self_only_result(self_post, neighbor_ids)
@@ -196,12 +202,17 @@ def aggregate_trustgraph(
         if cfg.trustgraph_metric == "cosine":
             cand_delta = (neighbor_posts[j] - self_prev) if cfg.trustgraph_delta_mode == "receiver" else neighbor_updates[j]
             s_ij = _scoped_cosine_similarity(cand_delta, ref_vec, cfg.trustgraph_score_scope, param_slices)
-            scores[j] = s_ij
+            if cfg.trustgraph_ema_beta > 0.0:
+                prev_r = ema_scores.get(j, 0.0) if ema_scores is not None else 0.0
+                eff_score = cfg.trustgraph_ema_beta * prev_r + (1.0 - cfg.trustgraph_ema_beta) * s_ij
+            else:
+                eff_score = s_ij
+            scores[j] = eff_score
             if cfg.trustgraph_use_relu:
-                raw_weights[j] = max(0.0, s_ij - cfg.trustgraph_score_threshold)
+                raw_weights[j] = max(0.0, eff_score - cfg.trustgraph_score_threshold)
             else:
                 # Ablation without ReLU: map [-1, 1] -> [0, 1] so negative scores retain weight.
-                raw_weights[j] = 0.5 * (s_ij + 1.0)
+                raw_weights[j] = 0.5 * (eff_score + 1.0)
         else:
             # Magnitude-based Euclidean distance ablation (Section 5.5).
             dist = float(torch.linalg.vector_norm(neighbor_posts[j] - self_post).item())
@@ -407,6 +418,7 @@ def aggregate_node(
     self_prev: torch.Tensor | None = None,
     self_update: torch.Tensor | None = None,
     param_slices: Sequence[ParamSlice] | None = None,
+    ema_scores: dict[int, float] | None = None,
 ) -> AggregationResult:
     """Dispatch to the configured decentralized aggregation rule."""
     if cfg.name == "fedavg":
@@ -422,6 +434,7 @@ def aggregate_node(
             self_prev=self_prev,
             self_update=self_update,
             param_slices=param_slices,
+            ema_scores=ema_scores,
         )
     if cfg.name == "balance":
         return aggregate_balance(self_post, neighbor_ids, neighbor_posts, round_idx, total_rounds, cfg)

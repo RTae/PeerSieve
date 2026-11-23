@@ -445,6 +445,16 @@ def test_stabilized_ab_suite_count_and_sharding() -> None:
     }
     assert len(l3_keys) == 8
 
+    l4 = build_suite_runs("fpr_lever4", ExperimentConfig())
+    assert len(l4) == 8
+    assert len({name for name, _ in l4}) == 8
+    assert all(cfg.trustgraph_delta_mode == "sender" and cfg.trustgraph_ema_beta > 0.0 for _, cfg in l4)
+    l4_keys = {
+        (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
+        for _, cfg in l4
+    }
+    assert len(l4_keys) == 8
+
 
 def test_trustgraph_receiver_anchored_delta_mode() -> None:
     self_prev = torch.tensor([0.0, 0.0, 0.0])
@@ -587,6 +597,75 @@ def test_trustgraph_score_scopes() -> None:
             byzantine_frac=0.33,
             aggregator="trustgraph",
             trustgraph_score_scope="layer_mean",
+            device="cpu",
+            verbose=False,
+        )
+    )
+    assert out["summary"]["had_nan"] is False
+
+
+def test_trustgraph_ema_smoothing() -> None:
+    self_prev = torch.zeros(2)
+    self_upd = torch.tensor([1.0, 0.0])
+    self_post = self_prev + self_upd
+    val_grad = torch.tensor([-1.0, 0.0])  # descent_neg -> [+1, 0]
+
+    cfg = AggregatorConfig(
+        name="trustgraph",
+        val_grad_sign="descent_neg",
+        trustgraph_ema_beta=0.8,
+        trustgraph_score_threshold=0.0,
+    )
+    ema: dict[int, float] = {}
+
+    # Round 1: peer 1 aligned (+1.0), peer 2 opposed (-1.0).
+    res1 = aggregate_trustgraph(
+        self_post,
+        val_grad,
+        [1, 2],
+        {1: self_prev + torch.tensor([1.0, 0.0]), 2: self_prev + torch.tensor([-1.0, 0.0])},
+        {1: torch.tensor([1.0, 0.0]), 2: torch.tensor([-1.0, 0.0])},
+        cfg,
+        self_prev=self_prev,
+        self_update=self_upd,
+        ema_scores=ema,
+    )
+    assert math.isclose(res1.scores[1], 0.2, abs_tol=1e-6)
+    assert math.isclose(res1.scores[2], -0.2, abs_tol=1e-6)
+    assert res1.neighbor_weights[1] > 0.99 and res1.neighbor_weights[2] == 0.0
+    ema.update(res1.scores)
+
+    # Round 2: peer 1 has one noisy slightly-negative round (-0.2), peer 2 stays opposed (-1.0).
+    # R_1 = 0.8*0.2 + 0.2*(-0.2) = +0.12 > 0 (honest peer survives single noisy round).
+    # R_2 = 0.8*(-0.2) + 0.2*(-1.0) = -0.36 < 0 (Byzantine peer stays rejected).
+    noisy_u1 = torch.tensor([-0.2, math.sqrt(1.0 - 0.04)])
+    res2 = aggregate_trustgraph(
+        self_post,
+        val_grad,
+        [1, 2],
+        {1: self_prev + noisy_u1, 2: self_prev + torch.tensor([-1.0, 0.0])},
+        {1: noisy_u1, 2: torch.tensor([-1.0, 0.0])},
+        cfg,
+        self_prev=self_prev,
+        self_update=self_upd,
+        ema_scores=ema,
+    )
+    assert math.isclose(res2.scores[1], 0.12, abs_tol=1e-5)
+    assert math.isclose(res2.scores[2], -0.36, abs_tol=1e-5)
+    assert res2.neighbor_weights[1] > 0.99 and res2.neighbor_weights[2] == 0.0
+
+    # End-to-end synthetic run with EMA smoothing.
+    out = run_experiment(
+        ExperimentConfig(
+            dataset="synthetic",
+            n_nodes=6,
+            samples_per_node=40,
+            rounds=3,
+            model_name="cnn2x2_gn",
+            attack="label_flip_all",
+            byzantine_frac=0.33,
+            aggregator="trustgraph",
+            trustgraph_ema_beta=0.7,
             device="cpu",
             verbose=False,
         )
