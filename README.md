@@ -1,6 +1,6 @@
 # TrustGraph-DFL
 
-PyTorch CIFAR-10 implementation of [TrustGraph-DFL.pdf](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026) for Byzantine-resilient decentralized federated learning.
+This repository implements [TrustGraph-DFL.pdf](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026) in PyTorch for Byzantine-resilient decentralized federated learning on CIFAR-10.
 
 | Document | Contents |
 |---|---|
@@ -11,13 +11,13 @@ PyTorch CIFAR-10 implementation of [TrustGraph-DFL.pdf](TrustGraph-DFL.pdf) (Xu 
 
 - Python 3.11 or newer
 - [uv](https://docs.astral.sh/uv/) package manager
-- NVIDIA CUDA GPU recommended for full 50k ResNet-18 training (CPU is sufficient for unit tests and short smoke checks)
+- An NVIDIA CUDA GPU for full 50k ResNet-18 training (a CPU is enough for unit tests and short smoke runs)
 
 ### Dataset and pretrained model
 
-Training requires the CIFAR-10 dataset (stored under `data/cifar-10-batches-py/`). Runs with `--model resnet18_pretrained` also require ImageNet-pretrained `ResNet-18` weights from `torchvision` (`ResNet18_Weights.DEFAULT`, cached under `~/.cache/torch/hub/checkpoints/` or `$TORCH_HOME/hub/checkpoints/`). Models `cnn2x2`, `cnn2x2_gn`, and `resnet18_scratch` need no pretrained weights.
+Training requires the CIFAR-10 dataset, stored under `data/cifar-10-batches-py/`. Runs with `--model resnet18_pretrained` also require ImageNet-pretrained `ResNet-18` weights (`ResNet18_Weights.DEFAULT` from `torchvision`), cached under `~/.cache/torch/hub/checkpoints/` or `$TORCH_HOME/hub/checkpoints/`. Models `cnn2x2`, `cnn2x2_gn`, and `resnet18_scratch` need no pretrained weights.
 
-Online runs download both files automatically on first use. On offline machines or Slurm compute nodes using `--no-download`, run these commands once on an internet-connected node after `uv sync`.
+Online runs download both files on first use. On offline machines or Slurm compute nodes using `--no-download`, run these commands once on an internet-connected node after `uv sync`.
 
 ```bash
 # Download and extract CIFAR-10 into data/cifar-10-batches-py/
@@ -36,7 +36,7 @@ uv sync
 uv run pytest -v
 ```
 
-If working offline after initial setup, pass `--no-sync` (`uv run --no-sync pytest -v`).
+When working offline after setup, run `uv run --no-sync pytest -v`.
 
 ## How to run
 
@@ -61,7 +61,7 @@ uv run python -m experiments.phase1.run \
 
 ### Available suites
 
-All named experiment suites live in [experiments/phase1/suites.py](experiments/phase1/suites.py).
+[experiments/phase1/suites.py](experiments/phase1/suites.py) defines all named experiment suites.
 
 | Suite | Runs per seed | Paper target |
 |---|---:|---|
@@ -77,7 +77,7 @@ All named experiment suites live in [experiments/phase1/suites.py](experiments/p
 
 ### Common CLI flags
 
-Key flags exposed by [experiments/phase1/run.py](experiments/phase1/run.py).
+[experiments/phase1/run.py](experiments/phase1/run.py) accepts the following main options.
 
 | Flag group | Options |
 |---|---|
@@ -94,11 +94,11 @@ uv run python -m experiments.phase1.summarize outputs/phase1_smoke --title "Trus
 uv run python -m experiments.phase1.plot_figures
 ```
 
-For full 50k, 10k, `rxdelta`, and multi-GPU Slurm reproduction commands, follow [experiments/phase1/REPRODUCE.md](experiments/phase1/REPRODUCE.md).
+For full 50k, 10k, `rxdelta`, and multi-GPU Slurm reproduction commands, see [experiments/phase1/REPRODUCE.md](experiments/phase1/REPRODUCE.md).
 
 ## Experiment results
 
-The complete metric-by-metric reproduction report, diagnostic tables, and adjustments sit in [report/phase1_report.md](report/phase1_report.md), backed by committed JSON outputs in [report/data/](report/data/) and PNG/PDF figures in [report/figures/](report/figures/).
+See [report/phase1_report.md](report/phase1_report.md) for the full reproduction results, adjustments, and remaining gaps. The committed JSON datasets are in [report/data/](report/data/), and the PNG and PDF figures are in [report/figures/](report/figures/).
 
 ## Project structure
 
@@ -134,6 +134,6 @@ The complete metric-by-metric reproduction report, diagnostic tables, and adjust
 ## Development
 
 - **Running tests.** Run `uv run --no-sync pytest -v` after any edit under [src/](src/), [experiments/](experiments/), or [tests/](tests/).
-- **Adding experiments.** Define new benchmark grids in [experiments/phase1/suites.py](experiments/phase1/suites.py) and keep core simulator, attack, model, topology, and aggregation primitives in [src/](src/).
-- **Updating figures.** Generate figures strictly from committed JSON datasets via `uv run python -m experiments.phase1.plot_figures`, leave [experiments/phase1/figstyle.py](experiments/phase1/figstyle.py) unchanged, and verify exported PDFs contain no header or footnote text using `pdftotext`.
+- **Adding experiments.** Define new benchmark grids in [experiments/phase1/suites.py](experiments/phase1/suites.py) and keep core simulator, attack, model, topology, and aggregation modules in [src/](src/).
+- **Updating figures.** Generate figures from committed JSON datasets via `uv run python -m experiments.phase1.plot_figures`, leave [experiments/phase1/figstyle.py](experiments/phase1/figstyle.py) unchanged, and confirm exported PDFs contain no header or footnote text using `pdftotext`.
 - **Untracked runtime files.** Keep `outputs/`, `data/`, and `logs/` out of Git.
