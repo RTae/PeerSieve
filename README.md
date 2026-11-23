@@ -2,13 +2,14 @@
 
 Byzantine-resilient decentralized federated learning (DFL) research codebase built with PyTorch and managed with `uv`.
 
-- **Phase 1 (Complete — 887 A100 Runs Across Literal Audit, Stabilized Option C, & 10k/50k Paper-Panel Baselines):**
+- **Phase 1 (Complete — 927 A100 Runs Across Literal Audit, Stabilized Option C, 10k/50k Paper-Panel Baselines, & 4-Lever FPR Study):**
   - Literal 3-seed CIFAR-10 reproduction audit (`225` runs) of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026): [report/phase1_final.md](report/phase1_final.md).
   - Stabilized 3-seed Option C reproduction (`330` runs across `cnn2x2_gn` + unclipped `resnet18_pretrained`): [report/phase1_stabilized_ab.md](report/phase1_stabilized_ab.md).
   - Phase 1c gradient-clipping & validation-regime calibration (`16` runs): [report/phase1c_calibration.md](report/phase1c_calibration.md).
   - Calibrated 3-seed `10k` paper-panel reproduction (`150` runs, `0/150` NaNs, `figures4papers` Fig. 2–4): [report/phase1_paper_match.md](report/phase1_paper_match.md).
   - Phase 1d 50k ceiling & FPR root-cause diagnostic (`16` runs, `0/16` NaNs): [report/phase1d_fpr_ceiling_diag.md](report/phase1d_fpr_ceiling_diag.md).
   - **Locked strong full-`50k` 3-seed baseline (`150` runs, `0/150` NaNs, `91.5–93.3%` accuracy, `figures4papers` Fig. 2–4 & Table 1):** [report/phase1_paper_match_50k.md](report/phase1_paper_match_50k.md).
+  - **Four-lever honest FPR diagnostic (`40` runs, `0/40` NaNs — closes `3–9%` FPR via `rxdelta` & halves `sender` FPR / cuts MP Byz accept to `14.3%` via EMA):** [report/phase1_fpr_levers.md](report/phase1_fpr_levers.md).
 - **Phase 2 (Core Mechanisms Verified Locally; 8-GPU LLM Evaluation Planned):**
   - Core PeerSieve modules implemented & verified against Proposal Table 2 (including 4-process `torch.distributed` Gloo tests): [report/phase2_local_verification.md](report/phase2_local_verification.md).
   - Planned next: eight-GPU TinyLlama-1.1B / Dolly-15k evaluation on `octave`.
@@ -38,6 +39,7 @@ Byzantine-resilient decentralized federated learning (DFL) research codebase bui
 │   │   ├── summarize.py        # Aggregates summary.json files into Markdown tables (mean ± std, NaNs)
 │   │   ├── plot_figures.py     # Draws 10k 300 dpi PNG + header-free PDF figures from report/data/*.json
 │   │   ├── plot_figures_50k.py # Draws full-50k 300 dpi PNG + header-free PDF figures (figures4papers style)
+│   │   ├── plot_fpr_levers.py  # Draws 4-lever FPR diagnostic figure (fig5-fpr-levers-50k)
 │   │   ├── figstyle.py         # figures4papers house style (unedited skill copy)
 │   │   ├── figroles.py         # Fixed method color/marker/dash encodings
 │   │   └── slurm_run.sh        # Multi-GPU Slurm launcher with hardware/git run-record capture
@@ -58,6 +60,7 @@ Byzantine-resilient decentralized federated learning (DFL) research codebase bui
     ├── phase1_paper_match.md        # 3-seed (150-run, 0-NaN) 10k paper-panel reproduction & figures
     ├── phase1d_fpr_ceiling_diag.md  # Phase 1d 50k ceiling, tau=0.003 FPR, & attack-separation diagnostic
     ├── phase1_paper_match_50k.md    # Locked 3-seed (150-run, 0-NaN) full-50k TrustGraph-DFL baseline & figures
+    ├── phase1_fpr_levers.md         # Four-lever honest FPR diagnostic (40 A100 runs, fig5-fpr-levers-50k)
     └── phase2_local_verification.md # Pre-GPU verification of all 4 PeerSieve mechanisms + Gloo tests
 ```
 
