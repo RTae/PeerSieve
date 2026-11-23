@@ -159,28 +159,4 @@ Below is the literal 10k 2-conv CNN 3-seed audit (200 rounds, Random ER $p = 0.3
 | Random noise ($\sigma=0.5$) | Corrected, unclipped | 10.00 ± 0.00 | 10.00 ± 0.00 | 99.40 ± 0.14 | 0.79 ± 0.10 | 3/3 |
 | Random noise ($\sigma=0.5$) | Corrected + norm clip | 28.76 ± 0.66 | 40.56 ± 0.44 | 62.22 ± 2.57 | 49.69 ± 0.18 | 0/3 |
 
----
-
-## Run records and reproducibility
-
-| Experiment batch | Scope and seeds | Slurm job IDs, wall times, and memory | Git commits | Runs / `NaN`s |
-|---|---|---|---|---|
-| Literal 10k 2-conv CNN audit | 200 rounds, seeds 42, 43, 44 | `327259`, `327261`, `327264` | `9c05b8b` | 3 seeds (`NaN`s on unclipped attacks only) |
-| Locked 50k ResNet-18 evaluation (`paper_match_50k`) | 14 configurations, seeds 42, 43, 44 | `327299` (`00:42:46`, 20.7 GB), `327300` (`00:42:35`, 17.3 GB), `327301` (`00:41:26`, 17.3 GB) | `a0be515` | 42 runs, 0 `NaN`s |
-| Four-lever FPR diagnostic (`fpr_lever1` through `fpr_lever4`) | 5 suites, seed 42 (timing median 338.6s, range 164.6s to 517.1s) | `327344` (`00:12:37`), `327496` (`00:08:14`), `327354` (`00:06:35`), `327486` (`00:13:47`), `327500` (`00:10:14`) | `3361b95`, `e26337e`, `cb28406`, `ce87e28` | 40 runs, 0 `NaN`s |
-
-The committed datasets are [data/phase1_paper_match_50k_3seed.json](data/phase1_paper_match_50k_3seed.json) and [data/phase1_fpr_levers.json](data/phase1_fpr_levers.json), and the figure script is [../experiments/phase1/plot_figures.py](../experiments/phase1/plot_figures.py).
-
-```bash
-# Locked 14-config TrustGraph-DFL 50k suite (per seed)
-uv run python -m experiments.phase1.run --mode suite --suite paper_match_50k \
-  --dataset cifar10 --eval-every 5 --seeds 42 43 44 --output-root outputs/phase1_50k
-
-# Any 8-run FPR diagnostic (fpr_lever1, fpr_lever1b, fpr_lever2, fpr_lever3, fpr_lever4)
-uv run python -m experiments.phase1.run --mode suite --suite fpr_lever1 \
-  --dataset cifar10 --eval-every 5 --seeds 42 --output-root outputs/phase1_fpr_lever1
-
-# Summarize runs and regenerate all 4 TrustGraph-DFL figures
-uv run python -m experiments.phase1.summarize outputs/phase1_50k --title "TrustGraph-DFL Summary"
-uv run python -m experiments.phase1.plot_figures
-```
+For Slurm run records, committed JSON data, and commands to reproduce every run and figure, see [experiments/phase1/REPRODUCE.md](../experiments/phase1/REPRODUCE.md).
