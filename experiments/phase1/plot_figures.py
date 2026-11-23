@@ -98,7 +98,7 @@ def plot_fig1_attacks(
     ax_conv.set_ylim(35, 98)
     ax_conv.legend(loc="lower right", ncol=1)
 
-    short_labels = ["Clean\n(None)", "Label Flip\n($E_b=2$)", "Model Poison\n($\\lambda=10$)", "Random Noise\n($\\sigma=0.5$)"]
+    short_labels = ["No Attack\n(0% Byz)", "Label Flip\n($E_b=2$)", "Model Poison\n($\\lambda=10$)", "Random Noise\n($\\sigma=0.5$)"]
     x = np.arange(len(fr.ATTACK_ORDER), dtype=float)
     w = 0.34
     peer_m = [float(rows_idx[("random", a, 30, "tg_stab")]["acc_mean"]) for a in fr.ATTACK_ORDER]

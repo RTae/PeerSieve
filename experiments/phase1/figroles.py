@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from experiments.phase1.figstyle import PALETTE
 
-# Attack series styling (clean reference in gray, active attacks in blue/teal/red)
+# Attack series styling (no-attack reference in gray, active attacks in blue/teal/red)
 ATTACK_COLOR: dict[str, str] = {
     "none": PALETTE["gray"],
     "label_flip_all": PALETTE["blue_main"],
@@ -30,7 +30,7 @@ ATTACK_LINESTYLE: dict[str, str] = {
 }
 
 ATTACK_LABEL: dict[str, str] = {
-    "none": "Clean (No Attack)",
+    "none": "No Attack",
     "label_flip_all": "Label Flipping ($E_b=2$)",
     "model_poison": "Model Poisoning ($\\lambda=10$)",
     "random_noise": "Random Noise ($\\sigma=0.5$)",
