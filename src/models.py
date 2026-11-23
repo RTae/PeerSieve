@@ -69,25 +69,6 @@ class GroupNormCIFARCNN(nn.Module):
         return self.fc2(x)
 
 
-class LeNetCIFARCNN(nn.Module):
-    """Lighter 2-conv, 2-FC LeNet-style CNN for 32x32 CIFAR-10 images."""
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=5)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=5)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.fc1 = nn.Linear(64 * 5 * 5, 128)
-        self.fc2 = nn.Linear(128, num_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1)
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
-
-
 class PretrainedResNet18CIFAR(nn.Module):
     """ImageNet-pretrained ResNet-18 adapted for 32x32 CIFAR-10 in DFL.
 
@@ -128,8 +109,6 @@ def build_model(name: str = "cnn2x2", num_classes: int = 10) -> nn.Module:
         return SimpleCIFARCNN(num_classes=num_classes)
     if name == "cnn2x2_gn":
         return GroupNormCIFARCNN(num_classes=num_classes)
-    if name == "lenet2x2":
-        return LeNetCIFARCNN(num_classes=num_classes)
     if name == "resnet18_pretrained":
         return PretrainedResNet18CIFAR(num_classes=num_classes, pretrained=True)
     if name == "resnet18_scratch":

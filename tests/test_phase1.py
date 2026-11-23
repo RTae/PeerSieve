@@ -376,84 +376,47 @@ def test_model_space_clip_and_stabilized_models() -> None:
     assert rn(xb).shape == (4, 10)
 
 
-def test_stabilized_ab_suite_count_and_sharding() -> None:
-    runs = build_suite_runs("stabilized_ab", ExperimentConfig(grad_clip_norm=1.0))
-    assert len(runs) == 110
-    assert all(cfg.grad_clip_norm == 1.0 for _, cfg in runs)
-    names = [name for name, _ in runs]
-    assert len(names) == len(set(names))
-    sharded = [[name for idx, (name, _) in enumerate(runs) if idx % 8 == s] for s in range(8)]
-    assert sum(len(x) for x in sharded) == 110
-    assert set().union(*sharded) == set(names)
-
-    calib = build_suite_runs("paper_match_calib", ExperimentConfig())
-    assert len(calib) == 16
-    assert len({name for name, _ in calib}) == 16
-    assert all(cfg.grad_clip_norm == 1.0 for _, cfg in calib)
-
-    pm = build_suite_runs("paper_match", ExperimentConfig())
-    assert len(pm) == 50
-    assert len({name for name, _ in pm}) == 50
-    assert all(cfg.grad_clip_norm == 10.0 for _, cfg in pm)
-
-    diag = build_suite_runs("fpr_ceiling_diag", ExperimentConfig())
-    assert len(diag) == 16
-    assert len({name for name, _ in diag}) == 16
-    assert sum(1 for _, cfg in diag if cfg.samples_per_node == 500) == 8
-    assert sum(1 for _, cfg in diag if cfg.samples_per_node == 2500) == 8
-
-    pm50 = build_suite_runs("paper_match_50k", ExperimentConfig())
-    assert len(pm50) == 50
-    assert len({name for name, _ in pm50}) == 50
-    assert all(cfg.samples_per_node == 2500 and cfg.rounds == 25 and cfg.grad_clip_norm == 10.0 for _, cfg in pm50)
-
-    l1 = build_suite_runs("fpr_lever1", ExperimentConfig())
-    assert len(l1) == 8
-    assert len({name for name, _ in l1}) == 8
-    assert all(cfg.trustgraph_delta_mode == "receiver" for _, cfg in l1)
-
+def test_phase1_suite_counts_and_sharding() -> None:
     from dataclasses import asdict
     from experiments.phase1.summarize import method_label
 
-    l1b = build_suite_runs("fpr_lever1b", ExperimentConfig())
-    assert len(l1b) == 8
-    assert len({name for name, _ in l1b}) == 8
-    assert all(cfg.trustgraph_delta_mode == "receiver" for _, cfg in l1b)
-    l1b_keys = {
-        (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
-        for _, cfg in l1b
-    }
-    assert len(l1b_keys) == 8
+    runs_full = build_suite_runs("full", ExperimentConfig())
+    runs_literal = build_suite_runs("literal", ExperimentConfig())
+    runs_step_a = build_suite_runs("step_a", ExperimentConfig())
+    assert len(runs_full) == 75
+    assert [n for n, _ in runs_full] == [n for n, _ in runs_literal]
+    assert [n for n, _ in runs_full] == [n for n, _ in runs_step_a]
+    names = [name for name, _ in runs_full]
+    assert len(names) == len(set(names))
+    sharded = [[name for idx, (name, _) in enumerate(runs_full) if idx % 4 == s] for s in range(4)]
+    assert sum(len(x) for x in sharded) == 75
+    assert set().union(*sharded) == set(names)
 
-    l2 = build_suite_runs("fpr_lever2", ExperimentConfig())
-    assert len(l2) == 8
-    assert len({name for name, _ in l2}) == 8
-    assert all(cfg.trustgraph_delta_mode == "sender" for _, cfg in l2)
-    l2_keys = {
-        (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
-        for _, cfg in l2
-    }
-    assert len(l2_keys) == 8
+    pm50 = build_suite_runs("paper_match_50k", ExperimentConfig())
+    bm50 = build_suite_runs("baseline_50k", ExperimentConfig())
+    assert len(pm50) == 50
+    assert [n for n, _ in pm50] == [n for n, _ in bm50]
+    assert len({name for name, _ in pm50}) == 50
+    assert all(cfg.samples_per_node == 2500 and cfg.rounds == 25 and cfg.grad_clip_norm == 10.0 for _, cfg in pm50)
 
-    l3 = build_suite_runs("fpr_lever3", ExperimentConfig())
-    assert len(l3) == 8
-    assert len({name for name, _ in l3}) == 8
-    assert all(cfg.trustgraph_delta_mode == "sender" for _, cfg in l3)
-    l3_keys = {
-        (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
-        for _, cfg in l3
-    }
-    assert len(l3_keys) == 8
-
-    l4 = build_suite_runs("fpr_lever4", ExperimentConfig())
-    assert len(l4) == 8
-    assert len({name for name, _ in l4}) == 8
-    assert all(cfg.trustgraph_delta_mode == "sender" and cfg.trustgraph_ema_beta > 0.0 for _, cfg in l4)
-    l4_keys = {
-        (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
-        for _, cfg in l4
-    }
-    assert len(l4_keys) == 8
+    for suite_name, expected_delta, expect_ema in (
+        ("fpr_lever1", "receiver", False),
+        ("fpr_lever1b", "receiver", False),
+        ("fpr_lever2", "sender", False),
+        ("fpr_lever3", "sender", False),
+        ("fpr_lever4", "sender", True),
+    ):
+        suite_runs = build_suite_runs(suite_name, ExperimentConfig())
+        assert len(suite_runs) == 8
+        assert len({name for name, _ in suite_runs}) == 8
+        assert all(cfg.trustgraph_delta_mode == expected_delta for _, cfg in suite_runs)
+        if expect_ema:
+            assert all(cfg.trustgraph_ema_beta > 0.0 for _, cfg in suite_runs)
+        keys = {
+            (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
+            for _, cfg in suite_runs
+        }
+        assert len(keys) == 8
 
 
 def test_trustgraph_receiver_anchored_delta_mode() -> None:
