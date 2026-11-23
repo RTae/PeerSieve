@@ -121,44 +121,52 @@ Scoring updates relative to the receiver's weights (`rxdelta`, $\theta_j^{t+1/2}
 
 ---
 
-## 7. What we adjusted to reach these results
+## 7. What we changed to reach these results
 
-Reproducing the paper's 91% to 93% accuracy and zero-`NaN` robustness required seven changes from the literal paper setup.
+When we ran the exact setup written in the paper (10,000 CIFAR-10 images and a small 2-convolution CNN), accuracy stopped near 55% and scaled attacks crashed with `NaN` weights. To match the paper's 91% to 93% accuracy with zero crashes, we made four main changes.
 
-| Setting | Literal paper setup | Adjusted setup | Why we changed it |
-|---|---|---|---|
-| Dataset | 10,000 CIFAR-10 images, 500 per peer | 50,000 CIFAR-10 images, 2,500 per peer with crop and flip augmentation | 10,000 images limits no-attack consensus accuracy to about 55% |
-| Model and schedule | 2-conv `SimpleCIFARCNN` (1.07M parameters), 200 rounds | ImageNet-pretrained `ResNet-18`, 25 rounds, cosine learning rate 0.005 | Required to reach the 91% to 93% accuracy range |
-| Validation gradient sign | $+\nabla F_i$ (Algorithm 1, Eq. 3) | $-\nabla F_i$ (descent direction) | $+\nabla F_i$ points opposite to SGD updates and diverges at round 8 under model poisoning |
-| Magnitude bounds | Unclipped cosine similarity | Gradient clip 10.0, receiver update norm cap $2 r_i$, $\tau = 0.003$ | Unclipped cosine ignores attack scale and causes 3/3 `NaN` crashes on poisoning and noise |
-| Validation split | `val=local`, 10% skewed local shard | `val=iid`, 250 class-balanced images per peer | Non-IID `val=local` keeps FPR at 37% to 53% in both 10k and 50k runs |
-| Label-flipping attack | Two-class `0<->1` flip | All-class flip, 2 attacker epochs | `0<->1` flipping is mild; all-class flipping with 2 attacker epochs tests the filter under stronger attack |
-| FPR scoring rule | Single-round `sender` delta | Receiver-anchored `rxdelta` ($\tau=0.003$ for 7% to 9% FPR, $\tau=0.035$ for lower attack acceptance) | Non-IID single-round `sender` cosine keeps FPR near 40% |
+1. **Larger model and full dataset.** We switched from the 2-convolution CNN on 10,000 images to an ImageNet-pretrained ResNet-18 on all 50,000 CIFAR-10 images with standard crop and horizontal flip augmentation. Without this change, even no-attack training reached only 46.46% per-peer and 54.84% consensus accuracy.
+2. **Fixed validation gradient sign.** Algorithm 1 in the paper uses $+\nabla F_i$, which points toward higher loss, opposite to how SGD updates move. Flipping the sign to $-\nabla F_i$ fixes the direction. On 10k label flipping, it raises consensus accuracy from 51.27% to 52.83% and cuts Byzantine acceptance from 59.16% to 43.45% (and beats $+\nabla F_i$ by 1.0 to 2.5 percentage points across 10% to 50% Byzantine peers).
+3. **Gradient and update norm clipping.** Cosine similarity checks angle only and ignores update size. Without clipping, large model-poisoning ($\lambda=10$) and random-noise ($\sigma=0.5$) updates overflowed weights and caused 3/3 `NaN` crashes. Clipping local gradients at norm 10.0, capping each neighbor update at twice the peer's own update norm, and setting a small positive threshold ($\tau=0.003$) removed every `NaN` crash (0/42 runs).
+4. **Balanced validation set and receiver-anchored scoring (`rxdelta`).** Holding out 10% of each peer's skewed local shard (`val=local`) kept FPR at 37% to 53%. Switching to a 250-image class-balanced validation set (`val=iid`) and scoring neighbors relative to the receiver's weights (`rxdelta`) lowered FPR from about 40% into 6.5% to 9.5%. We also used all-class label flipping for 2 attacker epochs because two-class `0<->1` flipping barely affected ResNet-18.
 
-The table below lists the literal 10k 2-conv CNN results across 3 seeds and 200 rounds on a Random Erdos-Renyi graph with $p = 0.3$. Those runs measured the accuracy limit, the $+\nabla F_i$ sign bug, and the unclipped `NaN` crashes. Across 10% to 50% label flipping, $-\nabla F_i$ outperforms $+\nabla F_i$ by 1.0 to 2.5 percentage points in consensus accuracy, reaching 52.06% to 54.75%, with 10 to 24 percentage points lower Byzantine acceptance (43.3% to 46.6% versus 55.5% to 67.1%).
+The table below shows the literal 10k 2-conv CNN audit (3 seeds, 200 rounds, Random graph) that exposed the 55% accuracy limit, the sign bug, and the unclipped `NaN` crashes.
 
-| Attack (30% Byzantine unless none) | Validation variant | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | `NaN` runs |
+| Attack (30% Byzantine unless none) | Variant tested | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | `NaN` runs |
 |---|---|---:|---:|---:|---:|---:|
-| No attack (`none`) | Corrected ($-\nabla F_i$) | 46.46 ± 0.85 | 54.84 ± 0.47 | 50.54 ± 2.30 | 0.00 | 0/3 |
-| No attack (`none`) | Literal ($+\nabla F_i$) | 46.51 ± 1.42 | 54.70 ± 0.62 | 45.18 ± 2.80 | 0.00 | 0/3 |
-| Label flip (`0<->1`) | Corrected ($-\nabla F_i$) | 42.07 ± 0.23 | 52.83 ± 0.16 | 51.38 ± 2.50 | 43.45 ± 1.64 | 0/3 |
-| Label flip (`0<->1`) | Literal ($+\nabla F_i$) | 43.41 ± 0.95 | 51.27 ± 1.61 | 46.68 ± 5.55 | 59.16 ± 5.73 | 0/3 |
-| Label flip (`0<->1`) | Corrected with balanced validation (`val=iid`) | 45.67 ± 0.62 | 52.76 ± 0.48 | 42.28 ± 0.86 | 53.93 ± 4.55 | 0/3 |
-| Model poison ($\lambda=10$) | Corrected, unclipped | 12.01 ± 2.85 | 10.00 ± 0.00 | 88.18 ± 2.25 | 2.83 ± 0.87 | 3/3 |
-| Model poison ($\lambda=10$) | Corrected with norm clip | 26.39 ± 0.33 | 13.97 ± 5.64 | 77.00 ± 0.78 | 79.87 ± 1.12 | 0/3 |
-| Random noise ($\sigma=0.5$) | Corrected, unclipped | 10.00 ± 0.00 | 10.00 ± 0.00 | 99.40 ± 0.14 | 0.79 ± 0.10 | 3/3 |
-| Random noise ($\sigma=0.5$) | Corrected with norm clip | 28.76 ± 0.66 | 40.56 ± 0.44 | 62.22 ± 2.57 | 49.69 ± 0.18 | 0/3 |
+| No attack | Fixed sign ($-\nabla F_i$) | 46.46 ± 0.85 | 54.84 ± 0.47 | 50.54 ± 2.30 | 0.00 | 0/3 |
+| No attack | Paper sign ($+\nabla F_i$) | 46.51 ± 1.42 | 54.70 ± 0.62 | 45.18 ± 2.80 | 0.00 | 0/3 |
+| Label flip (`0<->1`) | Fixed sign ($-\nabla F_i$) | 42.07 ± 0.23 | 52.83 ± 0.16 | 51.38 ± 2.50 | 43.45 ± 1.64 | 0/3 |
+| Label flip (`0<->1`) | Paper sign ($+\nabla F_i$) | 43.41 ± 0.95 | 51.27 ± 1.61 | 46.68 ± 5.55 | 59.16 ± 5.73 | 0/3 |
+| Label flip (`0<->1`) | Fixed sign with balanced validation | 45.67 ± 0.62 | 52.76 ± 0.48 | 42.28 ± 0.86 | 53.93 ± 4.55 | 0/3 |
+| Model poison ($\lambda=10$) | Fixed sign, unclipped | 12.01 ± 2.85 | 10.00 ± 0.00 | 88.18 ± 2.25 | 2.83 ± 0.87 | 3/3 |
+| Model poison ($\lambda=10$) | Fixed sign with norm clip | 26.39 ± 0.33 | 13.97 ± 5.64 | 77.00 ± 0.78 | 79.87 ± 1.12 | 0/3 |
+| Random noise ($\sigma=0.5$) | Fixed sign, unclipped | 10.00 ± 0.00 | 10.00 ± 0.00 | 99.40 ± 0.14 | 0.79 ± 0.10 | 3/3 |
+| Random noise ($\sigma=0.5$) | Fixed sign with norm clip | 28.76 ± 0.66 | 40.56 ± 0.44 | 62.22 ± 2.57 | 49.69 ± 0.18 | 0/3 |
 
 ---
 
-## 8. Current gaps and limitations
+## 8. Measured gaps and limitations
 
-Five gaps and limitations remain relative to the literal paper.
+The table below measures the exact difference between each target reported in [TrustGraph-DFL.pdf](../TrustGraph-DFL.pdf) and our runs. Negative accuracy gaps mean our run is lower than the paper; positive FPR gaps mean our run rejects more honest peers than the paper.
 
-- **Model and dataset accuracy gap.** The paper's 2-conv CNN on 10,000 CIFAR-10 images reaches at most 46.46% per-peer accuracy and 54.84% consensus accuracy, which is 38 to 47 percentage points below 93%. Reaching 91% to 93% requires all 50,000 training images and an ImageNet-pretrained ResNet-18.
-- **Default `sender`-mode FPR gap and `rxdelta` trade-off.** Under strict `sender` updates ($\theta_j^{t+1/2} - \theta_j^t$), FPR remains at 36.2% to 43.9% rather than 3% to 9%. Switching to `rxdelta` ($\theta_j^{t+1/2} - \theta_i^t$) at $\tau = 0.003$ lowers FPR to 6.5% to 9.5%, but raises late-round Byzantine acceptance to 61.58% on label flipping and 41.26% on model poisoning. Raising $\tau$ to 0.035 reduces Byzantine acceptance below the `sender` baseline (31.68% on model poisoning and 39.16% on label flipping), but raises FPR back to 22.3% to 28.6%.
-- **Balanced validation dependency.** Holding out 10% of each peer's skewed local data (`val=local`), as written in the paper, leaves FPR between 36.9% and 53.5% across both 10k and 50k runs, even with `rxdelta`. Low FPR requires a small class-balanced validation set (`val=iid`).
-- **Ring topology per-peer accuracy gap.** Under 30% label flipping on a degree-2 Ring graph, consensus accuracy reaches 91.69%, while per-peer accuracy reaches 84.70%, 4.4 percentage points below the 89.1% reported in Table 1.
-- **Single-seed `rxdelta` evaluation.** The 50k baseline, topology, sweep, and ablation results average seeds 42, 43, and 44, whereas the 16 `rxdelta` runs use seed 42 only.
+| Metric | Paper target | Literal 10k CNN | Adjusted 50k ResNet-18 | Measured gap (50k vs. paper) |
+|---|---|---|---|---|
+| No-attack accuracy (Fig. 2, Fig. 3a) | About 93.0% | 46.46% peer / 54.84% cons | 91.39% peer / 92.87% cons | -1.6 pts peer, -0.1 pts cons |
+| Label flip, 30% Random (Table 1, §5.2) | 91.2% | 42.07% peer / 52.83% cons | 89.28% peer / 92.38% cons | -1.9 pts peer, +1.2 pts cons |
+| Model poison, 30% Random (§5.2) | 89.5% | 3/3 `NaN` crashes | 88.88% peer / 91.53% cons | -0.6 pts peer, +2.0 pts cons |
+| Random noise, 30% Random (§5.3) | 89% to 93% | 3/3 `NaN` crashes | 88.98% peer / 92.33% cons | Inside 89% to 93% range |
+| Ring topology, 30% label flip (Table 1) | 89.1% | 38.8% peer / 50.6% cons | 84.70% peer / 91.69% cons | -4.4 pts peer, +2.6 pts cons |
+| Small-World, 30% label flip (Table 1) | 90.4% | 43.2% peer / 52.7% cons | 89.48% peer / 92.36% cons | -0.9 pts peer, +2.0 pts cons |
+| FPR at 50% Byzantine, `sender` (Abstract, Fig. 3b) | About 9.0% | 51.23% | 36.17% | +27.2 pts higher FPR |
+| FPR at 50% Byzantine, `rxdelta` + `val=iid` | About 9.0% | Not tested | 6.47% to 6.82% | -2.2 to -2.5 pts (matches target) |
+| Ablation drop, No ReLU / Euclidean (§5.5) | -4.2% / -2.8% | `NaN` crashes | -35.9% / -9.0% | Same ranking, larger drop |
+
+Four practical limitations remain.
+
+1. **The literal 10k CNN setup cannot reach 93%.** Running the paper's small CNN on 10,000 images leaves a 38 to 47 percentage point accuracy gap below 93%, so matching the paper's accuracy requires 50,000 images and a pretrained ResNet-18.
+2. **Low FPR needs `rxdelta` plus balanced validation, and trades off attacker rejection.** Default `sender` scoring leaves FPR 27 to 35 percentage points above the paper's 3% to 9% target, and local validation (`val=local`) keeps FPR at 36.9% to 53.5% even with `rxdelta`. Using `rxdelta` with `val=iid` hits 6.5% to 9.5% FPR at $\tau = 0.003$, but raises Byzantine acceptance to 61.58% on label flipping and 41.26% on model poisoning. Raising $\tau$ to 0.035 brings Byzantine acceptance below the `sender` baseline, but raises FPR back to 22.3% to 28.6%.
+3. **Ring per-peer accuracy stays 4.4 points below Table 1.** Individual Ring peers average 84.70% accuracy because each peer connects to only two neighbors, though the averaged Ring consensus model reaches 91.69%.
+4. **The `rxdelta` runs used one random seed.** The main 50k experiments average seeds 42, 43, and 44, while the 16 `rxdelta` runs used seed 42 only.
 
 For commands to reproduce every run and figure, see [experiments/phase1/REPRODUCE.md](../experiments/phase1/REPRODUCE.md).
