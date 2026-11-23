@@ -1,93 +1,139 @@
-# TrustGraph-DFL Reproduction & Honest FPR Study
+# TrustGraph-DFL
 
-PyTorch CIFAR-10 reproduction, robustness audit, and four-lever honest False Positive Rate (FPR) study of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026), managed with `uv`.
+PyTorch CIFAR-10 implementation of [TrustGraph-DFL.pdf](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026) for Byzantine-resilient decentralized federated learning.
 
-**Final Report:** [report/phase1_report.md](report/phase1_report.md) (datasets in [report/data/](report/data/), figures in [report/figures/](report/figures/)).
+| Document | Contents |
+|---|---|
+| [report/phase1_report.md](report/phase1_report.md) | Experiment findings, diagnostic tables, and figures |
+| [experiments/phase1/REPRODUCE.md](experiments/phase1/REPRODUCE.md) | Full experiment suites, Slurm launch commands, and figure regeneration steps |
 
----
+## Prerequisites
 
-## Headline TrustGraph-DFL Results
+- Python 3.11 or newer
+- [uv](https://docs.astral.sh/uv/) package manager
+- NVIDIA CUDA GPU recommended for full 50k ResNet-18 training (CPU is sufficient for unit tests and short smoke checks)
 
-| Stage (`NaNs`) | Setup | Verified TrustGraph-DFL Results |
-|---|---|---|
-| **Literal 2-Conv CNN Audit** | `10k` CIFAR-10 (`500`/node, $\alpha_{\mathrm{dir}}=0.5$, `val=local`), `SimpleCIFARCNN`, `200` rounds, 3 seeds | `46.46%` peer / `54.84%` cons (`none`); `descent_neg` ($-\nabla F_i$) beats literal `paper_pos` ($+\nabla F_i$) across all `10–50%` Byz fractions (`+1.0` to `+2.5 pp` cons); unclipped cosine hits `3/3` NaNs on `model_poison` ($\lambda=10$) and `random_noise` ($\sigma=0.5$). |
-| **Locked Full-`50k` 3-Seed Evaluation** (`42` runs, **`0/42` NaNs**) | `50k` CIFAR-10 (`2,500`/node, `250` `val=iid`), `resnet18_pretrained`, `25` rounds, `grad_clip_norm=10.0`, `mclip 2 r_i`, $\tau=0.003$ | Clean **`91.39%` peer / `92.87%` cons**; sustains **`91.53–92.38%` consensus** across `label_flip_all` (`92.38%`), `model_poison` (`91.53%`), and `random_noise` (`92.33%`, **`0.00%` Byz accept**); **Ring `84.70%`, Random `89.28%`, Small-World `89.48%`** per-peer (`91.7–92.4%` cons); **`89.53%` peer / `92.03%` cons @ `50%` Byz**; §5.5 ablations (`no_relu` **`-35.9 pp`**, `euclidean` **`-9.0 pp`**). |
-| **Four-Lever Honest FPR Study** (`40` runs, **`0/40` NaNs**) | Full `50k` ResNet-18, `seed 42`, testing L1 (`rxdelta`), L1b (`rxdelta` $\tau$), L2 (`steps/round`), L3 (`layer_mean` / subspaces), L4 (`ema`) | **L1 (`rxdelta`)** cuts honest FPR `38.8–43.9% → 7.4–9.5%` (matching Fig. 3b `3–9%`, `+0.5–1.5 pp` peer acc); **L2 & L3** stay at `38.1–45.0%` FPR; **L4 (`ema=0.85`, strict `sender`)** halves FPR to `21.0–22.2%` and cuts `model_poison` Byz accept to **`14.32%`**. |
+### Dataset and pretrained model
 
----
+Training requires the CIFAR-10 dataset (stored under `data/cifar-10-batches-py/`). Runs with `--model resnet18_pretrained` also require ImageNet-pretrained `ResNet-18` weights from `torchvision` (`ResNet18_Weights.DEFAULT`, cached under `~/.cache/torch/hub/checkpoints/` or `$TORCH_HOME/hub/checkpoints/`). Models `cnn2x2`, `cnn2x2_gn`, and `resnet18_scratch` need no pretrained weights.
 
-## Repository Layout
+Online runs download both files automatically on first use. On offline machines or Slurm compute nodes using `--no-download`, run these commands once on an internet-connected node after `uv sync`.
 
-```text
-.
-├── AGENTS.md                       # Repository scope, editing/testing, and lab Slurm conventions
-├── TrustGraph-DFL.pdf              # Target paper (Xu et al., CIBDA 2026)
-├── pyproject.toml                  # uv project and dependency specification
-├── src/
-│   ├── aggregators.py              # TrustGraph-DFL aggregation (sender/rxdelta/scoped/EMA/mclip)
-│   ├── attacks.py                  # none, label_flip, label_flip_all, model_poison, random_noise
-│   ├── data.py                     # CIFAR-10 & synthetic test loaders, Dirichlet split (local/iid val)
-│   ├── models.py                   # SimpleCIFARCNN, GroupNormCIFARCNN, PretrainedResNet18CIFAR
-│   ├── simulator.py                # Synchronous DFL simulator, metrics, and JSON/JSONL logging
-│   └── topology.py                 # Ring, Erdos-Renyi (p=0.3), Watts-Strogatz (k=4, p=0.3)
-├── experiments/phase1/
-│   ├── suites.py                   # Named TrustGraph-DFL suites (smoke, full, paper_match_50k, fpr_lever1-4)
-│   ├── run.py                      # CLI runner with multi-GPU sharding & --skip-existing
-│   ├── summarize.py                # Aggregates summary.json files into Markdown tables
-│   ├── plot_figures.py             # Generates all 4 final PNG+PDF figures in report/figures/
-│   ├── figstyle.py                 # figures4papers house style (unedited skill copy)
-│   ├── figroles.py                 # Fixed attack/ablation colors, markers, and line styles
-│   └── slurm_run.sh                # Multi-GPU Slurm launcher with hardware/git run-record capture
-├── tests/
-│   └── test_phase1.py              # Unit and offline synthetic DFL integration tests (20 tests)
-└── report/
-    ├── phase1_report.md            # Unified TrustGraph-DFL final report
-    ├── data/                       # Committed JSON datasets (TrustGraph-DFL 50k 3-seed + fpr_levers)
-    └── figures/                    # 300 dpi PNG + header-free PDF figures (Fig. 1–4)
+```bash
+# Download and extract CIFAR-10 into data/cifar-10-batches-py/
+uv run python -c "from src.data import load_cifar10_tensors; load_cifar10_tensors('data', download=True)"
+
+# Cache ImageNet-pretrained ResNet-18 weights (for --model resnet18_pretrained)
+uv run python -c "from torchvision.models import ResNet18_Weights, resnet18; resnet18(weights=ResNet18_Weights.DEFAULT)"
 ```
 
----
+## Installation
 
-## Setup, Tests, and Experiment Suites
+Install runtime and development dependencies into a local `.venv` and run the test suite to verify the setup.
 
 ```bash
 uv sync
 uv run pytest -v
 ```
 
-### Available Suites (`experiments/phase1/suites.py`)
-- `smoke` (`4` runs): fast 2-attack (`label_flip`, `model_poison`) × 2-sign local sanity sweep.
-- `full` (aliases `literal`, `step_a`; `31` runs/seed): literal `10k` CIFAR-10 2-conv CNN TrustGraph-DFL audit matrix.
-- `paper_match_50k` (alias `baseline_50k`; `14` runs/seed): locked full-`50k` ResNet-18 TrustGraph-DFL evaluation.
-- `fpr_lever1`, `fpr_lever1b`, `fpr_lever2`, `fpr_lever3`, `fpr_lever4` (`8` runs each): four-lever honest FPR diagnostics.
+If working offline after initial setup, pass `--no-sync` (`uv run --no-sync pytest -v`).
 
-### Key CLI Options (`experiments/phase1/run.py`)
-- `--mode`: `single` or `suite`; `--suite <name>`; `--seeds 42 43 44`; `--shard-index` / `--num-shards`; `--skip-existing`.
-- `--model`: `cnn2x2`, `cnn2x2_gn`, `resnet18_pretrained`, `resnet18_scratch`.
-- `--val-split`: `local` (10% local non-IID shard) or `iid` (balanced validation set); `--grad-clip-norm`.
-- `--val-grad-sign`: `descent_neg` ($-\nabla F_i$) or `paper_pos` ($+\nabla F_i$).
-- `--trustgraph-clip-norm`, `--trustgraph-clip-mode` (`update | model`), `--trustgraph-clip-factor`, `--trustgraph-score-threshold`.
-- `--trustgraph-delta-mode` (`sender | receiver`), `--trustgraph-score-scope` (`global | layer_mean | backbone_only | head_only`), `--trustgraph-ema-beta`.
+## How to run
 
-### Local Commands & Cluster Execution
+Run a 5-round local CPU smoke suite to check end-to-end training and logging.
 
 ```bash
-# 5-round local CIFAR-10 smoke test
 uv run python -m experiments.phase1.run \
   --mode suite --suite smoke \
   --dataset cifar10 --rounds 5 --eval-every 0 --device cpu --seeds 42 \
   --output-root outputs/phase1_smoke
+```
 
-# Summarize run directories and regenerate all 4 figures
+Run a single custom experiment with `--mode single`.
+
+```bash
+uv run python -m experiments.phase1.run \
+  --mode single --dataset cifar10 --model resnet18_pretrained \
+  --topology random --attack model_poison --byzantine-frac 0.3 \
+  --val-split iid --val-grad-sign descent_neg --trustgraph-clip-norm \
+  --rounds 25 --seeds 42 --output-root outputs/single_run
+```
+
+### Available suites
+
+All named experiment suites live in [experiments/phase1/suites.py](experiments/phase1/suites.py).
+
+| Suite | Runs per seed | Paper target |
+|---|---:|---|
+| `smoke` | 4 | Fast local sanity check across two attacks and two gradient signs |
+| `paper_cnn_10k` | 31 | Literal Section 5 setup on 10k CIFAR-10 and 2-conv CNN (200 rounds) |
+| `paper_resnet18_50k` | 14 | Full 50k ResNet-18 reproduction (Fig. 2, Fig. 3a, Table 1, Fig. 3b, Section 5.5) |
+| `fig3a_attacks` | 4 | Fig. 2 and Fig. 3a clean and 30% Byzantine attacks (50k ResNet-18) |
+| `table1_topologies` | 3 | Table 1 Ring, Random, and Small-World under 30% label flip (50k ResNet-18) |
+| `fig3b_byz_sweep` | 5 | Fig. 3b 10% to 50% Byzantine stress sweep (50k ResNet-18) |
+| `sec5_5_ablations` | 5 | Section 5.5 ablations (full, self-weights 0.3 and 0.7, Euclidean, No ReLU) |
+| `fig3b_fpr_rxdelta` | 8 | Fig. 3b honest FPR with receiver-anchored delta (`rxdelta`, $\tau=0.003$) |
+| `fig3b_fpr_rxdelta_tau` | 8 | Fig. 3b receiver-anchored threshold sweep ($\tau \in \{0.020, 0.035\}$) |
+
+### Common CLI flags
+
+Key flags exposed by [experiments/phase1/run.py](experiments/phase1/run.py).
+
+| Flag group | Options |
+|---|---|
+| Execution | `--mode single \| suite`, `--suite <name>`, `--seeds 42 43 44`, `--device auto \| cpu \| cuda`, `--skip-existing` |
+| Sharding | `--shard-index`, `--num-shards` |
+| Model and data | `--model cnn2x2 \| cnn2x2_gn \| resnet18_pretrained \| resnet18_scratch`, `--val-split local \| iid`, `--grad-clip-norm` |
+| TrustGraph scoring | `--val-grad-sign descent_neg \| paper_pos`, `--trustgraph-score-threshold`, `--trustgraph-delta-mode sender \| receiver` |
+| Norm clipping | `--trustgraph-clip-norm`, `--trustgraph-clip-mode update \| model`, `--trustgraph-clip-factor` |
+
+Summarize completed runs into Markdown tables and regenerate publication figures from committed data.
+
+```bash
 uv run python -m experiments.phase1.summarize outputs/phase1_smoke --title "TrustGraph-DFL Smoke"
 uv run python -m experiments.phase1.plot_figures
-
-# Cluster execution (Slurm on octave, after explicit owner approval)
-mkdir -p logs
-sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
-  --cpus-per-task=32 --mem=128G --time=00:45:00 \
-  --job-name=trustgraph_p1 --open-mode=append --output=logs/%x-%j.out \
-  experiments/phase1/slurm_run.sh \
-  --mode suite --suite paper_match_50k --skip-existing \
-  --dataset cifar10 --eval-every 5 --seeds 42 43 44 --output-root outputs/phase1_50k
 ```
+
+For full 50k, 10k, `rxdelta`, and multi-GPU Slurm reproduction commands, follow [experiments/phase1/REPRODUCE.md](experiments/phase1/REPRODUCE.md).
+
+## Experiment results
+
+The complete metric-by-metric reproduction report, diagnostic tables, and adjustments sit in [report/phase1_report.md](report/phase1_report.md), backed by committed JSON outputs in [report/data/](report/data/) and PNG/PDF figures in [report/figures/](report/figures/).
+
+## Project structure
+
+```text
+.
+├── AGENTS.md                       # Repository scope, testing rules, and lab Slurm conventions
+├── TrustGraph-DFL.pdf              # Target paper (Xu et al., CIBDA 2026)
+├── pyproject.toml                  # uv project and dependency specification
+├── src/
+│   ├── aggregators.py              # TrustGraph-DFL aggregation (sender/receiver delta and clipping)
+│   ├── attacks.py                  # none, label_flip, label_flip_all, model_poison, random_noise
+│   ├── data.py                     # CIFAR-10 and synthetic test loaders, Dirichlet split
+│   ├── models.py                   # SimpleCIFARCNN, GroupNormCIFARCNN, PretrainedResNet18CIFAR
+│   ├── simulator.py                # Synchronous DFL simulator, metrics, and JSON/JSONL logging
+│   └── topology.py                 # Ring, Erdos-Renyi (p=0.3), Watts-Strogatz (k=4, p=0.3)
+├── experiments/phase1/
+│   ├── REPRODUCE.md                # Full experiment, Slurm, and figure reproduction guide
+│   ├── suites.py                   # Named TrustGraph-DFL suites
+│   ├── run.py                      # CLI runner with multi-GPU sharding and --skip-existing
+│   ├── summarize.py                # Aggregates summary.json files into Markdown tables
+│   ├── plot_figures.py             # Generates PNG and PDF figures in report/figures/
+│   ├── figstyle.py                 # Shared matplotlib house style
+│   ├── figroles.py                 # Fixed colors, markers, and line styles
+│   └── slurm_run.sh                # Multi-GPU Slurm launcher
+├── tests/
+│   └── test_phase1.py              # Unit and offline synthetic DFL integration suite
+└── report/
+    ├── phase1_report.md            # Final reproduction and honest FPR report
+    ├── data/                       # Committed 50k 3-seed and rxdelta FPR JSON datasets
+    └── figures/                    # 300 dpi PNG and header-free PDF figures
+```
+
+## Development
+
+- **Running tests.** Run `uv run --no-sync pytest -v` after any edit under [src/](src/), [experiments/](experiments/), or [tests/](tests/).
+- **Adding experiments.** Define new benchmark grids in [experiments/phase1/suites.py](experiments/phase1/suites.py) and keep core simulator, attack, model, topology, and aggregation primitives in [src/](src/).
+- **Updating figures.** Generate figures strictly from committed JSON datasets via `uv run python -m experiments.phase1.plot_figures`, leave [experiments/phase1/figstyle.py](experiments/phase1/figstyle.py) unchanged, and verify exported PDFs contain no header or footnote text using `pdftotext`.
+- **Untracked runtime files.** Keep `outputs/`, `data/`, and `logs/` out of Git.

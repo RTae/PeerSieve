@@ -197,14 +197,12 @@ def test_end_to_end_synthetic_model_poison_shows_sign_effect() -> None:
     assert float(s_neg["final_consensus_test_acc"]) > float(s_pos["final_consensus_test_acc"]) + 0.15
 
 
-def test_full_and_step_a_suite_count_and_sharding() -> None:
-    runs_full = build_suite_runs("full", ExperimentConfig())
-    runs_alias = build_suite_runs("step_a", ExperimentConfig())
-    assert len(runs_full) == 31
-    assert [n for n, _ in runs_full] == [n for n, _ in runs_alias]
-    names = [name for name, _ in runs_full]
+def test_paper_cnn_10k_suite_count_and_sharding() -> None:
+    runs_cnn = build_suite_runs("paper_cnn_10k", ExperimentConfig())
+    assert len(runs_cnn) == 31
+    names = [name for name, _ in runs_cnn]
     assert len(names) == len(set(names))
-    sharded = [[name for idx, (name, _) in enumerate(runs_full) if idx % 4 == s] for s in range(4)]
+    sharded = [[name for idx, (name, _) in enumerate(runs_cnn) if idx % 4 == s] for s in range(4)]
     assert sum(len(x) for x in sharded) == 31
     assert set().union(*sharded) == set(names)
 
@@ -337,42 +335,39 @@ def test_phase1_suite_counts_and_sharding() -> None:
     from dataclasses import asdict
     from experiments.phase1.summarize import method_label
 
-    runs_full = build_suite_runs("full", ExperimentConfig())
-    runs_literal = build_suite_runs("literal", ExperimentConfig())
-    runs_step_a = build_suite_runs("step_a", ExperimentConfig())
-    assert len(runs_full) == 31
-    assert [n for n, _ in runs_full] == [n for n, _ in runs_literal]
-    assert [n for n, _ in runs_full] == [n for n, _ in runs_step_a]
-    names = [name for name, _ in runs_full]
-    assert len(names) == len(set(names))
-    sharded = [[name for idx, (name, _) in enumerate(runs_full) if idx % 4 == s] for s in range(4)]
-    assert sum(len(x) for x in sharded) == 31
-    assert set().union(*sharded) == set(names)
+    runs_cnn = build_suite_runs("paper_cnn_10k", ExperimentConfig())
+    assert len(runs_cnn) == 31
+    assert len({name for name, _ in runs_cnn}) == 31
 
     runs_smoke = build_suite_runs("smoke", ExperimentConfig())
     assert len(runs_smoke) == 4
     assert all(cfg.aggregator == "trustgraph" for _, cfg in runs_smoke)
 
-    pm50 = build_suite_runs("paper_match_50k", ExperimentConfig())
-    bm50 = build_suite_runs("baseline_50k", ExperimentConfig())
+    pm50 = build_suite_runs("paper_resnet18_50k", ExperimentConfig())
     assert len(pm50) == 14
-    assert [n for n, _ in pm50] == [n for n, _ in bm50]
     assert len({name for name, _ in pm50}) == 14
     assert all(cfg.aggregator == "trustgraph" and cfg.samples_per_node == 2500 and cfg.rounds == 25 and cfg.grad_clip_norm == 10.0 for _, cfg in pm50)
 
-    for suite_name, expected_delta, expect_ema in (
-        ("fpr_lever1", "receiver", False),
-        ("fpr_lever1b", "receiver", False),
-        ("fpr_lever2", "sender", False),
-        ("fpr_lever3", "sender", False),
-        ("fpr_lever4", "sender", True),
+    for suite_name, expected_count in (
+        ("fig3a_attacks", 4),
+        ("table1_topologies", 3),
+        ("fig3b_byz_sweep", 5),
+        ("sec5_5_ablations", 5),
     ):
+        section_runs = build_suite_runs(suite_name, ExperimentConfig())
+        assert len(section_runs) == expected_count
+        assert len({name for name, _ in section_runs}) == expected_count
+        keys = {
+            (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
+            for _, cfg in section_runs
+        }
+        assert len(keys) == expected_count
+
+    for suite_name in ("fig3b_fpr_rxdelta", "fig3b_fpr_rxdelta_tau"):
         suite_runs = build_suite_runs(suite_name, ExperimentConfig())
         assert len(suite_runs) == 8
         assert len({name for name, _ in suite_runs}) == 8
-        assert all(cfg.trustgraph_delta_mode == expected_delta for _, cfg in suite_runs)
-        if expect_ema:
-            assert all(cfg.trustgraph_ema_beta > 0.0 for _, cfg in suite_runs)
+        assert all(cfg.trustgraph_delta_mode == "receiver" for _, cfg in suite_runs)
         keys = {
             (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
             for _, cfg in suite_runs
@@ -433,165 +428,3 @@ def test_local_grad_clip_bounds_step_magnitude() -> None:
     upd_clipped = float(torch.linalg.vector_norm(model_to_vector(m_clipped) - before).item())
     assert upd_clipped <= 0.05 * 1.0 + 1e-4
     assert upd_unclipped > upd_clipped * 5.0
-
-
-def test_train_local_epoch_max_steps_caps_updates() -> None:
-    from src.models import train_local_epoch
-
-    torch.manual_seed(0)
-    m_full = build_model("cnn2x2_gn")
-    m_cap = build_model("cnn2x2_gn")
-    m_cap.load_state_dict(m_full.state_dict())
-    m_exact = build_model("cnn2x2_gn")
-    m_exact.load_state_dict(m_full.state_dict())
-
-    x = torch.randn(32, 3, 32, 32)
-    y = torch.randint(0, 10, (32,))
-
-    # With batch_size=8 and 32 samples, a full epoch takes 4 steps; max_steps=1 stops after 1 batch.
-    train_local_epoch(m_full, x, y, lr=0.01, momentum=0.0, weight_decay=0.0, batch_size=8, epochs=1, max_steps=0, generator=torch.Generator().manual_seed(7))
-    torch.manual_seed(123)
-    train_local_epoch(m_cap, x, y, lr=0.01, momentum=0.0, weight_decay=0.0, batch_size=8, epochs=1, max_steps=1, generator=torch.Generator().manual_seed(7))
-
-    # Manually replicate the exact first batch of the same seeded permutation (matching dropout seed).
-    perm = torch.randperm(32, generator=torch.Generator().manual_seed(7))
-    torch.manual_seed(123)
-    m_exact.train()
-    opt = torch.optim.SGD(m_exact.parameters(), lr=0.01, momentum=0.0, weight_decay=0.0)
-    opt.zero_grad(set_to_none=True)
-    torch.nn.functional.cross_entropy(m_exact(x[perm[:8]]), y[perm[:8]]).backward()
-    opt.step()
-
-    assert torch.allclose(model_to_vector(m_cap), model_to_vector(m_exact), atol=1e-6)
-    assert not torch.allclose(model_to_vector(m_cap), model_to_vector(m_full), atol=1e-4)
-
-
-def test_trustgraph_score_scopes() -> None:
-    from src.models import ParamSlice, model_param_slices
-
-    rn = build_model("resnet18_scratch")
-    slices = model_param_slices(rn)
-    assert slices[-1].end == model_to_vector(rn).numel()
-    assert sum(1 for s in slices if s.ndim >= 2) == 21
-
-    # Construct 3 weight matrices where fc has 100x larger norm and opposite sign (-1),
-    # while conv1 and layer4 are perfectly aligned (+1).
-    synth_slices = [
-        ParamSlice("backbone.conv1.weight", 0, 2, 4),
-        ParamSlice("backbone.layer4.0.conv1.weight", 2, 4, 4),
-        ParamSlice("backbone.fc.weight", 4, 6, 2),
-    ]
-    self_prev = torch.zeros(6)
-    self_upd = torch.tensor([1.0, 0.0, 1.0, 0.0, 100.0, 0.0])
-    self_post = self_prev + self_upd
-    val_grad = -self_upd  # descent_neg -> ref_vec = +self_upd
-    nbr_upd = torch.tensor([1.0, 0.0, 1.0, 0.0, -100.0, 0.0])
-    nbr_post = self_prev + nbr_upd
-
-    scores_by_scope: dict[str, float] = {}
-    for scope in ("global", "layer_mean", "backbone_only", "head_only"):
-        cfg = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", trustgraph_score_scope=scope)
-        res = aggregate_trustgraph(
-            self_post,
-            val_grad,
-            [1],
-            {1: nbr_post},
-            {1: nbr_upd},
-            cfg,
-            self_prev=self_prev,
-            self_update=self_upd,
-            param_slices=synth_slices,
-        )
-        scores_by_scope[scope] = res.scores[1]
-
-    assert scores_by_scope["global"] < -0.99
-    assert math.isclose(scores_by_scope["layer_mean"], 1.0 / 3.0, abs_tol=1e-6)
-    assert math.isclose(scores_by_scope["backbone_only"], 1.0, abs_tol=1e-6)
-    assert scores_by_scope["head_only"] < -0.99
-
-    # End-to-end synthetic run with layer_mean scope.
-    out = run_experiment(
-        ExperimentConfig(
-            dataset="synthetic",
-            n_nodes=6,
-            samples_per_node=40,
-            rounds=2,
-            model_name="cnn2x2_gn",
-            attack="label_flip_all",
-            byzantine_frac=0.33,
-            aggregator="trustgraph",
-            trustgraph_score_scope="layer_mean",
-            device="cpu",
-            verbose=False,
-        )
-    )
-    assert out["summary"]["had_nan"] is False
-
-
-def test_trustgraph_ema_smoothing() -> None:
-    self_prev = torch.zeros(2)
-    self_upd = torch.tensor([1.0, 0.0])
-    self_post = self_prev + self_upd
-    val_grad = torch.tensor([-1.0, 0.0])  # descent_neg -> [+1, 0]
-
-    cfg = AggregatorConfig(
-        name="trustgraph",
-        val_grad_sign="descent_neg",
-        trustgraph_ema_beta=0.8,
-        trustgraph_score_threshold=0.0,
-    )
-    ema: dict[int, float] = {}
-
-    # Round 1: peer 1 aligned (+1.0), peer 2 opposed (-1.0).
-    res1 = aggregate_trustgraph(
-        self_post,
-        val_grad,
-        [1, 2],
-        {1: self_prev + torch.tensor([1.0, 0.0]), 2: self_prev + torch.tensor([-1.0, 0.0])},
-        {1: torch.tensor([1.0, 0.0]), 2: torch.tensor([-1.0, 0.0])},
-        cfg,
-        self_prev=self_prev,
-        self_update=self_upd,
-        ema_scores=ema,
-    )
-    assert math.isclose(res1.scores[1], 0.2, abs_tol=1e-6)
-    assert math.isclose(res1.scores[2], -0.2, abs_tol=1e-6)
-    assert res1.neighbor_weights[1] > 0.99 and res1.neighbor_weights[2] == 0.0
-    ema.update(res1.scores)
-
-    # Round 2: peer 1 has one noisy slightly-negative round (-0.2), peer 2 stays opposed (-1.0).
-    # R_1 = 0.8*0.2 + 0.2*(-0.2) = +0.12 > 0 (honest peer survives single noisy round).
-    # R_2 = 0.8*(-0.2) + 0.2*(-1.0) = -0.36 < 0 (Byzantine peer stays rejected).
-    noisy_u1 = torch.tensor([-0.2, math.sqrt(1.0 - 0.04)])
-    res2 = aggregate_trustgraph(
-        self_post,
-        val_grad,
-        [1, 2],
-        {1: self_prev + noisy_u1, 2: self_prev + torch.tensor([-1.0, 0.0])},
-        {1: noisy_u1, 2: torch.tensor([-1.0, 0.0])},
-        cfg,
-        self_prev=self_prev,
-        self_update=self_upd,
-        ema_scores=ema,
-    )
-    assert math.isclose(res2.scores[1], 0.12, abs_tol=1e-5)
-    assert math.isclose(res2.scores[2], -0.36, abs_tol=1e-5)
-    assert res2.neighbor_weights[1] > 0.99 and res2.neighbor_weights[2] == 0.0
-
-    # End-to-end synthetic run with EMA smoothing.
-    out = run_experiment(
-        ExperimentConfig(
-            dataset="synthetic",
-            n_nodes=6,
-            samples_per_node=40,
-            rounds=3,
-            model_name="cnn2x2_gn",
-            attack="label_flip_all",
-            byzantine_frac=0.33,
-            aggregator="trustgraph",
-            trustgraph_ema_beta=0.7,
-            device="cpu",
-            verbose=False,
-        )
-    )
-    assert out["summary"]["had_nan"] is False

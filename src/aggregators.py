@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
-import math
-from typing import TYPE_CHECKING
 
 import torch
-
-if TYPE_CHECKING:
-    from src.models import ParamSlice
 
 
 @dataclass
@@ -29,8 +23,6 @@ class AggregatorConfig:
     trustgraph_clip_mode: str = "update"  # update (receiver-norm update cap) | model (consensus-preserving)
     trustgraph_clip_factor: float = 2.0  # multiplier on r_i for model-space displacement cap
     trustgraph_delta_mode: str = "sender"  # sender (theta_j^{t+1/2}-theta_j^t) | receiver (theta_j^{t+1/2}-theta_i^t)
-    trustgraph_score_scope: str = "global"  # global | layer_mean | backbone_only | head_only
-    trustgraph_ema_beta: float = 0.0  # 0.0 disables EMA; in (0, 1): R_ij^t = beta*R_ij^{t-1} + (1-beta)*s_ij^t
 
     def validate(self) -> None:
         if self.name != "trustgraph":
@@ -43,10 +35,6 @@ class AggregatorConfig:
             raise ValueError(f"Unknown trustgraph_clip_mode: {self.trustgraph_clip_mode!r}")
         if self.trustgraph_delta_mode not in {"sender", "receiver"}:
             raise ValueError(f"Unknown trustgraph_delta_mode: {self.trustgraph_delta_mode!r}")
-        if self.trustgraph_score_scope not in {"global", "layer_mean", "backbone_only", "head_only"}:
-            raise ValueError(f"Unknown trustgraph_score_scope: {self.trustgraph_score_scope!r}")
-        if not (0.0 <= self.trustgraph_ema_beta < 1.0):
-            raise ValueError(f"trustgraph_ema_beta must be in [0, 1); got {self.trustgraph_ema_beta!r}")
 
 
 @dataclass
@@ -83,58 +71,6 @@ def _cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
     return float(torch.dot(a, b).item() / (na * nb))
 
 
-def _is_classifier_head(name: str) -> bool:
-    parts = name.split(".")
-    return ("fc" in parts) or ("fc2" in parts)
-
-
-def _is_semantic_head(name: str) -> bool:
-    parts = name.split(".")
-    return ("layer4" in parts) or ("fc" in parts) or ("fc1" in parts) or ("fc2" in parts)
-
-
-def _scoped_cosine_similarity(
-    a: torch.Tensor,
-    b: torch.Tensor,
-    scope: str,
-    param_slices: Sequence[ParamSlice] | None,
-) -> float:
-    if scope == "global":
-        return _cosine_similarity(a, b)
-    if not param_slices:
-        raise ValueError(f"param_slices is required when trustgraph_score_scope={scope!r}.")
-
-    if scope == "layer_mean":
-        selected = [s for s in param_slices if s.ndim >= 2]
-        if not selected:
-            selected = list(param_slices)
-        dots = torch.stack([torch.dot(a[s.start : s.end], b[s.start : s.end]) for s in selected])
-        nas = torch.stack([torch.linalg.vector_norm(a[s.start : s.end]) for s in selected])
-        nbs = torch.stack([torch.linalg.vector_norm(b[s.start : s.end]) for s in selected])
-        valid = (nas > 0.0) & (nbs > 0.0)
-        if not bool(valid.any().item()):
-            return 0.0
-        return float((dots[valid] / (nas[valid] * nbs[valid])).mean().item())
-
-    if scope == "backbone_only":
-        selected = [s for s in param_slices if not _is_classifier_head(s.name)]
-    elif scope == "head_only":
-        selected = [s for s in param_slices if _is_semantic_head(s.name)]
-    else:
-        raise ValueError(f"Unknown trustgraph_score_scope: {scope!r}")
-
-    if not selected:
-        return _cosine_similarity(a, b)
-
-    dot = torch.stack([torch.dot(a[s.start : s.end], b[s.start : s.end]) for s in selected]).sum()
-    na2 = torch.stack([a[s.start : s.end].pow(2).sum() for s in selected]).sum()
-    nb2 = torch.stack([b[s.start : s.end].pow(2).sum() for s in selected]).sum()
-    denom = float((na2.sqrt() * nb2.sqrt()).item())
-    if denom == 0.0:
-        return 0.0
-    return float(dot.item() / denom)
-
-
 @torch.no_grad()
 def aggregate_trustgraph(
     self_post: torch.Tensor,
@@ -145,18 +81,14 @@ def aggregate_trustgraph(
     cfg: AggregatorConfig,
     self_prev: torch.Tensor | None = None,
     self_update: torch.Tensor | None = None,
-    param_slices: Sequence[ParamSlice] | None = None,
-    ema_scores: dict[int, float] | None = None,
 ) -> AggregationResult:
     """TrustGraph-DFL consistency-weighted neighborhood aggregation (Eq. 3-5).
 
     Supports:
     - val_grad_sign="paper_pos": literal Algorithm 1 / Eq. 3 using +nabla F_i(theta_i^t; D_i^val)
     - val_grad_sign="descent_neg": corrected descent direction -nabla F_i(theta_i^t; D_i^val)
-    - trustgraph_clip_norm=True: receiver-norm cap on neighbor updates
-      a_ij = min(1, ||Delta_theta_i||_2 / ||Delta_theta_j||_2), blended in update space.
-    - trustgraph_ema_beta > 0: multi-round zero-initialized EMA on per-edge cosine scores
-      R_ij^t = beta * R_ij^{t-1} + (1 - beta) * s_ij^t.
+    - trustgraph_clip_norm=True: receiver-norm cap on neighbor updates or model displacements
+    - trustgraph_delta_mode="receiver": receiver-anchored delta (theta_j^{t+1/2} - theta_i^t)
     """
     if not neighbor_ids:
         return _self_only_result(self_post, neighbor_ids)
@@ -171,18 +103,13 @@ def aggregate_trustgraph(
     for j in neighbor_ids:
         if cfg.trustgraph_metric == "cosine":
             cand_delta = (neighbor_posts[j] - self_prev) if cfg.trustgraph_delta_mode == "receiver" else neighbor_updates[j]
-            s_ij = _scoped_cosine_similarity(cand_delta, ref_vec, cfg.trustgraph_score_scope, param_slices)
-            if cfg.trustgraph_ema_beta > 0.0:
-                prev_r = ema_scores.get(j, 0.0) if ema_scores is not None else 0.0
-                eff_score = cfg.trustgraph_ema_beta * prev_r + (1.0 - cfg.trustgraph_ema_beta) * s_ij
-            else:
-                eff_score = s_ij
-            scores[j] = eff_score
+            s_ij = _cosine_similarity(cand_delta, ref_vec)
+            scores[j] = s_ij
             if cfg.trustgraph_use_relu:
-                raw_weights[j] = max(0.0, eff_score - cfg.trustgraph_score_threshold)
+                raw_weights[j] = max(0.0, s_ij - cfg.trustgraph_score_threshold)
             else:
                 # Ablation without ReLU: map [-1, 1] -> [0, 1] so negative scores retain weight.
-                raw_weights[j] = 0.5 * (eff_score + 1.0)
+                raw_weights[j] = 0.5 * (s_ij + 1.0)
         else:
             # Magnitude-based Euclidean distance ablation (Section 5.5).
             dist = float(torch.linalg.vector_norm(neighbor_posts[j] - self_post).item())
@@ -250,8 +177,6 @@ def aggregate_node(
     cfg: AggregatorConfig,
     self_prev: torch.Tensor | None = None,
     self_update: torch.Tensor | None = None,
-    param_slices: Sequence[ParamSlice] | None = None,
-    ema_scores: dict[int, float] | None = None,
 ) -> AggregationResult:
     """Dispatch to TrustGraph-DFL aggregation."""
     if cfg.name != "trustgraph":
@@ -265,6 +190,4 @@ def aggregate_node(
         cfg,
         self_prev=self_prev,
         self_update=self_update,
-        param_slices=param_slices,
-        ema_scores=ema_scores,
     )

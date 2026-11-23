@@ -2,22 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import parameters_to_vector
-
-
-@dataclass(frozen=True)
-class ParamSlice:
-    """Contiguous slice of a named parameter inside ``model_to_vector(model)``."""
-
-    name: str
-    start: int
-    end: int
-    ndim: int
 
 
 class SimpleCIFARCNN(nn.Module):
@@ -122,17 +110,6 @@ def model_to_vector(model: nn.Module) -> torch.Tensor:
     return parameters_to_vector(model.parameters()).detach().clone().float()
 
 
-def model_param_slices(model: nn.Module) -> list[ParamSlice]:
-    """Return contiguous 1D vector slices matching ``model_to_vector(model)`` order."""
-    slices: list[ParamSlice] = []
-    offset = 0
-    for name, param in model.named_parameters():
-        numel = param.numel()
-        slices.append(ParamSlice(name=name, start=offset, end=offset + numel, ndim=param.ndim))
-        offset += numel
-    return slices
-
-
 @torch.no_grad()
 def vector_to_model(vec: torch.Tensor, model: nn.Module) -> None:
     """Copy a 1D parameter vector into a model in-place without aliasing vec."""
@@ -208,13 +185,9 @@ def train_local_epoch(
     epochs: int = 1,
     augment: bool = False,
     grad_clip_norm: float = 0.0,
-    max_steps: int = 0,
     generator: torch.Generator | None = None,
 ) -> None:
-    """Train model in-place using SGD on preloaded tensors.
-
-    If ``max_steps > 0``, caps the number of mini-batch SGD updates per epoch to ``max_steps``.
-    """
+    """Train model in-place using SGD on preloaded tensors."""
     n_samples = int(x_train.shape[0])
     if n_samples == 0:
         return
@@ -230,10 +203,7 @@ def train_local_epoch(
         perm = torch.randperm(n_samples, generator=generator, device="cpu")
         if x_train.device.type != "cpu":
             perm = perm.to(x_train.device)
-        steps_in_epoch = 0
         for start in range(0, n_samples, batch_size):
-            if max_steps > 0 and steps_in_epoch >= max_steps:
-                break
             idx = perm[start : start + batch_size]
             xb = x_train[idx]
             if augment:
@@ -245,7 +215,6 @@ def train_local_epoch(
             if grad_clip_norm > 0.0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
-            steps_in_epoch += 1
 
 
 @torch.no_grad()

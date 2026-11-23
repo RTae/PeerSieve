@@ -29,7 +29,7 @@ This report evaluates [TrustGraph-DFL.pdf](../TrustGraph-DFL.pdf) (Xu et al., CI
 | Topologies at 30% label flip (Table 1) | Ring 89.1%, Random 91.2%, Small-World 90.4% | 84.70% Ring, 89.28% Random, 89.48% Small-World per-peer (91.69% to 92.38% consensus) | Reproduced on Random and Small-World; Ring per-peer is 4.4 points lower |
 | Resilience at 50% Byzantine peers (Fig. 3b) | High accuracy at 50% attackers | 89.53% per-peer, 92.03% consensus | Reproduced |
 | Component ablations (Section 5.5) | ReLU, cosine, and $\alpha=0.5$ matter | Removing ReLU loses 35.9 points; Euclidean distance loses 9.0 points | Reproduced with 0 `NaN` runs |
-| Honest FPR (Fig. 3b) | 3% to 9% | 36.2% to 43.9% (`sender`), 6.5% to 9.5% (`rxdelta` + `val=iid`), 21.0% to 22.2% (`sender` + EMA) | Requires scoring adjustment |
+| Honest FPR (Fig. 3b) | 3% to 9% | 36.2% to 43.9% (`sender`), 6.5% to 9.5% (`rxdelta` + `val=iid`) | Reproduced with receiver-anchored scoring |
 
 ---
 
@@ -105,29 +105,19 @@ Section 5.5 of the paper tests removing ReLU zeroing, replacing cosine similarit
 
 ## 6. Honest false positive rate (FPR)
 
-Figure 3b of the paper reports honest FPR around 3% to 9%. In default single-round `sender` mode ($\theta_j^{t+1/2} - \theta_j^t$), Figure 3c shows honest FPR starts near 0% in round 1 when peers share initial weights, then climbs to 36.2% to 43.9% as non-IID peers drift onto different weights and draw noisy local mini-batches. We tested four fixes across 40 seed-42 runs (0 `NaN` runs) to see what lowers honest FPR.
+Figure 3b of the paper reports honest FPR around 3% to 9%. In default single-round `sender` mode ($\theta_j^{t+1/2} - \theta_j^t$), Figure 3c shows honest FPR starts near 0% in round 1 when peers share initial weights, then climbs to 36.2% to 43.9% as non-IID peers drift onto different weights and draw noisy local mini-batches.
 
-![Fig. 4 Four-Lever FPR Diagnostic (50k)](figures/fig4-fpr-levers-50k.png)
+Scoring updates relative to the receiver's weights (`rxdelta`, $\theta_j^{t+1/2} - \theta_i^t$) with balanced validation (`val=iid`) resolves this gap across 16 seed-42 runs (0 `NaN` runs). At $\tau = 0.003$, `rxdelta` lowers honest FPR to 7.4% to 9.5% at 30% Byzantine peers (6.5% to 6.8% at 50%) and raises per-peer accuracy by 0.45 to 1.45 percentage points. Balanced validation is required because `val=local` keeps `rxdelta` FPR at 36.9% to 39.2%. At $\tau = 0.003$, receiver anchoring increases late-round attack acceptance (61.58% label flip, 41.26% model poison), and raising the threshold to $\tau = 0.035$ beats the `sender` baseline on honest FPR (22.3% to 28.6%), attack rejection, and per-peer accuracy.
 
-- **Lever 1 (receiver-anchored updates, `rxdelta`).** Scoring $\theta_j^{t+1/2} - \theta_i^t$ with balanced validation (`val=iid`) lowers honest FPR to 7.4% to 9.5% at 30% Byzantine peers (6.5% to 6.8% at 50%) and raises per-peer accuracy by 0.45 to 1.45 percentage points. It fails under `val=local` (36.9% to 39.2% FPR) and increases late-round attack acceptance (61.58% label flip, 41.26% model poison), which raising $\tau$ to 0.035 (`Lever 1b`) resolves while still beating `sender` on FPR (22.3% to 28.6%), attack rejection, and per-peer accuracy.
-- **Lever 2 (fewer local SGD steps, ruled out).** Reducing local work to 9 steps per round (`batch_size=256`, 25 rounds) or 4 steps per round (`max_local_steps=4`, 100 rounds) leaves honest FPR at 40.6% to 45.0% and lowers clean consensus accuracy by about 2.5 percentage points.
-- **Lever 3 (per-layer and subspace cosine, ruled out).** Although `backbone.fc` (0.05% of weights) holds 38.52% of squared gradient norm, `layer_mean`, `backbone_only`, and `head_only` all leave honest FPR at 38.1% to 43.0%. Using `head_only` lowers label-flip acceptance to 32.32%, while `layer_mean` leaks 0.53% of random-noise updates.
-- **Lever 4 (multi-round score EMA).** Averaging `sender` scores across rounds ($R_{ij}^t = \beta R_{ij}^{t-1} + (1 - \beta) s_{ij}^t$) at $\beta = 0.85$ halves honest FPR to 21.0% to 22.2%, cuts model-poisoning acceptance from 33.07% to 14.32% (0.0% through round 16), keeps random-noise acceptance at 0.00%, and maintains 92.72% clean consensus accuracy.
+![Fig. 4 Receiver-Anchored Honest FPR on TrustGraph-DFL (50k)](figures/fig4-fpr-rxdelta-50k.png)
 
 | Method (`val=iid` unless noted) | Clean consensus (%) | Honest FPR range (%) | Model poison Byz accept (%) | Label flip Byz accept (%) | Random noise Byz accept (%) |
 |---|---:|---:|---:|---:|---:|
 | Baseline (`sender`, 3-seed) | 92.87 | 38.8 to 43.9 | 33.07 | 41.75 | 0.00 |
-| Lever 1 (`rxdelta`, $\tau=0.003$) | 92.63 | 7.4 to 9.5 | 41.26 | 61.58 | 0.00 |
-| Lever 1 (`rxdelta`, `val=local`) | 92.50 | 36.9 to 39.2 | Not tested | Not tested | Not tested |
-| Lever 1b (`rxdelta`, $\tau=0.020$) | 92.71 | 13.7 to 16.7 | 34.63 | 50.84 | 0.00 |
-| Lever 1b (`rxdelta`, $\tau=0.035$) | 92.45 | 22.3 to 28.6 | 31.68 | 39.16 | 0.00 |
-| Lever 2 (`batch_size=256`, 25 rounds) | 90.08 | 41.0 to 42.0 | 29.05 | 40.95 | 0.00 |
-| Lever 2 (`max_local_steps=4`, 100 rounds) | 90.38 | 40.6 to 45.0 | 31.39 | 34.08 | 0.00 |
-| Lever 3 (`layer_mean`) | 92.58 | 38.1 to 41.4 | 30.11 | 40.95 | 0.53 |
-| Lever 3 (`backbone_only`) | 92.52 | 41.5 to 43.0 | 32.53 | 42.00 | Not tested |
-| Lever 3 (`head_only`) | Not tested | 40.3 | Not tested | 32.32 | Not tested |
-| Lever 4 (EMA $\beta=0.70$) | 92.57 | 26.4 to 28.7 | 21.79 | 41.16 | 0.00 |
-| Lever 4 (EMA $\beta=0.85$) | 92.72 | 21.0 to 22.2 | 14.32 | 44.53 | 0.00 |
+| `rxdelta` ($\tau=0.003$) | 92.63 | 7.4 to 9.5 | 41.26 | 61.58 | 0.00 |
+| `rxdelta` ($\tau=0.003$, `val=local`) | 92.50 | 36.9 to 39.2 | Not tested | Not tested | Not tested |
+| `rxdelta` ($\tau=0.020$) | 92.71 | 13.7 to 16.7 | 34.63 | 50.84 | 0.00 |
+| `rxdelta` ($\tau=0.035$) | 92.45 | 22.3 to 28.6 | 31.68 | 39.16 | 0.00 |
 
 ---
 
@@ -143,7 +133,7 @@ Reproducing the paper's 91% to 93% accuracy and zero-`NaN` robustness required s
 | Magnitude bounds | Unclipped cosine similarity | Gradient clip 10.0, receiver update norm cap $2 r_i$, $\tau = 0.003$ | Unclipped cosine ignores attack scale and causes 3/3 `NaN` crashes on poisoning and noise |
 | Validation split | `val=local` (10% skewed local shard) | `val=iid` (250 class-balanced images per peer) | Non-IID `val=local` keeps honest FPR at 37% to 53% in both 10k and 50k runs |
 | Label-flipping attack | Two-class `0<->1` flip | All-class flip, 2 attacker epochs | `0<->1` flipping is mild; all-class flipping with 2 attacker epochs stresses the filter |
-| Honest FPR rule | Single-round `sender` delta | `rxdelta` (7% to 9% FPR) or strict `sender` + EMA $\beta=0.85$ (21% FPR) | Non-IID single-round `sender` cosine keeps honest FPR near 40% |
+| Honest FPR rule | Single-round `sender` delta | Receiver-anchored `rxdelta` ($\tau=0.003$ for 7% to 9% FPR, $\tau=0.035$ for tighter attack rejection) | Non-IID single-round `sender` cosine keeps honest FPR near 40% |
 
 Below is the literal 10k 2-conv CNN 3-seed audit (200 rounds, Random ER $p = 0.3$) that measured the capacity ceiling, the $+\nabla F_i$ sign bug, and the unclipped `NaN` crashes. Across 10% to 50% label flipping, $-\nabla F_i$ outperforms $+\nabla F_i$ by 1.0 to 2.5 percentage points in consensus accuracy (52.06% to 54.75%) with 10 to 24 percentage points lower Byzantine acceptance (43.3% to 46.6% versus 55.5% to 67.1%).
 

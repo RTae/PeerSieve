@@ -2,12 +2,12 @@
 
 ## Scope and source files
 
-This repository contains the PyTorch CIFAR-10 reproduction, robustness audit, and four-lever honest False Positive Rate (FPR) study of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026), managed with `uv`.
+This repository contains the PyTorch CIFAR-10 reproduction, robustness audit, and receiver-anchored (`rxdelta`) honest False Positive Rate (FPR) study of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026), managed with `uv`.
 
 - **`src/`:** Core synchronous TrustGraph-DFL components — [aggregators.py](src/aggregators.py) (`aggregate_trustgraph`), [attacks.py](src/attacks.py), [data.py](src/data.py), [models.py](src/models.py) (`SimpleCIFARCNN`, `GroupNormCIFARCNN`, `PretrainedResNet18CIFAR`), [simulator.py](src/simulator.py), and [topology.py](src/topology.py).
-- **`experiments/phase1/`:** Suite definitions ([suites.py](experiments/phase1/suites.py)), CLI & multi-GPU sharded runner ([run.py](experiments/phase1/run.py)), summary aggregator ([summarize.py](experiments/phase1/summarize.py)), publication figure generator ([plot_figures.py](experiments/phase1/plot_figures.py)), house style ([figstyle.py](experiments/phase1/figstyle.py), leave unedited), fixed visual encodings ([figroles.py](experiments/phase1/figroles.py)), and Slurm launcher ([slurm_run.sh](experiments/phase1/slurm_run.sh)).
+- **`experiments/phase1/`:** Suite definitions ([suites.py](experiments/phase1/suites.py)), CLI & multi-GPU sharded runner ([run.py](experiments/phase1/run.py)), summary aggregator ([summarize.py](experiments/phase1/summarize.py)), publication figure generator ([plot_figures.py](experiments/phase1/plot_figures.py)), house style ([figstyle.py](experiments/phase1/figstyle.py), leave unedited), fixed visual encodings ([figroles.py](experiments/phase1/figroles.py)), reproduction guide ([REPRODUCE.md](experiments/phase1/REPRODUCE.md)), and Slurm launcher ([slurm_run.sh](experiments/phase1/slurm_run.sh)).
 - **`tests/`:** Unit and offline synthetic DFL integration suite ([test_phase1.py](tests/test_phase1.py)).
-- **`report/`:** Unified final report ([report/phase1_report.md](report/phase1_report.md)), committed TrustGraph-DFL 3-seed and 4-lever datasets under `report/data/`, and 300 dpi PNG + header-free PDF figures under `report/figures/`.
+- **`report/`:** Unified final report ([report/phase1_report.md](report/phase1_report.md)), committed TrustGraph-DFL 3-seed and `rxdelta` FPR datasets under `report/data/`, and 300 dpi PNG + header-free PDF figures under `report/figures/`.
 
 Keep `outputs/`, `data/`, and `logs/` out of Git. Do not restore deleted intermediate reports or obsolete datasets unless the owner asks.
 
@@ -18,7 +18,7 @@ Keep `outputs/`, `data/`, and `logs/` out of Git. Do not restore deleted interme
   - Validation gradient sign: literal `paper_pos` ($+\nabla F_i$) vs. corrected `descent_neg` ($-\nabla F_i$).
   - Magnitude control: unclipped cosine vs. model-space receiver-norm cap (`mclip 2 r_i`) and `grad_clip_norm=10.0`.
   - Validation split: literal `val=local` (10% local non-IID shard) vs. balanced `val=iid` (250 stratified samples/node on 50k).
-  - Reference anchor and temporal smoothing: strict `sender` ($\theta_j^{t+1/2}-\theta_j^t$) vs. `rxdelta` ($\theta_j^{t+1/2}-\theta_i^t$), and single-round scoring vs. multi-round EMA (`trustgraph_ema_beta`).
+  - Reference anchor: strict `sender` ($\theta_j^{t+1/2}-\theta_j^t$) vs. receiver-anchored `rxdelta` ($\theta_j^{t+1/2}-\theta_i^t$).
   - Accuracy metrics: per-peer benign mean (`Final Acc`) vs. consensus parameter average (`Cons Acc`), alongside honest FPR and Byzantine acceptance rate.
 - Keep `experiments/phase1/figstyle.py` unchanged when drawing figures unless explicitly instructed. Generate figures strictly from committed `report/data/*.json` via `uv run python -m experiments.phase1.plot_figures`, visually inspect generated PNGs for layout clarity, and verify exported PDFs contain no header or footnote text (`pdftotext`).
 
