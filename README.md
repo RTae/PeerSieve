@@ -68,7 +68,7 @@ uv run python -m experiments.phase1.run \
 | `smoke` | 4 | Fast local sanity check across two attacks and two gradient signs |
 | `paper_cnn_10k` | 31 | Literal Section 5 setup on 10k CIFAR-10 and 2-conv CNN (200 rounds) |
 | `paper_resnet18_50k` | 14 | Full 50k ResNet-18 reproduction (Fig. 2, Fig. 3a, Table 1, Fig. 3b, Section 5.5) |
-| `fig3a_attacks` | 4 | Fig. 2 and Fig. 3a clean and 30% Byzantine attacks (50k ResNet-18) |
+| `fig3a_attacks` | 4 | Fig. 2 and Fig. 3a no-attack and 30% Byzantine attacks (50k ResNet-18) |
 | `table1_topologies` | 3 | Table 1 Ring, Random, and Small-World under 30% label flip (50k ResNet-18) |
 | `fig3b_byz_sweep` | 5 | Fig. 3b 10% to 50% Byzantine stress sweep (50k ResNet-18) |
 | `sec5_5_ablations` | 5 | Section 5.5 ablations (full, self-weights 0.3 and 0.7, Euclidean, No ReLU) |

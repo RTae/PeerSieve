@@ -24,7 +24,7 @@ This report evaluates [TrustGraph-DFL.pdf](../TrustGraph-DFL.pdf) (Xu et al., CI
 
 | Metric | Paper target | Our result | Status |
 |---|---|---|---|
-| Clean accuracy (Fig. 2, Fig. 3a) | About 93% | 91.39% per-peer, 92.87% consensus | Reproduced on 50k ResNet-18 |
+| No-attack accuracy (Fig. 2, Fig. 3a) | About 93% | 91.39% per-peer, 92.87% consensus | Reproduced on 50k ResNet-18 |
 | Attack resilience at 30% Byzantine peers (Fig. 3a) | 89.5% to 93% | 91.53% to 92.38% consensus, 0/42 `NaN` runs | Reproduced with $-\nabla F_i$ and norm clipping |
 | Topologies at 30% label flip (Table 1) | Ring 89.1%, Random 91.2%, Small-World 90.4% | 84.70% Ring, 89.28% Random, 89.48% Small-World per-peer, 91.69% to 92.38% consensus | Reproduced on Random and Small-World; Ring per-peer is 4.4 points lower |
 | Resilience at 50% Byzantine peers (Fig. 3b) | High accuracy at 50% attackers | 89.53% per-peer, 92.03% consensus | Reproduced |
@@ -33,7 +33,7 @@ This report evaluates [TrustGraph-DFL.pdf](../TrustGraph-DFL.pdf) (Xu et al., CI
 
 ---
 
-## 1. Clean accuracy
+## 1. No-attack accuracy
 
 The paper reports about 93% CIFAR-10 accuracy without attackers. Running the literal 2-convolution CNN on 10,000 non-IID images reaches 46.46% per-peer accuracy and 54.84% consensus accuracy after 200 rounds. Training an ImageNet-pretrained ResNet-18 on all 50,000 CIFAR-10 images reaches 91.39% per-peer accuracy and 92.87% consensus accuracy in 25 rounds across seeds 42, 43, and 44.
 
@@ -52,7 +52,7 @@ The paper reports 89.5% to 93% accuracy under 30% label-flipping, model-poisonin
 
 | Attack on 50k Random ER ($p=0.3$) | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | Cosine (benign / Byzantine) | `NaN` runs |
 |---|---:|---:|---:|---:|---:|---:|
-| Clean (0% Byzantine) | 91.39 ± 0.30 | 92.87 ± 0.22 | 41.18 ± 3.05 | 0.00 | +0.020 / None | 0/3 |
+| No attack (0% Byzantine) | 91.39 ± 0.30 | 92.87 ± 0.22 | 41.18 ± 3.05 | 0.00 | +0.020 / None | 0/3 |
 | All-class label flip (30%, 2 attacker epochs) | 89.28 ± 1.26 | 92.38 ± 0.32 | 40.39 ± 2.36 | 41.75 | +0.024 / -0.020 | 0/3 |
 | Model poisoning (30%, $\lambda=10$) | 88.88 ± 1.36 | 91.53 ± 0.58 | 43.93 ± 4.27 | 33.07 | +0.016 / -0.030 | 0/3 |
 | Random noise (30%, $\sigma=0.5$) | 88.98 ± 1.31 | 92.33 ± 0.42 | 38.83 ± 3.33 | 0.00 | +0.023 / +0.000 | 0/3 |
@@ -111,7 +111,7 @@ Scoring updates relative to the receiver's weights (`rxdelta`, $\theta_j^{t+1/2}
 
 ![Fig. 4 Receiver-Anchored FPR on TrustGraph-DFL (50k)](figures/fig4-fpr-rxdelta-50k.png)
 
-| Method (`val=iid` unless noted) | Clean consensus (%) | FPR range (%) | Model poison Byzantine acceptance (%) | Label flip Byzantine acceptance (%) | Random noise Byzantine acceptance (%) |
+| Method (`val=iid` unless noted) | No-attack consensus (%) | FPR range (%) | Model poison Byzantine acceptance (%) | Label flip Byzantine acceptance (%) | Random noise Byzantine acceptance (%) |
 |---|---:|---:|---:|---:|---:|
 | Baseline (`sender`, 3-seed) | 92.87 | 38.8 to 43.9 | 33.07 | 41.75 | 0.00 |
 | `rxdelta` ($\tau=0.003$) | 92.63 | 7.4 to 9.5 | 41.26 | 61.58 | 0.00 |
@@ -127,7 +127,7 @@ Reproducing the paper's 91% to 93% accuracy and zero-`NaN` robustness required s
 
 | Setting | Literal paper setup | Adjusted setup | Why we changed it |
 |---|---|---|---|
-| Dataset | 10,000 CIFAR-10 images, 500 per peer | 50,000 CIFAR-10 images, 2,500 per peer with crop and flip augmentation | 10,000 images limits clean consensus accuracy to about 55% |
+| Dataset | 10,000 CIFAR-10 images, 500 per peer | 50,000 CIFAR-10 images, 2,500 per peer with crop and flip augmentation | 10,000 images limits no-attack consensus accuracy to about 55% |
 | Model and schedule | 2-conv `SimpleCIFARCNN` (1.07M parameters), 200 rounds | ImageNet-pretrained `ResNet-18`, 25 rounds, cosine learning rate 0.005 | Required to reach the 91% to 93% accuracy range |
 | Validation gradient sign | $+\nabla F_i$ (Algorithm 1, Eq. 3) | $-\nabla F_i$ (descent direction) | $+\nabla F_i$ points opposite to SGD updates and diverges at round 8 under model poisoning |
 | Magnitude bounds | Unclipped cosine similarity | Gradient clip 10.0, receiver update norm cap $2 r_i$, $\tau = 0.003$ | Unclipped cosine ignores attack scale and causes 3/3 `NaN` crashes on poisoning and noise |
@@ -137,10 +137,10 @@ Reproducing the paper's 91% to 93% accuracy and zero-`NaN` robustness required s
 
 The table below lists the literal 10k 2-conv CNN results across 3 seeds and 200 rounds on a Random Erdos-Renyi graph with $p = 0.3$. Those runs measured the accuracy limit, the $+\nabla F_i$ sign bug, and the unclipped `NaN` crashes. Across 10% to 50% label flipping, $-\nabla F_i$ outperforms $+\nabla F_i$ by 1.0 to 2.5 percentage points in consensus accuracy, reaching 52.06% to 54.75%, with 10 to 24 percentage points lower Byzantine acceptance (43.3% to 46.6% versus 55.5% to 67.1%).
 
-| Attack (30% Byzantine unless clean) | Validation variant | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | `NaN` runs |
+| Attack (30% Byzantine unless none) | Validation variant | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | `NaN` runs |
 |---|---|---:|---:|---:|---:|---:|
-| Clean (`none`) | Corrected ($-\nabla F_i$) | 46.46 ± 0.85 | 54.84 ± 0.47 | 50.54 ± 2.30 | 0.00 | 0/3 |
-| Clean (`none`) | Literal ($+\nabla F_i$) | 46.51 ± 1.42 | 54.70 ± 0.62 | 45.18 ± 2.80 | 0.00 | 0/3 |
+| No attack (`none`) | Corrected ($-\nabla F_i$) | 46.46 ± 0.85 | 54.84 ± 0.47 | 50.54 ± 2.30 | 0.00 | 0/3 |
+| No attack (`none`) | Literal ($+\nabla F_i$) | 46.51 ± 1.42 | 54.70 ± 0.62 | 45.18 ± 2.80 | 0.00 | 0/3 |
 | Label flip (`0<->1`) | Corrected ($-\nabla F_i$) | 42.07 ± 0.23 | 52.83 ± 0.16 | 51.38 ± 2.50 | 43.45 ± 1.64 | 0/3 |
 | Label flip (`0<->1`) | Literal ($+\nabla F_i$) | 43.41 ± 0.95 | 51.27 ± 1.61 | 46.68 ± 5.55 | 59.16 ± 5.73 | 0/3 |
 | Label flip (`0<->1`) | Corrected with balanced validation (`val=iid`) | 45.67 ± 0.62 | 52.76 ± 0.48 | 42.28 ± 0.86 | 53.93 ± 4.55 | 0/3 |
