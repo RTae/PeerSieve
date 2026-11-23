@@ -24,9 +24,11 @@ from src.data import (
     partition_dirichlet_balanced,
 )
 from src.models import (
+    ParamSlice,
     build_model,
     compute_validation_gradient,
     evaluate_accuracy,
+    model_param_slices,
     model_to_vector,
     train_local_epoch,
     vector_to_model,
@@ -80,6 +82,7 @@ class ExperimentConfig:
     trustgraph_clip_mode: str = "update"
     trustgraph_clip_factor: float = 2.0
     trustgraph_delta_mode: str = "sender"
+    trustgraph_score_scope: str = "global"
     balance_gamma: float = 0.3
     balance_kappa: float = 1.0
     krum_mode: str = "multi"
@@ -104,6 +107,7 @@ class ExperimentConfig:
             trustgraph_clip_mode=self.trustgraph_clip_mode,
             trustgraph_clip_factor=self.trustgraph_clip_factor,
             trustgraph_delta_mode=self.trustgraph_delta_mode,
+            trustgraph_score_scope=self.trustgraph_score_scope,
             balance_gamma=self.balance_gamma,
             balance_kappa=self.balance_kappa,
             krum_mode=self.krum_mode,
@@ -291,6 +295,7 @@ def _aggregation_phase(
     round_idx: int,
     byz_frac_eff: float,
     device: torch.device,
+    param_slices: list[ParamSlice] | None = None,
 ) -> tuple[list[torch.Tensor], _AggregationMetrics]:
     """Run Phase 2/3 scoring and neighborhood aggregation across all benign peers."""
     next_models: list[torch.Tensor] = [vec.clone() for vec in prev_models]
@@ -322,6 +327,7 @@ def _aggregation_phase(
             cfg=agg_cfg,
             self_prev=prev_models[i],
             self_update=updates[i],
+            param_slices=param_slices,
         )
         next_models[i] = res.new_model
         if res.self_fallback:
@@ -436,6 +442,7 @@ def run_experiment(
 
     dev_data = _stage_device_data(data, cfg.attack, byzantine_ids, device)
     work_model = build_model(cfg.model_name, num_classes=data.num_classes).to(device)
+    param_slices = model_param_slices(work_model)
     init_vec = model_to_vector(work_model)
     param_count = int(init_vec.numel())
     node_models: list[torch.Tensor] = [init_vec.clone() for _ in range(cfg.n_nodes)]
@@ -498,6 +505,7 @@ def run_experiment(
                 round_idx=r,
                 byz_frac_eff=byz_frac_eff,
                 device=device,
+                param_slices=param_slices,
             )
             if not had_nan and _has_nonfinite_models(node_models, benign_ids):
                 had_nan = True

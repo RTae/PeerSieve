@@ -72,6 +72,9 @@ def method_label(cfg: dict[str, object]) -> str:
             parts.append("mclip" if clip_mode == "model" else "clip")
         if str(cfg.get("trustgraph_delta_mode", "sender")) == "receiver":
             parts.append("rxdelta")
+        scope = str(cfg.get("trustgraph_score_scope", "global"))
+        if scope != "global":
+            parts.append(f"scope={scope}")
         thresh = float(cfg.get("trustgraph_score_threshold", 0.0))
         if abs(thresh) > 1e-9:
             parts.append(f"t={thresh:g}")

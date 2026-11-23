@@ -435,6 +435,16 @@ def test_stabilized_ab_suite_count_and_sharding() -> None:
     }
     assert len(l2_keys) == 8
 
+    l3 = build_suite_runs("fpr_lever3", ExperimentConfig())
+    assert len(l3) == 8
+    assert len({name for name, _ in l3}) == 8
+    assert all(cfg.trustgraph_delta_mode == "sender" for _, cfg in l3)
+    l3_keys = {
+        (cfg.topology, cfg.attack, int(round(cfg.byzantine_frac * 100)), method_label(asdict(cfg)))
+        for _, cfg in l3
+    }
+    assert len(l3_keys) == 8
+
 
 def test_trustgraph_receiver_anchored_delta_mode() -> None:
     self_prev = torch.tensor([0.0, 0.0, 0.0])
@@ -520,3 +530,65 @@ def test_train_local_epoch_max_steps_caps_updates() -> None:
 
     assert torch.allclose(model_to_vector(m_cap), model_to_vector(m_exact), atol=1e-6)
     assert not torch.allclose(model_to_vector(m_cap), model_to_vector(m_full), atol=1e-4)
+
+
+def test_trustgraph_score_scopes() -> None:
+    from src.models import ParamSlice, model_param_slices
+
+    rn = build_model("resnet18_scratch")
+    slices = model_param_slices(rn)
+    assert slices[-1].end == model_to_vector(rn).numel()
+    assert sum(1 for s in slices if s.ndim >= 2) == 21
+
+    # Construct 3 weight matrices where fc has 100x larger norm and opposite sign (-1),
+    # while conv1 and layer4 are perfectly aligned (+1).
+    synth_slices = [
+        ParamSlice("backbone.conv1.weight", 0, 2, 4),
+        ParamSlice("backbone.layer4.0.conv1.weight", 2, 4, 4),
+        ParamSlice("backbone.fc.weight", 4, 6, 2),
+    ]
+    self_prev = torch.zeros(6)
+    self_upd = torch.tensor([1.0, 0.0, 1.0, 0.0, 100.0, 0.0])
+    self_post = self_prev + self_upd
+    val_grad = -self_upd  # descent_neg -> ref_vec = +self_upd
+    nbr_upd = torch.tensor([1.0, 0.0, 1.0, 0.0, -100.0, 0.0])
+    nbr_post = self_prev + nbr_upd
+
+    scores_by_scope: dict[str, float] = {}
+    for scope in ("global", "layer_mean", "backbone_only", "head_only"):
+        cfg = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", trustgraph_score_scope=scope)
+        res = aggregate_trustgraph(
+            self_post,
+            val_grad,
+            [1],
+            {1: nbr_post},
+            {1: nbr_upd},
+            cfg,
+            self_prev=self_prev,
+            self_update=self_upd,
+            param_slices=synth_slices,
+        )
+        scores_by_scope[scope] = res.scores[1]
+
+    assert scores_by_scope["global"] < -0.99
+    assert math.isclose(scores_by_scope["layer_mean"], 1.0 / 3.0, abs_tol=1e-6)
+    assert math.isclose(scores_by_scope["backbone_only"], 1.0, abs_tol=1e-6)
+    assert scores_by_scope["head_only"] < -0.99
+
+    # End-to-end synthetic run with layer_mean scope.
+    out = run_experiment(
+        ExperimentConfig(
+            dataset="synthetic",
+            n_nodes=6,
+            samples_per_node=40,
+            rounds=2,
+            model_name="cnn2x2_gn",
+            attack="label_flip_all",
+            byzantine_frac=0.33,
+            aggregator="trustgraph",
+            trustgraph_score_scope="layer_mean",
+            device="cpu",
+            verbose=False,
+        )
+    )
+    assert out["summary"]["had_nan"] is False

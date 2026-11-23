@@ -748,6 +748,52 @@ def _build_fpr_lever2(base: ExperimentConfig) -> list[tuple[str, ExperimentConfi
     return runs
 
 
+def _build_fpr_lever3(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """FPR Lever 3 diagnostic (8 runs = 1/GPU on 8x A100): layer-normalized and subspace cosine.
+
+    Tests whether removing fc's ~38.5% gradient-norm dominance (only 0.05% of ResNet-18 params)
+    lowers honest FPR in strict sender mode (theta_j^{t+1/2} - theta_j^t, val=iid, tau=0.003):
+      - layer_mean (4 attacks): equal-weight mean cosine across the 21 weight matrices (ndim >= 2)
+      - backbone_only (none, LF, MP): global cosine excluding fc classifier head
+      - head_only (LF): global cosine on layer4 + fc only
+    """
+    base_sender = replace(
+        base,
+        model_name="resnet18_pretrained",
+        samples_per_node=2500,
+        rounds=25,
+        lr=0.005,
+        lr_schedule="cosine",
+        augment=True,
+        grad_clip_norm=10.0,
+        alpha_dir=0.5,
+        val_split="iid",
+        topology="random",
+        byzantine_frac=0.3,
+        eval_batch_size=256,
+        aggregator="trustgraph",
+        val_grad_sign="descent_neg",
+        trustgraph_clip_norm=True,
+        trustgraph_clip_mode="model",
+        trustgraph_clip_factor=2.0,
+        trustgraph_score_threshold=0.003,
+        trustgraph_delta_mode="sender",
+    )
+    lm = replace(base_sender, trustgraph_score_scope="layer_mean")
+    bb = replace(base_sender, trustgraph_score_scope="backbone_only")
+    hd = replace(base_sender, trustgraph_score_scope="head_only")
+    return [
+        ("lever3/layer_mean__none", replace(lm, attack="none")),
+        ("lever3/layer_mean__label_flip_all_byz30", replace(lm, attack="label_flip_all", byz_local_epochs=2)),
+        ("lever3/layer_mean__model_poison", replace(lm, attack="model_poison")),
+        ("lever3/layer_mean__random_noise", replace(lm, attack="random_noise")),
+        ("lever3/backbone_only__none", replace(bb, attack="none")),
+        ("lever3/backbone_only__label_flip_all_byz30", replace(bb, attack="label_flip_all", byz_local_epochs=2)),
+        ("lever3/backbone_only__model_poison", replace(bb, attack="model_poison")),
+        ("lever3/head_only__label_flip_all_byz30", replace(hd, attack="label_flip_all", byz_local_epochs=2)),
+    ]
+
+
 SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]]]] = {
     "smoke": _build_smoke,
     "sign_check": _build_sign_check,
@@ -765,6 +811,7 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
     "fpr_lever1": _build_fpr_lever1,
     "fpr_lever1b": _build_fpr_lever1b,
     "fpr_lever2": _build_fpr_lever2,
+    "fpr_lever3": _build_fpr_lever3,
 }
 
 
@@ -834,6 +881,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--trustgraph-clip-mode", choices=["update", "model"], default="update")
     p.add_argument("--trustgraph-clip-factor", type=float, default=2.0)
     p.add_argument("--trustgraph-delta-mode", choices=["sender", "receiver"], default="sender")
+    p.add_argument(
+        "--trustgraph-score-scope",
+        choices=["global", "layer_mean", "backbone_only", "head_only"],
+        default="global",
+    )
     p.add_argument("--balance-gamma", type=float, default=0.3)
     p.add_argument("--balance-kappa", type=float, default=1.0)
     p.add_argument("--krum-mode", choices=["multi", "single"], default="multi")
@@ -890,6 +942,7 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         trustgraph_clip_mode=args.trustgraph_clip_mode,
         trustgraph_clip_factor=args.trustgraph_clip_factor,
         trustgraph_delta_mode=args.trustgraph_delta_mode,
+        trustgraph_score_scope=args.trustgraph_score_scope,
         balance_gamma=args.balance_gamma,
         balance_kappa=args.balance_kappa,
         krum_mode=args.krum_mode,

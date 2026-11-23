@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import parameters_to_vector
+
+
+@dataclass(frozen=True)
+class ParamSlice:
+    """Contiguous slice of a named parameter inside ``model_to_vector(model)``."""
+
+    name: str
+    start: int
+    end: int
+    ndim: int
 
 
 class SimpleCIFARCNN(nn.Module):
@@ -129,6 +141,17 @@ def build_model(name: str = "cnn2x2", num_classes: int = 10) -> nn.Module:
 def model_to_vector(model: nn.Module) -> torch.Tensor:
     """Return a detached, contiguous FP32 copy of all model parameters."""
     return parameters_to_vector(model.parameters()).detach().clone().float()
+
+
+def model_param_slices(model: nn.Module) -> list[ParamSlice]:
+    """Return contiguous 1D vector slices matching ``model_to_vector(model)`` order."""
+    slices: list[ParamSlice] = []
+    offset = 0
+    for name, param in model.named_parameters():
+        numel = param.numel()
+        slices.append(ParamSlice(name=name, start=offset, end=offset + numel, ndim=param.ndim))
+        offset += numel
+    return slices
 
 
 @torch.no_grad()
