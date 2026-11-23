@@ -4,10 +4,10 @@
 
 This repository contains the PyTorch CIFAR-10 reproduction, robustness audit, and four-lever honest False Positive Rate (FPR) study of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026), managed with `uv`.
 
-- **`src/`:** Core synchronous DFL components — [aggregators.py](src/aggregators.py) (`FedAvg`, `TrustGraph`, `BALANCE`, `Krum`, `Trimmed Mean`), [attacks.py](src/attacks.py), [data.py](src/data.py), [models.py](src/models.py) (`SimpleCIFARCNN`, `GroupNormCIFARCNN`, `PretrainedResNet18CIFAR`), [simulator.py](src/simulator.py), and [topology.py](src/topology.py).
+- **`src/`:** Core synchronous TrustGraph-DFL components — [aggregators.py](src/aggregators.py) (`aggregate_trustgraph`), [attacks.py](src/attacks.py), [data.py](src/data.py), [models.py](src/models.py) (`SimpleCIFARCNN`, `GroupNormCIFARCNN`, `PretrainedResNet18CIFAR`), [simulator.py](src/simulator.py), and [topology.py](src/topology.py).
 - **`experiments/phase1/`:** Suite definitions ([suites.py](experiments/phase1/suites.py)), CLI & multi-GPU sharded runner ([run.py](experiments/phase1/run.py)), summary aggregator ([summarize.py](experiments/phase1/summarize.py)), publication figure generator ([plot_figures.py](experiments/phase1/plot_figures.py)), house style ([figstyle.py](experiments/phase1/figstyle.py), leave unedited), fixed visual encodings ([figroles.py](experiments/phase1/figroles.py)), and Slurm launcher ([slurm_run.sh](experiments/phase1/slurm_run.sh)).
 - **`tests/`:** Unit and offline synthetic DFL integration suite ([test_phase1.py](tests/test_phase1.py)).
-- **`report/`:** Unified final report ([report/phase1_report.md](report/phase1_report.md)), committed 3-seed and 4-lever datasets under `report/data/`, and 300 dpi PNG + header-free PDF figures under `report/figures/`.
+- **`report/`:** Unified final report ([report/phase1_report.md](report/phase1_report.md)), committed TrustGraph-DFL 3-seed and 4-lever datasets under `report/data/`, and 300 dpi PNG + header-free PDF figures under `report/figures/`.
 
 Keep `outputs/`, `data/`, and `logs/` out of Git. Do not restore deleted intermediate reports or obsolete datasets unless the owner asks.
 

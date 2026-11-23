@@ -13,10 +13,6 @@ from experiments.phase1.run import build_suite_runs
 from experiments.phase1.summarize import format_markdown_report, summarize_directory
 from src.aggregators import (
     AggregatorConfig,
-    aggregate_balance,
-    aggregate_fedavg,
-    aggregate_krum,
-    aggregate_trimmed_mean,
     aggregate_trustgraph,
 )
 from src.attacks import AttackConfig, apply_round_attack
@@ -120,45 +116,6 @@ def test_trustgraph_sign_direction_and_self_fallback() -> None:
     assert torch.allclose(res_fb.new_model, self_post)
 
 
-def test_balance_krum_trimmed_mean_and_fedavg() -> None:
-    self_post = torch.tensor([10.0, 0.0, 0.0, 0.0])
-    nbr_posts = {
-        1: torch.tensor([10.1, 0.05, 0.0, 0.0]),
-        2: torch.tensor([9.95, -0.05, 0.0, 0.0]),
-        3: torch.tensor([10.05, 0.02, 0.0, 0.0]),
-        4: torch.tensor([-50.0, 50.0, 50.0, 50.0]),
-    }
-
-    res_bal = aggregate_balance(
-        self_post, [1, 2, 3, 4], nbr_posts, round_idx=0, total_rounds=200, cfg=AggregatorConfig(name="balance")
-    )
-    assert res_bal.neighbor_weights[4] == 0.0
-    assert all(res_bal.neighbor_weights[j] > 0.0 for j in (1, 2, 3))
-
-    res_krum = aggregate_krum(
-        0, self_post, [1, 2, 3, 4], nbr_posts, byzantine_frac=0.25, cfg=AggregatorConfig(name="krum")
-    )
-    assert res_krum.neighbor_weights[4] == 0.0
-
-    # Coord 0 sorted: [-50, 9.95, 10.0, 10.05, 10.1] -> mean(9.95, 10.0, 10.05) = 10.0
-    # Coord 1 sorted: [-0.05, 0.0, 0.02, 0.05, 50.0] -> mean(0.0, 0.02, 0.05) = 0.07 / 3
-    res_tm = aggregate_trimmed_mean(
-        self_post, [1, 2, 3, 4], nbr_posts, cfg=AggregatorConfig(name="trimmed_mean", trim_ratio=0.3)
-    )
-    assert torch.allclose(res_tm.new_model, torch.tensor([10.0, 0.07 / 3.0, 0.0, 0.0]), atol=1e-4)
-
-    # Ring degree-2 edge case must not crash for Krum or Trimmed Mean.
-    ring_posts = {1: nbr_posts[1], 4: nbr_posts[4]}
-    res_ring_k = aggregate_krum(0, self_post, [1, 4], ring_posts, byzantine_frac=0.5, cfg=AggregatorConfig(name="krum"))
-    res_ring_tm = aggregate_trimmed_mean(self_post, [1, 4], ring_posts, cfg=AggregatorConfig(name="trimmed_mean"))
-    assert torch.isfinite(res_ring_k.new_model).all()
-    assert torch.isfinite(res_ring_tm.new_model).all()
-
-    res_fa = aggregate_fedavg(self_post, [1, 2], {1: nbr_posts[1], 2: nbr_posts[2]})
-    expected = (self_post + nbr_posts[1] + nbr_posts[2]) / 3.0
-    assert torch.allclose(res_fa.new_model, expected)
-
-
 def test_model_poison_and_noise_attacks() -> None:
     prev = [torch.ones(4) for _ in range(4)]
     updates = [torch.tensor([0.1, -0.1, 0.2, 0.0]), torch.tensor([0.3, -0.3, 0.0, 0.2]), torch.zeros(4), torch.zeros(4)]
@@ -243,12 +200,12 @@ def test_end_to_end_synthetic_model_poison_shows_sign_effect() -> None:
 def test_full_and_step_a_suite_count_and_sharding() -> None:
     runs_full = build_suite_runs("full", ExperimentConfig())
     runs_alias = build_suite_runs("step_a", ExperimentConfig())
-    assert len(runs_full) == 75
+    assert len(runs_full) == 31
     assert [n for n, _ in runs_full] == [n for n, _ in runs_alias]
     names = [name for name, _ in runs_full]
     assert len(names) == len(set(names))
     sharded = [[name for idx, (name, _) in enumerate(runs_full) if idx % 4 == s] for s in range(4)]
-    assert sum(len(x) for x in sharded) == 75
+    assert sum(len(x) for x in sharded) == 31
     assert set().union(*sharded) == set(names)
 
 
@@ -383,21 +340,25 @@ def test_phase1_suite_counts_and_sharding() -> None:
     runs_full = build_suite_runs("full", ExperimentConfig())
     runs_literal = build_suite_runs("literal", ExperimentConfig())
     runs_step_a = build_suite_runs("step_a", ExperimentConfig())
-    assert len(runs_full) == 75
+    assert len(runs_full) == 31
     assert [n for n, _ in runs_full] == [n for n, _ in runs_literal]
     assert [n for n, _ in runs_full] == [n for n, _ in runs_step_a]
     names = [name for name, _ in runs_full]
     assert len(names) == len(set(names))
     sharded = [[name for idx, (name, _) in enumerate(runs_full) if idx % 4 == s] for s in range(4)]
-    assert sum(len(x) for x in sharded) == 75
+    assert sum(len(x) for x in sharded) == 31
     assert set().union(*sharded) == set(names)
+
+    runs_smoke = build_suite_runs("smoke", ExperimentConfig())
+    assert len(runs_smoke) == 4
+    assert all(cfg.aggregator == "trustgraph" for _, cfg in runs_smoke)
 
     pm50 = build_suite_runs("paper_match_50k", ExperimentConfig())
     bm50 = build_suite_runs("baseline_50k", ExperimentConfig())
-    assert len(pm50) == 50
+    assert len(pm50) == 14
     assert [n for n, _ in pm50] == [n for n, _ in bm50]
-    assert len({name for name, _ in pm50}) == 50
-    assert all(cfg.samples_per_node == 2500 and cfg.rounds == 25 and cfg.grad_clip_norm == 10.0 for _, cfg in pm50)
+    assert len({name for name, _ in pm50}) == 14
+    assert all(cfg.aggregator == "trustgraph" and cfg.samples_per_node == 2500 and cfg.rounds == 25 and cfg.grad_clip_norm == 10.0 for _, cfg in pm50)
 
     for suite_name, expected_delta, expect_ema in (
         ("fpr_lever1", "receiver", False),

@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--noise-sigma", type=float, default=0.5)
     p.add_argument(
         "--aggregator",
-        choices=["fedavg", "trustgraph", "balance", "krum", "trimmed_mean"],
+        choices=["trustgraph"],
         default="trustgraph",
     )
     p.add_argument("--alpha", type=float, default=0.5)
@@ -74,10 +74,6 @@ def parse_args() -> argparse.Namespace:
         default="global",
     )
     p.add_argument("--trustgraph-ema-beta", type=float, default=0.0)
-    p.add_argument("--balance-gamma", type=float, default=0.3)
-    p.add_argument("--balance-kappa", type=float, default=1.0)
-    p.add_argument("--krum-mode", choices=["multi", "single"], default="multi")
-    p.add_argument("--trim-ratio", type=float, default=0.3)
     p.add_argument("--seeds", type=int, nargs="+", default=[42])
     p.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     p.add_argument("--eval-every", type=int, default=5)
@@ -132,10 +128,6 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         trustgraph_delta_mode=args.trustgraph_delta_mode,
         trustgraph_score_scope=args.trustgraph_score_scope,
         trustgraph_ema_beta=args.trustgraph_ema_beta,
-        balance_gamma=args.balance_gamma,
-        balance_kappa=args.balance_kappa,
-        krum_mode=args.krum_mode,
-        trim_ratio=args.trim_ratio,
         device=args.device,
         eval_every=args.eval_every,
         verbose=not args.quiet,

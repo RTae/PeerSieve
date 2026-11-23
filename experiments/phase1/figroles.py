@@ -1,54 +1,48 @@
-"""Fixed visual roles (colors, markers, dashes, labels) for PeerSieve Phase 1 figures.
+"""Fixed visual roles (colors, markers, dashes, labels) for TrustGraph-DFL Phase 1 figures.
 
 All colors come strictly from ``figstyle.PALETTE`` (figures4papers house style).
-Every method keeps the same color, marker, and line style across every figure.
 """
 
 from __future__ import annotations
 
 from experiments.phase1.figstyle import PALETTE
 
-# Primary series colors (focus method = blue_main; comparators = red/violet/teal/gray)
-SERIES_COLOR: dict[str, str] = {
+# Attack series styling (clean reference in gray, active attacks in blue/teal/red)
+ATTACK_COLOR: dict[str, str] = {
+    "none": PALETTE["gray"],
+    "label_flip_all": PALETTE["blue_main"],
+    "model_poison": PALETTE["red_strong"],
+    "random_noise": PALETTE["teal"],
+}
+
+ATTACK_MARKER: dict[str, str] = {
+    "none": "o",
+    "label_flip_all": "s",
+    "model_poison": "^",
+    "random_noise": "D",
+}
+
+ATTACK_LINESTYLE: dict[str, str] = {
+    "none": "-",
+    "label_flip_all": "-",
+    "model_poison": "--",
+    "random_noise": "-.",
+}
+
+ATTACK_LABEL: dict[str, str] = {
+    "none": "Clean (No Attack)",
+    "label_flip_all": "Label Flipping ($E_b=2$)",
+    "model_poison": "Model Poisoning ($\\lambda=10$)",
+    "random_noise": "Random Noise ($\\sigma=0.5$)",
+}
+
+ATTACK_ORDER: tuple[str, ...] = ("none", "label_flip_all", "model_poison", "random_noise")
+
+# Component ablation roles (blue/green for healthy variants, red family for degraded)
+ABLATION_COLOR: dict[str, str] = {
     "tg_stab": PALETTE["blue_main"],
-    "balance": PALETTE["teal"],
-    "krum": PALETTE["red_strong"],
-    "trimmed_mean": PALETTE["violet"],
-    "fedavg": PALETTE["gray"],
-    # Ablation variants (same blue/green family for healthy variants, red family for degraded)
     "tg_a03": PALETTE["blue_secondary"],
     "tg_a07": PALETTE["green_3"],
     "tg_euclidean": PALETTE["red_2"],
     "tg_no_relu": PALETTE["red_strong"],
 }
-
-SERIES_MARKER: dict[str, str] = {
-    "tg_stab": "o",
-    "balance": "s",
-    "krum": "^",
-    "trimmed_mean": "D",
-    "fedavg": "v",
-}
-
-SERIES_LINESTYLE: dict[str, str] = {
-    "tg_stab": "-",
-    "balance": "--",
-    "krum": "-.",
-    "trimmed_mean": ":",
-    "fedavg": "-",
-}
-
-SERIES_LABEL: dict[str, str] = {
-    "tg_stab": "TrustGraph (stab)",
-    "balance": "BALANCE",
-    "krum": "Krum",
-    "trimmed_mean": "Trimmed Mean",
-    "fedavg": "FedAvg",
-    "tg_a03": "TrustGraph ($\\alpha=0.3$)",
-    "tg_a07": "TrustGraph ($\\alpha=0.7$)",
-    "tg_euclidean": "Euclidean",
-    "tg_no_relu": "No ReLU",
-}
-
-METHOD_ORDER: tuple[str, ...] = ("tg_stab", "balance", "krum", "trimmed_mean", "fedavg")
-DEFENSE_ORDER: tuple[str, ...] = ("tg_stab", "balance", "krum", "trimmed_mean")

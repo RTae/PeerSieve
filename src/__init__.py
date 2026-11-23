@@ -1,1 +1,1 @@
-"""Core modules for PeerSieve experiments."""
+"""Core modules for TrustGraph-DFL experiments."""

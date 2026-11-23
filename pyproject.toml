@@ -1,7 +1,7 @@
 [project]
-name = "peersieve"
+name = "trustgraph-dfl"
 version = "0.1.0"
-description = "PeerSieve decentralized federated learning experiments"
+description = "TrustGraph-DFL decentralized federated learning reproduction and FPR study"
 requires-python = ">=3.11"
 dependencies = [
     "networkx>=3.0",

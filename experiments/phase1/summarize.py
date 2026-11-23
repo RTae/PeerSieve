@@ -86,10 +86,6 @@ def method_label(cfg: dict[str, object]) -> str:
         if val_split != "local":
             parts.append(f"val={val_split}")
         return f"trustgraph({','.join(parts)}){suffix}"
-    if agg == "balance":
-        gamma = float(cfg.get("balance_gamma", 0.3))
-        if abs(gamma - 0.3) > 1e-9:
-            return f"balance(g={gamma:g}){suffix}"
     return f"{agg}{suffix}"
 
 

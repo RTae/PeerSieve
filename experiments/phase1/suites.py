@@ -9,21 +9,9 @@ from src.simulator import ExperimentConfig
 
 MethodSpec = tuple[str, dict[str, object]]
 
-ALL_LITERAL_METHODS: tuple[MethodSpec, ...] = (
-    ("fedavg", {"aggregator": "fedavg"}),
-    ("trimmed_mean", {"aggregator": "trimmed_mean"}),
-    ("krum", {"aggregator": "krum"}),
-    ("balance", {"aggregator": "balance"}),
+TRUSTGRAPH_SIGN_VARIANTS: tuple[MethodSpec, ...] = (
     ("tg_descent_neg", {"aggregator": "trustgraph", "val_grad_sign": "descent_neg"}),
     ("tg_paper_pos", {"aggregator": "trustgraph", "val_grad_sign": "paper_pos"}),
-)
-
-DEFENSE_LITERAL_METHODS: tuple[MethodSpec, ...] = (
-    ("tg_descent_neg", {"aggregator": "trustgraph", "val_grad_sign": "descent_neg"}),
-    ("tg_paper_pos", {"aggregator": "trustgraph", "val_grad_sign": "paper_pos"}),
-    ("balance", {"aggregator": "balance"}),
-    ("krum", {"aggregator": "krum"}),
-    ("trimmed_mean", {"aggregator": "trimmed_mean"}),
 )
 
 
@@ -48,7 +36,7 @@ def _base_50k(base: ExperimentConfig, **overrides: object) -> ExperimentConfig:
 
 
 def _tg_50k_overrides(**overrides: object) -> dict[str, object]:
-    """Return default stabilized 50k TrustGraph overrides."""
+    """Return default stabilized 50k TrustGraph-DFL overrides."""
     cfg: dict[str, object] = {
         "aggregator": "trustgraph",
         "val_grad_sign": "descent_neg",
@@ -64,7 +52,7 @@ def _tg_50k_overrides(**overrides: object) -> dict[str, object]:
 
 
 def _build_smoke(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Fast 12-run smoke suite (2 attacks x 6 methods)."""
+    """Fast 4-run TrustGraph-DFL smoke suite (2 attacks x 2 gradient signs)."""
     smoke_base = replace(
         base,
         topology="random",
@@ -74,24 +62,24 @@ def _build_smoke(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
     return [
         (f"{atk}__{tag}", replace(smoke_base, attack=atk, **overrides))
         for atk in ("label_flip", "model_poison")
-        for tag, overrides in ALL_LITERAL_METHODS
+        for tag, overrides in TRUSTGRAPH_SIGN_VARIANTS
     ]
 
 
 def _build_literal_full(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Literal 75-config TrustGraph-DFL audit suite (10k CIFAR-10, 2-conv CNN, 200 rounds)."""
+    """Literal 31-config TrustGraph-DFL audit suite (10k CIFAR-10, 2-conv CNN, 200 rounds)."""
     runs: list[tuple[str, ExperimentConfig]] = []
 
-    # 1) Main attacks (24): random ER(0.3), 30% Byzantine, 4 attacks x 6 methods
+    # 1) Main attacks (8): random ER(0.3), 30% Byzantine, 4 attacks x 2 TrustGraph signs
     for atk in ("none", "label_flip", "model_poison", "random_noise"):
-        for tag, overrides in ALL_LITERAL_METHODS:
+        for tag, overrides in TRUSTGRAPH_SIGN_VARIANTS:
             runs.append(
                 (f"main_attacks/{atk}__{tag}", replace(base, topology="random", byzantine_frac=0.3, attack=atk, **overrides))
             )
 
-    # 2) Additional topologies (12): ring & small_world under label_flip, 30% Byzantine
+    # 2) Additional topologies (4): ring & small_world under label_flip, 30% Byzantine
     for topo in ("ring", "small_world"):
-        for tag, overrides in ALL_LITERAL_METHODS:
+        for tag, overrides in TRUSTGRAPH_SIGN_VARIANTS:
             runs.append(
                 (
                     f"topologies/{topo}__label_flip__{tag}",
@@ -99,10 +87,10 @@ def _build_literal_full(base: ExperimentConfig) -> list[tuple[str, ExperimentCon
                 )
             )
 
-    # 3) FPR sweep (25): random ER(0.3), label_flip, 10%-50% Byzantine x 5 defenses
+    # 3) FPR sweep (10): random ER(0.3), label_flip, 10%-50% Byzantine x 2 signs
     for frac in (0.1, 0.2, 0.3, 0.4, 0.5):
         pct = int(round(frac * 100))
-        for tag, overrides in DEFENSE_LITERAL_METHODS:
+        for tag, overrides in TRUSTGRAPH_SIGN_VARIANTS:
             runs.append(
                 (
                     f"fpr_sweep/byz{pct}__{tag}",
@@ -110,10 +98,9 @@ def _build_literal_full(base: ExperimentConfig) -> list[tuple[str, ExperimentCon
                 )
             )
 
-    # 4) Ablations & targeted diagnostics (14)
+    # 4) Ablations & targeted TrustGraph-DFL diagnostics (9)
     rand_base = replace(base, topology="random", byzantine_frac=0.3)
     tg_mp = replace(rand_base, attack="model_poison", aggregator="trustgraph", val_grad_sign="descent_neg")
-    bal_g015 = replace(rand_base, aggregator="balance", balance_gamma=0.15)
     runs.extend(
         [
             ("ablations/no_relu__model_poison", replace(tg_mp, trustgraph_use_relu=False)),
@@ -122,11 +109,6 @@ def _build_literal_full(base: ExperimentConfig) -> list[tuple[str, ExperimentCon
             ("ablations/alpha07__model_poison", replace(tg_mp, alpha=0.7)),
             ("diagnostics/valiid__label_flip__tg_descent_neg", replace(tg_mp, attack="label_flip", val_split="iid")),
             ("diagnostics/valiid__model_poison__tg_descent_neg", replace(tg_mp, attack="model_poison", val_split="iid")),
-            ("diagnostics/bal_g015__label_flip", replace(bal_g015, attack="label_flip")),
-            ("diagnostics/bal_g015__model_poison", replace(bal_g015, attack="model_poison")),
-            ("diagnostics/bal_g015__random_noise", replace(bal_g015, attack="random_noise")),
-            ("diagnostics/label_flip_all__fedavg", replace(rand_base, attack="label_flip_all", aggregator="fedavg")),
-            ("diagnostics/label_flip_all__balance_g015", replace(bal_g015, attack="label_flip_all")),
             ("diagnostics/label_flip_all__tg_descent_neg", replace(tg_mp, attack="label_flip_all")),
             ("diagnostics/clip_norm__model_poison__tg_descent_neg", replace(tg_mp, attack="model_poison", trustgraph_clip_norm=True)),
             ("diagnostics/clip_norm__random_noise__tg_descent_neg", replace(tg_mp, attack="random_noise", trustgraph_clip_norm=True)),
@@ -136,51 +118,34 @@ def _build_literal_full(base: ExperimentConfig) -> list[tuple[str, ExperimentCon
 
 
 def _build_paper_match_50k(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Locked strong full-50k CIFAR-10 TrustGraph-DFL baseline (50 runs/seed)."""
+    """Locked strong full-50k CIFAR-10 TrustGraph-DFL baseline (14 runs/seed)."""
     base_50k = _base_50k(base)
     tg_strong = _tg_50k_overrides()
-    bal_cal: dict[str, object] = {"aggregator": "balance", "balance_gamma": 0.04}
-    methods_5: tuple[MethodSpec, ...] = (
-        ("fedavg", {"aggregator": "fedavg"}),
-        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
-        ("krum", {"aggregator": "krum"}),
-        ("balance", bal_cal),
-        ("tg_strong", tg_strong),
-    )
-    methods_fpr: tuple[MethodSpec, ...] = (
-        ("tg_strong", tg_strong),
-        ("balance", bal_cal),
-        ("krum", {"aggregator": "krum"}),
-        ("trimmed_mean", {"aggregator": "trimmed_mean"}),
-    )
 
     runs: list[tuple[str, ExperimentConfig]] = []
-    # Panel 1 (20): Fig. 2 & Fig. 3(a) main attacks on Random ER (p=0.3, 30% Byzantine)
+    # Panel 1 (4): Fig. 1 main attacks on Random ER (p=0.3, 30% Byzantine)
     for atk in ("none", "label_flip_all", "model_poison", "random_noise"):
         bep = 2 if atk == "label_flip_all" else 0
-        for tag, overrides in methods_5:
-            runs.append((f"main/{atk}__{tag}", replace(base_50k, attack=atk, byz_local_epochs=bep, **overrides)))
+        runs.append((f"main/{atk}__tg_strong", replace(base_50k, attack=atk, byz_local_epochs=bep, **tg_strong)))
 
-    # Panel 2 (10): Table 1 Ring & Small-World topologies under label_flip_all (30% Byzantine, bep=2)
+    # Panel 2 (2): Ring & Small-World topologies under label_flip_all (30% Byzantine, bep=2)
     for topo in ("ring", "small_world"):
-        for tag, overrides in methods_5:
-            runs.append(
-                (
-                    f"topologies/{topo}__label_flip_all__{tag}",
-                    replace(base_50k, topology=topo, attack="label_flip_all", byz_local_epochs=2, **overrides),
-                )
+        runs.append(
+            (
+                f"topologies/{topo}__label_flip_all__tg_strong",
+                replace(base_50k, topology=topo, attack="label_flip_all", byz_local_epochs=2, **tg_strong),
             )
+        )
 
-    # Panel 3 (16): Fig. 3(b) FPR sweep 10/20/40/50% Byzantine under label_flip_all (30% in Panel 1)
+    # Panel 3 (4): Byzantine stress sweep 10/20/40/50% under label_flip_all (30% in Panel 1)
     for frac in (0.1, 0.2, 0.4, 0.5):
         pct = int(round(frac * 100))
-        for tag, overrides in methods_fpr:
-            runs.append(
-                (
-                    f"fpr/byz{pct}__{tag}",
-                    replace(base_50k, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=frac, **overrides),
-                )
+        runs.append(
+            (
+                f"fpr/byz{pct}__tg_strong",
+                replace(base_50k, attack="label_flip_all", byz_local_epochs=2, byzantine_frac=frac, **tg_strong),
             )
+        )
 
     # Panel 4 (4): Section 5.5 ablations under model_poison (30% Byzantine)
     tg_mp = replace(base_50k, attack="model_poison", **tg_strong)

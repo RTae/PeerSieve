@@ -72,7 +72,7 @@ class ExperimentConfig:
     poison_lambda: float = 10.0
     noise_sigma: float = 0.5
     # Aggregator
-    aggregator: str = "trustgraph"  # fedavg | trustgraph | balance | krum | trimmed_mean
+    aggregator: str = "trustgraph"
     alpha: float = 0.5
     val_grad_sign: str = "descent_neg"  # descent_neg | paper_pos
     trustgraph_use_relu: bool = True
@@ -84,10 +84,6 @@ class ExperimentConfig:
     trustgraph_delta_mode: str = "sender"
     trustgraph_score_scope: str = "global"
     trustgraph_ema_beta: float = 0.0
-    balance_gamma: float = 0.3
-    balance_kappa: float = 1.0
-    krum_mode: str = "multi"
-    trim_ratio: float = 0.3
     # Execution and logging
     seed: int = 42
     device: str = "auto"  # auto | cpu | cuda | mps
@@ -110,10 +106,6 @@ class ExperimentConfig:
             trustgraph_delta_mode=self.trustgraph_delta_mode,
             trustgraph_score_scope=self.trustgraph_score_scope,
             trustgraph_ema_beta=self.trustgraph_ema_beta,
-            balance_gamma=self.balance_gamma,
-            balance_kappa=self.balance_kappa,
-            krum_mode=self.krum_mode,
-            trim_ratio=self.trim_ratio,
         )
         cfg.validate()
         return cfg
