@@ -159,4 +159,4 @@ Below is the literal 10k 2-conv CNN 3-seed audit (200 rounds, Random ER $p = 0.3
 | Random noise ($\sigma=0.5$) | Corrected, unclipped | 10.00 ± 0.00 | 10.00 ± 0.00 | 99.40 ± 0.14 | 0.79 ± 0.10 | 3/3 |
 | Random noise ($\sigma=0.5$) | Corrected + norm clip | 28.76 ± 0.66 | 40.56 ± 0.44 | 62.22 ± 2.57 | 49.69 ± 0.18 | 0/3 |
 
-For Slurm run records, committed JSON data, and commands to reproduce every run and figure, see [experiments/phase1/REPRODUCE.md](../experiments/phase1/REPRODUCE.md).
+For commands to reproduce every run and figure, see [experiments/phase1/REPRODUCE.md](../experiments/phase1/REPRODUCE.md).
