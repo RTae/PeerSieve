@@ -245,7 +245,7 @@ def format_system_markdown_report(rows: list[SystemSummaryRow], title: str = "Sy
     lines = [
         f"## {title}",
         "",
-        "| Topology | Attack | Byz% | Method | Mean/Max Degree | Rx MB/round | Wasted MB/round (%) | Recv Buf Mean/Max (MiB) | Train/Val/Agg (s) | 1 Gb/s Comm (s, %) | Attacker Blocked (rounds) | Honest >=3 FP Streak (%) |",
+        "| Topology | Attack | Byz% | Method | Mean/Max Degree | Rx MB/round | Wasted MB/round (%) | Recv Buf Mean/Max (MiB) | Train/Val/Agg (s) | 1 Gb/s Comm (s, %) | Attacker Blocked (rounds) | Benign >=3 FP Streak (%) |",
         "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in rows:

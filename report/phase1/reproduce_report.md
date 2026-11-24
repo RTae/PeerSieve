@@ -17,9 +17,9 @@ This report evaluates [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) (Xu et al.,
 
 ## Metrics we aim to reproduce
 
-- **Per-peer accuracy.** The average CIFAR-10 test accuracy across all honest peers' local models at the end of training.
-- **Consensus accuracy.** The test accuracy of the single parameter-averaged model across all honest peers.
-- **False positive rate (FPR).** The percentage of honest neighbor updates that a peer assigns zero trust weight and ignores. Lower is better.
+- **Per-peer accuracy.** The average CIFAR-10 test accuracy across all benign peers' local models at the end of training.
+- **Consensus accuracy.** The test accuracy of the single parameter-averaged model across all benign peers.
+- **False positive rate (FPR).** The percentage of benign neighbor updates that a peer assigns zero trust weight and ignores. Lower is better.
 - **Byzantine acceptance.** The percentage of malicious neighbor updates that a peer assigns positive trust weight. Lower is better.
 
 | Metric | Paper target | Our result | Status |
@@ -148,7 +148,7 @@ The table below shows the literal 10k 2-conv CNN audit (3 seeds, 200 rounds, Ran
 
 ## 8. Measured gaps and limitations
 
-The table below measures the exact difference between each target reported in [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) and our runs. Negative accuracy gaps mean our run is lower than the paper; positive FPR gaps mean our run rejects more honest peers than the paper.
+The table below measures the exact difference between each target reported in [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) and our runs. Negative accuracy gaps mean our run is lower than the paper; positive FPR gaps mean our run rejects more benign peers than the paper.
 
 | Metric | Paper target | Literal 10k CNN | Adjusted 50k ResNet-18 | Measured gap (50k vs. paper) |
 |---|---|---|---|---|

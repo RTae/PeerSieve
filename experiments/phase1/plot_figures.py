@@ -619,8 +619,8 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
         )
 
     s1 = ax_str.bar(xa - w3, byz_ge3, width=w3, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.5, label="Attacker Edges (>=3 Consecutive Blocks)", zorder=3)
-    s2 = ax_str.bar(xa, hon_ge1, width=w3, color=fs.PALETTE["blue_secondary"], edgecolor="black", linewidth=1.5, label="Honest Edges (>=1 False Positive)", zorder=3)
-    s3 = ax_str.bar(xa + w3, hon_ge3, width=w3, color=fs.PALETTE["teal"], edgecolor="black", linewidth=1.5, label="Honest Edges (>=3 Consecutive False Positives)", zorder=3)
+    s2 = ax_str.bar(xa, hon_ge1, width=w3, color=fs.PALETTE["blue_secondary"], edgecolor="black", linewidth=1.5, label="Benign Edges (>=1 False Positive)", zorder=3)
+    s3 = ax_str.bar(xa + w3, hon_ge3, width=w3, color=fs.PALETTE["teal"], edgecolor="black", linewidth=1.5, label="Benign Edges (>=3 Consecutive False Positives)", zorder=3)
 
     for bars, vals, col in ((s1, byz_ge3, fs.PALETTE["red_strong"]), (s2, hon_ge1, fs.PALETTE["blue_secondary"]), (s3, hon_ge3, fs.PALETTE["teal"])):
         for b, v in zip(bars, vals):
@@ -629,7 +629,7 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
     ax_str.set_xticks(xa)
     ax_str.set_xticklabels([lbl for _, lbl in atks])
     ax_str.set_ylabel("Share of Directed Peer Edges (%)")
-    ax_str.set_title("(b) Repeat Rejections: Attacker vs. Honest Edges", pad=10, fontweight="bold")
+    ax_str.set_title("(b) Repeat Rejections: Attacker vs. Benign Edges", pad=10, fontweight="bold")
     ax_str.set_ylim(0, 134)
     ax_str.legend(loc="upper center", ncol=1, fontsize=10.0)
 
@@ -640,7 +640,7 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
     )
     bot = fs.footnote(
         fig,
-        "Left: Receive buffers grow linearly with degree (up to 8x a single update on 30% Byzantine Random). Right: Banning on one false positive hits 98-100% of honest edges.",
+        "Left: Receive buffers grow linearly with degree (up to 8x a single update on 30% Byzantine Random). Right: Banning on one false positive hits 98-100% of benign edges.",
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
     fs.save(fig, out_dir, "fig6-memory-and-rejection-streaks-50k")
