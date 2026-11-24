@@ -1,6 +1,6 @@
 # TrustGraph-DFL CIFAR-10 reproduction report
 
-This report evaluates [TrustGraph-DFL.pdf](../TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026) on CIFAR-10 across 20 decentralized peers. TrustGraph-DFL scores each neighbor update by taking the cosine similarity against the receiver's validation gradient, zeroing negative scores with ReLU, and averaging the accepted models. We test each accuracy, attack, topology, ablation, and false-positive claim from the paper, then list our adjustments and the remaining gaps.
+This report evaluates [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026) on CIFAR-10 across 20 decentralized peers. TrustGraph-DFL scores each neighbor update by taking the cosine similarity against the receiver's validation gradient, zeroing negative scores with ReLU, and averaging the accepted models. We test each accuracy, attack, topology, ablation, and false-positive claim from the paper, then list our adjustments and the remaining gaps.
 
 ---
 
@@ -48,7 +48,7 @@ The paper reports about 93% CIFAR-10 accuracy without attackers. Running the lit
 
 The paper reports 89.5% to 93% accuracy under 30% label-flipping, model-poisoning, and random-noise attacks on a Random Erdos-Renyi graph with $p = 0.3$. In the literal 10k unclipped setup, model poisoning ($\lambda = 10$) and random noise ($\sigma = 0.5$) overflow model weights and crash in 3/3 runs. With $-\nabla F_i$, gradient clipping, and update norm clipping on 50k ResNet-18, consensus accuracy stays between 91.53% and 92.38% across all three attacks with 0 `NaN` runs. Under random noise, peers accept 0.00% of Byzantine updates.
 
-![Fig. 1 TrustGraph-DFL Attack Regimes (50k)](figures/fig1-attacks-50k.png)
+![Fig. 1 TrustGraph-DFL Attack Regimes (50k)](../figures/fig1-attacks-50k.png)
 
 | Attack on 50k Random ER ($p=0.3$) | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | Cosine (benign / Byzantine) | `NaN` runs |
 |---|---:|---:|---:|---:|---:|---:|
@@ -63,7 +63,7 @@ The paper reports 89.5% to 93% accuracy under 30% label-flipping, model-poisonin
 
 Table 1 of the paper reports 89.1% on Ring, 91.2% on Random, and 90.4% on Small-World under 30% label flipping. On 50k ResNet-18 under 30% all-class label flipping, Random reaches 89.28% per-peer and 92.38% consensus accuracy, while Small-World reaches 89.48% per-peer accuracy, 92.36% consensus accuracy, and the lowest FPR at 27.84%. Ring reaches 91.69% consensus accuracy but 84.70% per-peer accuracy because each peer has only two neighbors. On the literal 10k 2-conv CNN, per-peer accuracy was 38.8% on Ring, 42.1% on Random, and 43.2% on Small-World.
 
-![Fig. 2 TrustGraph-DFL Topologies and Byzantine Stress (50k)](figures/fig2-topologies-and-stress-50k.png)
+![Fig. 2 TrustGraph-DFL Topologies and Byzantine Stress (50k)](../figures/fig2-topologies-and-stress-50k.png)
 
 | Topology (30% all-class label flip, 50k) | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | Cosine (benign / Byzantine) | `NaN` runs |
 |---|---:|---:|---:|---:|---:|---:|
@@ -91,7 +91,7 @@ Figure 3b of the paper tests robustness as the attacker share grows up to 50%. I
 
 Section 5.5 of the paper tests removing ReLU zeroing, replacing cosine similarity with Euclidean distance, and varying self-weight $\alpha$. Under 30% model poisoning ($\lambda = 10$) on 50k ResNet-18 in Figure 3a, dropping ReLU keeps negative-scoring attackers in the average and drops consensus accuracy by 35.9 percentage points to 55.60%. Replacing cosine similarity with Euclidean distance accepts 100% of attackers and drops consensus accuracy by 9.0 percentage points to 82.57%. Raising self-weight to $\alpha = 0.7$ isolates peers and lowers per-peer accuracy to 82.49%. Lowering self-weight to $\alpha = 0.3$ reaches 91.67% consensus accuracy and cuts Byzantine acceptance from 33.07% to 21.92%.
 
-![Fig. 3 TrustGraph-DFL Ablations and FPR Dynamics (50k)](figures/fig3-ablations-and-fpr-dynamics-50k.png)
+![Fig. 3 TrustGraph-DFL Ablations and FPR Dynamics (50k)](../figures/fig3-ablations-and-fpr-dynamics-50k.png)
 
 | Ablation variant (30% model poison, $\lambda=10$) | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | `NaN` runs |
 |---|---:|---:|---:|---:|---:|
@@ -109,7 +109,7 @@ Figure 3b of the paper reports FPR around 3% to 9%. Under the paper's default si
 
 Scoring updates relative to the receiver's weights (`rxdelta`, $\theta_j^{t+1/2} - \theta_i^t$) with balanced validation (`val=iid`) reduces FPR into the paper's range across 16 seed-42 runs with 0 `NaN` runs. At $\tau = 0.003$, `rxdelta` lowers FPR to 7.4% to 9.5% at 30% Byzantine peers and 6.5% to 6.8% at 50% Byzantine peers, while raising per-peer accuracy by 0.45 to 1.45 percentage points. Receiver anchoring requires balanced validation, because `val=local` leaves `rxdelta` FPR at 36.9% to 39.2%. At $\tau = 0.003$, receiver anchoring increases late-round Byzantine acceptance to 61.58% on label flipping and 41.26% on model poisoning. Raising the threshold to $\tau = 0.035$ beats the `sender` baseline on FPR (22.3% to 28.6%), attack rejection, and per-peer accuracy, while leaving an FPR gap above 3% to 9%.
 
-![Fig. 4 Receiver-Anchored FPR on TrustGraph-DFL (50k)](figures/fig4-fpr-rxdelta-50k.png)
+![Fig. 4 Receiver-Anchored FPR on TrustGraph-DFL (50k)](../figures/fig4-fpr-rxdelta-50k.png)
 
 | Method (`val=iid` unless noted) | No-attack consensus (%) | FPR range (%) | Model poison Byzantine acceptance (%) | Label flip Byzantine acceptance (%) | Random noise Byzantine acceptance (%) |
 |---|---:|---:|---:|---:|---:|
@@ -148,7 +148,7 @@ The table below shows the literal 10k 2-conv CNN audit (3 seeds, 200 rounds, Ran
 
 ## 8. Measured gaps and limitations
 
-The table below measures the exact difference between each target reported in [TrustGraph-DFL.pdf](../TrustGraph-DFL.pdf) and our runs. Negative accuracy gaps mean our run is lower than the paper; positive FPR gaps mean our run rejects more honest peers than the paper.
+The table below measures the exact difference between each target reported in [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) and our runs. Negative accuracy gaps mean our run is lower than the paper; positive FPR gaps mean our run rejects more honest peers than the paper.
 
 | Metric | Paper target | Literal 10k CNN | Adjusted 50k ResNet-18 | Measured gap (50k vs. paper) |
 |---|---|---|---|---|
@@ -169,4 +169,4 @@ Four practical limitations remain.
 3. **Ring per-peer accuracy stays 4.4 points below Table 1.** Individual Ring peers average 84.70% accuracy because each peer connects to only two neighbors, though the averaged Ring consensus model reaches 91.69%.
 4. **The `rxdelta` runs used one random seed.** The main 50k experiments average seeds 42, 43, and 44, while the 16 `rxdelta` runs used seed 42 only.
 
-For commands to reproduce every run and figure, see [experiments/phase1/REPRODUCE.md](../experiments/phase1/REPRODUCE.md).
+For commands to reproduce every run and figure, see [experiments/phase1/REPRODUCE.md](../../experiments/phase1/REPRODUCE.md).
