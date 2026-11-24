@@ -525,20 +525,23 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
     comp_a = np.array(comp_vals)
     uc_a = np.array(useful_c)
     wc_a = np.array(wasted_c)
-    ax_time.bar(xl, comp_a, width=0.52, color=fs.PALETTE["gray"], edgecolor="black", linewidth=1.6, label="Local Train + Val Grad + Agg", zorder=3)
-    ax_time.bar(xl, uc_a, bottom=comp_a, width=0.52, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label="Useful FP32 Transfer", zorder=3)
-    ax_time.bar(xl, wc_a, bottom=comp_a + uc_a, width=0.52, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label="Wasted FP32 Transfer", zorder=3)
+    mp_rx_mb = float(sm_mp["rx_mb_per_peer_round"])
+    mp_useful_mb = float(sm_mp["useful_mb_per_peer_round"])
+    mp_wasted_mb = float(sm_mp["wasted_mb_per_peer_round"])
+    ax_time.bar(xl, comp_a, width=0.52, color=fs.PALETTE["gray"], edgecolor="black", linewidth=1.6, label=f"Measured A100 Compute ({t_comp:.2f} s)", zorder=3)
+    ax_time.bar(xl, uc_a, bottom=comp_a, width=0.52, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label=f"Est. Useful Transfer ({mp_useful_mb:.1f} MB)", zorder=3)
+    ax_time.bar(xl, wc_a, bottom=comp_a + uc_a, width=0.52, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label=f"Est. Wasted Transfer ({mp_wasted_mb:.1f} MB)", zorder=3)
 
     tots_t = comp_a + uc_a + wc_a
     for xi, tot, sh in zip(xl, tots_t, comm_shares):
-        ax_time.text(xi, tot + max(tots_t) * 0.02, f"{tot:.1f}s\n({sh:.0f}% comm)", ha="center", va="bottom", fontsize=11.5, fontweight="bold", color=fs.INK)
+        ax_time.text(xi, tot + max(tots_t) * 0.02, f"{tot:.2f}s\n({sh:.1f}% comm)", ha="center", va="bottom", fontsize=11.0, fontweight="bold", color=fs.INK)
 
     ax_time.set_xticks(xl)
     ax_time.set_xticklabels([lbl for _, lbl in links])
     ax_time.set_ylabel("Per-Peer Round Time (seconds)")
-    ax_time.set_title("(b) Round Time Breakdown (30% Model Poisoning)", pad=10, fontweight="bold")
-    ax_time.set_ylim(0, max(tots_t) * 1.28)
-    ax_time.legend(loc="upper left", ncol=1, fontsize=11.0)
+    ax_time.set_title(f"(b) Est. Round Time from (a) (Model Poison, {mp_rx_mb:.1f} MB)", pad=10, fontweight="bold")
+    ax_time.set_ylim(0, max(tots_t) * 1.30)
+    ax_time.legend(loc="upper left", ncol=1, fontsize=10.5)
 
     top = fs.header(
         fig,
@@ -547,7 +550,7 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
     )
     bot = fs.footnote(
         fig,
-        "Left: 42.5-67.6% of received FP32 updates receive zero trust weight and are discarded. Right: Uncompressed FP32 transfer dominates round time at 1 Gb/s and 100 Mb/s.",
+        "Left: 42.5-67.6% of FP32 downloads receive zero weight. Right: Measured A100 compute (0.66 s) plus bytes x 8 / link speed for the 268.4 MB Model Poison bar in (a).",
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
     fs.save(fig, out_dir, "fig5-bandwidth-and-round-time-50k")
@@ -637,7 +640,7 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
     )
     bot = fs.footnote(
         fig,
-        "Left: Batched FP32 receive buffers grow linearly with peer degree (up to 8x a single update on 30% Byzantine Random graphs). Right: Banning on one false positive would hit 98-100% of honest edges.",
+        "Left: Receive buffers grow linearly with degree (up to 8x a single update on 30% Byzantine Random). Right: Banning on one false positive hits 98-100% of honest edges.",
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
     fs.save(fig, out_dir, "fig6-memory-and-rejection-streaks-50k")
