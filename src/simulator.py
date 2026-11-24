@@ -133,6 +133,44 @@ class _AggregationMetrics:
     self_fallback_rate: float
     benign_score_mean: float | None
     byz_score_mean: float | None
+    agg_sec_per_peer: float = 0.0
+
+
+def _sync_device(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def _streak_stats(seq: list[bool]) -> tuple[int, int, int, int]:
+    """Return (total_rejected, max_consec_rejected, repeat_after_first, isolated_single_rejections)."""
+    total = sum(1 for x in seq if x)
+    max_s = 0
+    cur = 0
+    isolated = 0
+    for idx, x in enumerate(seq):
+        if x:
+            cur += 1
+            if cur > max_s:
+                max_s = cur
+            prev_rej = seq[idx - 1] if idx > 0 else False
+            next_rej = seq[idx + 1] if idx + 1 < len(seq) else False
+            if not prev_rej and not next_rej:
+                isolated += 1
+        else:
+            cur = 0
+    repeat_after_first = max(0, total - 1) if total > 0 else 0
+    return total, max_s, repeat_after_first, isolated
+
+
+def _timing_summary(vals: list[float]) -> dict[str, float]:
+    if not vals:
+        return {"median": 0.0, "min": 0.0, "max": 0.0, "repeats": 0}
+    return {
+        "median": round(float(np.median(vals)), 6),
+        "min": round(float(np.min(vals)), 6),
+        "max": round(float(np.max(vals)), 6),
+        "repeats": len(vals),
+    }
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -224,19 +262,28 @@ def _local_training_phase(
     train_gen: torch.Generator,
     device: torch.device,
     round_idx: int,
-) -> tuple[list[torch.Tensor], list[torch.Tensor], dict[int, torch.Tensor]]:
-    """Run Phase 1 local SGD and pre-update validation gradient computation."""
+) -> tuple[list[torch.Tensor], list[torch.Tensor], dict[int, torch.Tensor], float, float]:
+    """Run Phase 1 local SGD and pre-update validation gradient computation.
+
+    Returns ``(post_models, updates, val_grads, benign_train_sec_mean, benign_val_grad_sec_mean)``.
+    """
     post_models: list[torch.Tensor] = [torch.empty(0, device=device) for _ in range(cfg.n_nodes)]
     updates: list[torch.Tensor] = [torch.empty(0, device=device) for _ in range(cfg.n_nodes)]
     val_grads: dict[int, torch.Tensor] = {}
     lr_now = _round_lr(cfg, round_idx)
+    benign_train_sec = 0.0
+    benign_val_sec = 0.0
+    n_benign_seen = 0
 
     for i in range(cfg.n_nodes):
         if i in byzantine_ids and cfg.attack in {"model_poison", "random_noise"}:
             continue
+        is_benign = i not in byzantine_ids
         vector_to_model(prev_models[i], work_model)
-        if i not in byzantine_ids and cfg.aggregator == "trustgraph":
+        if is_benign and cfg.aggregator == "trustgraph":
             # Algorithm 1 line 8: compute validation gradient at theta_i^t before local update.
+            _sync_device(device)
+            t_v0 = time.perf_counter()
             val_grads[i] = compute_validation_gradient(
                 work_model,
                 dev_data.x_val[i],
@@ -244,11 +291,16 @@ def _local_training_phase(
                 batch_size=cfg.batch_size,
                 weight_decay=(cfg.weight_decay if cfg.val_grad_weight_decay else 0.0),
             )
+            _sync_device(device)
+            benign_val_sec += time.perf_counter() - t_v0
         node_epochs = (
             cfg.byz_local_epochs
             if (i in byzantine_ids and cfg.byz_local_epochs > 0)
             else cfg.local_epochs
         )
+        if is_benign:
+            _sync_device(device)
+            t_tr0 = time.perf_counter()
         train_local_epoch(
             work_model,
             dev_data.x_train[i],
@@ -262,10 +314,15 @@ def _local_training_phase(
             grad_clip_norm=cfg.grad_clip_norm,
             generator=train_gen,
         )
+        if is_benign:
+            _sync_device(device)
+            benign_train_sec += time.perf_counter() - t_tr0
+            n_benign_seen += 1
         post_vec = model_to_vector(work_model)
         post_models[i] = post_vec
         updates[i] = post_vec - prev_models[i]
-    return post_models, updates, val_grads
+    denom = max(n_benign_seen, 1)
+    return post_models, updates, val_grads, benign_train_sec / denom, benign_val_sec / denom
 
 
 def _aggregation_phase(
@@ -281,6 +338,7 @@ def _aggregation_phase(
     round_idx: int,
     byz_frac_eff: float,
     device: torch.device,
+    edge_rejected: dict[tuple[int, int], list[bool]] | None = None,
 ) -> tuple[list[torch.Tensor], _AggregationMetrics]:
     """Run Phase 2/3 scoring and neighborhood aggregation across all benign peers."""
     next_models: list[torch.Tensor] = [vec.clone() for vec in prev_models]
@@ -293,6 +351,8 @@ def _aggregation_phase(
     byz_scores: list[float] = []
     self_fallbacks = 0
 
+    _sync_device(device)
+    t_agg0 = time.perf_counter()
     for i in benign_ids:
         nbrs = list(graph.neighbors(i))
         nbr_posts = {j: post_models[j] for j in nbrs}
@@ -321,6 +381,8 @@ def _aggregation_phase(
         byz_w = 0.0
         for j in nbrs:
             z_frac = res.neighbor_zero_weight_frac[j]
+            if edge_rejected is not None:
+                edge_rejected[(i, j)].append(z_frac >= 0.5)
             if j in byzantine_ids:
                 byz_pairs += 1
                 byz_accept += 1.0 - z_frac
@@ -333,6 +395,8 @@ def _aggregation_phase(
                 if cfg.aggregator == "trustgraph" and j in res.scores:
                     benign_scores.append(res.scores[j])
         byz_weight_shares.append((byz_w / total_nbr_w) if total_nbr_w > 0.0 else 0.0)
+    _sync_device(device)
+    agg_sec_per_peer = (time.perf_counter() - t_agg0) / max(len(benign_ids), 1)
 
     if byzantine_ids:
         if cfg.attack in {"label_flip", "label_flip_all"}:
@@ -355,6 +419,7 @@ def _aggregation_phase(
         self_fallback_rate=self_fallbacks / max(len(benign_ids), 1),
         benign_score_mean=float(np.mean(benign_scores)) if benign_scores else None,
         byz_score_mean=float(np.mean(byz_scores)) if byz_scores else None,
+        agg_sec_per_peer=agg_sec_per_peer,
     )
     return next_models, metrics
 
@@ -451,11 +516,19 @@ def run_experiment(
         history_file = open(out_path / "history.jsonl", "w", encoding="utf-8")
 
     history: list[dict[str, object]] = []
+    edge_rejected: dict[tuple[int, int], list[bool]] = {
+        (i, j): [] for i in benign_ids for j in graph.neighbors(i)
+    }
+    train_sec_list: list[float] = []
+    val_sec_list: list[float] = []
+    agg_sec_list: list[float] = []
     cum_benign_zero = 0.0
     cum_benign_pairs = 0
     cum_byz_accept = 0.0
     cum_byz_pairs = 0
     had_nan = False
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     t_run_start = time.perf_counter()
 
     try:
@@ -463,7 +536,7 @@ def run_experiment(
             t_round_start = time.perf_counter()
             prev_models = [vec.clone() for vec in node_models]
 
-            post_models, updates, val_grads = _local_training_phase(
+            post_models, updates, val_grads, train_sec_peer, val_sec_peer = _local_training_phase(
                 cfg, prev_models, work_model, dev_data, byzantine_ids, train_gen, device, round_idx=r
             )
             apply_round_attack(
@@ -488,24 +561,35 @@ def run_experiment(
                 round_idx=r,
                 byz_frac_eff=byz_frac_eff,
                 device=device,
+                edge_rejected=edge_rejected,
             )
             if not had_nan and _has_nonfinite_models(node_models, benign_ids):
                 had_nan = True
+
+            train_sec_list.append(train_sec_peer)
+            val_sec_list.append(val_sec_peer)
+            agg_sec_list.append(agg_m.agg_sec_per_peer)
 
             cum_benign_zero += agg_m.benign_zero
             cum_benign_pairs += agg_m.benign_pairs
             cum_byz_accept += agg_m.byz_accept
             cum_byz_pairs += agg_m.byz_pairs
 
+            round_total_pairs = agg_m.benign_pairs + agg_m.byz_pairs
+            round_rej_pairs = agg_m.benign_zero + (agg_m.byz_pairs - agg_m.byz_accept)
             record: dict[str, object] = {
                 "round": r,
                 "fpr_round": (agg_m.benign_zero / agg_m.benign_pairs) if agg_m.benign_pairs > 0 else 0.0,
                 "fpr_cumulative": (cum_benign_zero / cum_benign_pairs) if cum_benign_pairs > 0 else 0.0,
                 "byz_accept_rate": (agg_m.byz_accept / agg_m.byz_pairs) if agg_m.byz_pairs > 0 else 0.0,
+                "wasted_transfer_rate": (round_rej_pairs / round_total_pairs) if round_total_pairs > 0 else 0.0,
                 "byz_weight_share": agg_m.byz_weight_share,
                 "self_fallback_rate": agg_m.self_fallback_rate,
                 "benign_score_mean": agg_m.benign_score_mean,
                 "byz_score_mean": agg_m.byz_score_mean,
+                "train_sec_per_peer": round(train_sec_peer, 6),
+                "val_grad_sec_per_peer": round(val_sec_peer, 6),
+                "agg_sec_per_peer": round(agg_m.agg_sec_per_peer, 6),
             }
 
             do_eval = _should_eval(r, cfg.rounds, cfg.eval_every)
@@ -559,6 +643,108 @@ def run_experiment(
     if mean_ben is not None and math.isnan(mean_ben):
         had_nan = True
 
+    payload_bytes = param_count * 4
+    payload_mb = payload_bytes / 1e6
+    payload_mib = payload_bytes / float(1024 ** 2)
+    benign_degrees = [int(graph.degree(i)) for i in benign_ids]
+    mean_ben_deg = float(np.mean(benign_degrees)) if benign_degrees else 0.0
+    max_ben_deg = max(benign_degrees) if benign_degrees else 0
+
+    honest_edges = [seq for (_, j), seq in edge_rejected.items() if j not in byzantine_ids]
+    byz_edges = [seq for (_, j), seq in edge_rejected.items() if j in byzantine_ids]
+    byz_edge_stats = [_streak_stats(seq) for seq in byz_edges]
+    honest_edge_stats = [_streak_stats(seq) for seq in honest_edges]
+
+    total_rx = cum_benign_pairs + cum_byz_pairs
+    honest_rej = int(round(cum_benign_zero))
+    byz_rej = int(round(cum_byz_pairs - cum_byz_accept))
+    total_rej = honest_rej + byz_rej
+    n_ben_rounds = max(len(benign_ids) * cfg.rounds, 1)
+    rx_bytes_per_peer_round = (total_rx / n_ben_rounds) * payload_bytes
+    wasted_bytes_per_peer_round = (total_rej / n_ben_rounds) * payload_bytes
+    repeat_byz_tx = sum(s[2] for s in byz_edge_stats)
+
+    med_train = float(np.median(train_sec_list)) if train_sec_list else 0.0
+    med_val = float(np.median(val_sec_list)) if val_sec_list else 0.0
+    med_agg = float(np.median(agg_sec_list)) if agg_sec_list else 0.0
+
+    round_time_by_link: dict[str, dict[str, float]] = {}
+    for link_label, bw_bps in (("10gbps", 10e9), ("1gbps", 1e9), ("100mbps", 100e6)):
+        comm_sec = (rx_bytes_per_peer_round * 8.0) / bw_bps
+        wasted_comm_sec = (wasted_bytes_per_peer_round * 8.0) / bw_bps
+        total_r_sec = med_train + med_val + comm_sec + med_agg
+        round_time_by_link[link_label] = {
+            "comm_sec": round(comm_sec, 4),
+            "wasted_comm_sec": round(wasted_comm_sec, 4),
+            "total_round_sec": round(total_r_sec, 4),
+            "comm_share_pct": round(100.0 * comm_sec / max(total_r_sec, 1e-9), 2),
+        }
+
+    peak_gpu_alloc_mib = (
+        round(float(torch.cuda.max_memory_allocated(device)) / float(1024 ** 2), 2)
+        if device.type == "cuda"
+        else None
+    )
+    peak_gpu_reserved_mib = (
+        round(float(torch.cuda.max_memory_reserved(device)) / float(1024 ** 2), 2)
+        if device.type == "cuda"
+        else None
+    )
+
+    system_metrics: dict[str, object] = {
+        "payload_fp32_mb": round(payload_mb, 3),
+        "payload_fp32_mib": round(payload_mib, 3),
+        "mean_benign_degree": round(mean_ben_deg, 2),
+        "max_benign_degree": max_ben_deg,
+        "total_transfers": int(total_rx),
+        "total_rejected_transfers": int(total_rej),
+        "honest_rejected_transfers": int(honest_rej),
+        "byz_rejected_transfers": int(byz_rej),
+        "wasted_transfer_pct": round(100.0 * total_rej / max(total_rx, 1), 2),
+        "rx_mb_per_peer_round": round(rx_bytes_per_peer_round / 1e6, 2),
+        "useful_mb_per_peer_round": round((rx_bytes_per_peer_round - wasted_bytes_per_peer_round) / 1e6, 2),
+        "wasted_mb_per_peer_round": round(wasted_bytes_per_peer_round / 1e6, 2),
+        "wasted_byz_mb_per_peer_round": round((byz_rej / n_ben_rounds) * payload_mb, 2),
+        "wasted_honest_mb_per_peer_round": round((honest_rej / n_ben_rounds) * payload_mb, 2),
+        "total_rx_gb_all_benign": round((total_rx * payload_mb) / 1000.0, 3),
+        "total_wasted_gb_all_benign": round((total_rej * payload_mb) / 1000.0, 3),
+        "batched_recv_buf_mean_mib": round(mean_ben_deg * payload_mib, 2),
+        "batched_recv_buf_max_mib": round(max_ben_deg * payload_mib, 2),
+        "peak_gpu_alloc_mib": peak_gpu_alloc_mib,
+        "peak_gpu_reserved_mib": peak_gpu_reserved_mib,
+        "train_sec_per_peer": _timing_summary(train_sec_list),
+        "val_grad_sec_per_peer": _timing_summary(val_sec_list),
+        "agg_sec_per_peer": _timing_summary(agg_sec_list),
+        "round_time_by_link": round_time_by_link,
+        "byz_repeat_rejections": {
+            "n_byz_edges": len(byz_edges),
+            "mean_rejected_rounds": round(float(np.mean([s[0] for s in byz_edge_stats])), 2) if byz_edge_stats else 0.0,
+            "min_rejected_rounds": min([s[0] for s in byz_edge_stats]) if byz_edge_stats else 0,
+            "max_rejected_rounds": max([s[0] for s in byz_edge_stats]) if byz_edge_stats else 0,
+            "mean_max_consec_streak": round(float(np.mean([s[1] for s in byz_edge_stats])), 2) if byz_edge_stats else 0.0,
+            "repeat_transfers_after_first_rej": int(repeat_byz_tx),
+            "repeat_wasted_gb_after_first_rej": round((repeat_byz_tx * payload_mb) / 1000.0, 3),
+            "frac_edges_with_streak_ge3_pct": round(
+                100.0 * sum(1 for s in byz_edge_stats if s[1] >= 3) / max(len(byz_edge_stats), 1), 2
+            ) if byz_edge_stats else 0.0,
+        },
+        "honest_rejection_streaks": {
+            "n_honest_edges": len(honest_edges),
+            "mean_rejected_rounds": round(float(np.mean([s[0] for s in honest_edge_stats])), 2) if honest_edge_stats else 0.0,
+            "mean_max_consec_streak": round(float(np.mean([s[1] for s in honest_edge_stats])), 2) if honest_edge_stats else 0.0,
+            "isolated_single_rejections": int(sum(s[3] for s in honest_edge_stats)),
+            "frac_edges_with_ge1_rej_pct": round(
+                100.0 * sum(1 for s in honest_edge_stats if s[0] >= 1) / max(len(honest_edge_stats), 1), 2
+            ) if honest_edge_stats else 0.0,
+            "frac_edges_with_streak_ge3_pct": round(
+                100.0 * sum(1 for s in honest_edge_stats if s[1] >= 3) / max(len(honest_edge_stats), 1), 2
+            ) if honest_edge_stats else 0.0,
+            "frac_edges_with_streak_ge5_pct": round(
+                100.0 * sum(1 for s in honest_edge_stats if s[1] >= 5) / max(len(honest_edge_stats), 1), 2
+            ) if honest_edge_stats else 0.0,
+        },
+    }
+
     summary: dict[str, object] = {
         "config": asdict(cfg),
         "resolved_device": str(device),
@@ -576,6 +762,7 @@ def run_experiment(
         "byz_accept_cumulative": (cum_byz_accept / cum_byz_pairs) if cum_byz_pairs > 0 else 0.0,
         "mean_benign_score": mean_ben,
         "mean_byz_score": mean_byz,
+        "system_metrics": system_metrics,
     }
 
     if out_path is not None:

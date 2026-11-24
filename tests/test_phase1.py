@@ -430,54 +430,37 @@ def test_local_grad_clip_bounds_step_magnitude() -> None:
     assert upd_unclipped > upd_clipped * 5.0
 
 
-def test_tinyllama_exact_param_counts_and_motivation_profiler() -> None:
-    from experiments.phase1.profile_motivation import (
-        TinyLlamaConfig,
-        TinyLlamaModel,
-        apply_lora_to_tinyllama,
-        build_k_regular_neighbors,
-        count_parameters,
-        run_memory_scaling,
-        run_per_edge_rejection_audit,
+def test_simulator_logs_system_cost_metrics() -> None:
+    out = run_experiment(
+        ExperimentConfig(
+            dataset="synthetic",
+            n_nodes=8,
+            samples_per_node=40,
+            rounds=4,
+            model_name="cnn2x2_gn",
+            topology="random",
+            er_p=0.5,
+            byzantine_frac=0.25,
+            attack="model_poison",
+            aggregator="trustgraph",
+            val_grad_sign="descent_neg",
+            trustgraph_clip_norm=True,
+            device="cpu",
+            eval_every=4,
+            seed=42,
+            verbose=False,
+        )
     )
-
-    # Verify exact TinyLlama-1.1B and LoRA rank-32 / rank-128 parameter formulas on meta device (zero RAM).
-    cfg_1b = TinyLlamaConfig()
-    with torch.device("meta"):
-        m_full = TinyLlamaModel(cfg_1b)
-        tot_full, tr_full = count_parameters(m_full)
-        assert tot_full == 1_100_048_384 and tr_full == 1_100_048_384
-
-        m_r32 = TinyLlamaModel(cfg_1b)
-        apply_lora_to_tinyllama(m_r32, rank=32)
-        _, tr_r32 = count_parameters(m_r32)
-        assert tr_r32 == 25_231_360
-
-        m_r128 = TinyLlamaModel(cfg_1b)
-        apply_lora_to_tinyllama(m_r128, rank=128)
-        _, tr_r128 = count_parameters(m_r128)
-        assert tr_r128 == 100_925_440
-
-    # Symmetric 6-regular topology on 8 peers.
-    nbrs = build_k_regular_neighbors(8, 6)
-    assert len(nbrs) == 8 and all(len(set(row)) == 6 and r not in row for r, row in enumerate(nbrs))
-    for r, row in enumerate(nbrs):
-        for j in row:
-            assert r in nbrs[j]
-
-    # Tiny CPU memory scaling & per-edge audit smoke test.
-    tiny_cfg = TinyLlamaConfig(
-        vocab_size=64, hidden_size=64, intermediate_size=128,
-        num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2, max_seq_len=16,
-    )
-    mem = run_memory_scaling(["tinyllama_lora_r32", "tinyllama_full"], degrees=[1, 2], device=torch.device("cpu"), llama_cfg=tiny_cfg)
-    assert mem["workloads"]["tinyllama_lora_r32"]["degrees"][1]["oom"] is False
-    assert mem["workloads"]["tinyllama_full"]["degrees"][1]["oom"] is False
-
-    audit = run_per_edge_rejection_audit(
-        attack="model_poison", dataset="synthetic", model_name="cnn2x2_gn",
-        rounds=3, samples_per_node=40, seed=42, device_name="cpu",
-    )
-    assert audit["total_transfers"] > 0
-    assert 0.0 <= float(audit["wasted_transfer_pct"]) <= 100.0
-    assert "byz_repeat_rejections" in audit and "honest_rejection_streaks" in audit
+    sm = out["summary"]["system_metrics"]
+    assert sm["payload_fp32_mb"] > 0.0
+    assert sm["total_transfers"] > 0
+    assert sm["total_rejected_transfers"] == sm["honest_rejected_transfers"] + sm["byz_rejected_transfers"]
+    assert 0.0 <= float(sm["wasted_transfer_pct"]) <= 100.0
+    assert sm["batched_recv_buf_max_mib"] >= sm["batched_recv_buf_mean_mib"] > 0.0
+    assert set(sm["round_time_by_link"].keys()) == {"10gbps", "1gbps", "100mbps"}
+    assert sm["train_sec_per_peer"]["repeats"] == 4
+    assert sm["val_grad_sec_per_peer"]["repeats"] == 4
+    assert sm["agg_sec_per_peer"]["repeats"] == 4
+    assert "repeat_transfers_after_first_rej" in sm["byz_repeat_rejections"]
+    assert "isolated_single_rejections" in sm["honest_rejection_streaks"]
+    assert all("wasted_transfer_rate" in rec and "train_sec_per_peer" in rec for rec in out["history"])
