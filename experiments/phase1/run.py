@@ -659,16 +659,17 @@ def run_multinode_benchmark(
     try:
         # Part 1: Multi-node Ethernet contention microbenchmarks on ResNet-18 FP32 payloads.
         payload_bytes = 11181642 * 4
-        max_bytes = payload_bytes * 2
+        deg6_mult = max(1, 6 // max(world_size - 1, 1))
+        max_bytes = payload_bytes * deg6_mult
         send_buf = bytearray(max_bytes)
         recv_bufs = {r: bytearray(max_bytes) for r in recv_conns}
         net_micro: dict[str, dict[str, object]] = {}
 
         for name, mode_kind, mult, n_warm, n_rep in (
-            ("fanin_3to1_1x", "fanin", 1, 2, 8),
-            ("fanin_3to1_2x_deg6", "fanin", 2, 1, 5),
-            ("all_to_all_k4", "all2all", 1, 2, 8),
-            ("all_to_all_deg6_equiv", "all2all", 2, 1, 5),
+            ("fanin_1x", "fanin", 1, 2, 8),
+            ("fanin_deg6_equiv", "fanin", deg6_mult, 1, 5),
+            ("all_to_all_1x", "all2all", 1, 2, 8),
+            ("all_to_all_deg6_equiv", "all2all", deg6_mult, 1, 5),
         ):
             n_bytes = payload_bytes * mult
             s_view = memoryview(send_buf)[:n_bytes]
@@ -898,14 +899,14 @@ def run_multinode_benchmark(
                 )
             return suite_res
 
-        e2e_k4 = _run_e2e_suite(mult=1, n_rounds=e2e_rounds, suite_tag="e2e_k4_deg3")
-        e2e_deg6 = _run_e2e_suite(mult=2, n_rounds=deg6_rounds, suite_tag="e2e_deg6_equiv")
+        e2e_base = _run_e2e_suite(mult=1, n_rounds=e2e_rounds, suite_tag=f"e2e_deg{world_size - 1}")
+        e2e_deg6 = _run_e2e_suite(mult=deg6_mult, n_rounds=deg6_rounds, suite_tag="e2e_deg6_equiv")
 
         rank_out = {
             "node": my_record,
             "is_byzantine": is_byz,
             "net_micro": net_micro,
-            "e2e_k4_deg3": e2e_k4,
+            "e2e_base": e2e_base,
             "e2e_deg6_equiv": e2e_deg6,
         }
         r_tmp = coord_dir / f"result_{rank}.tmp"
