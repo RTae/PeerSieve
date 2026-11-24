@@ -12,15 +12,16 @@ We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using
 |---|---|
 | Cluster node and Slurm job | `octave`, job `327539`, commit `3899c13`, elapsed `00:20:55` |
 | GPUs | 8x NVIDIA A100-PCIE-40GB (`01:00.0` to `E1:00.0`, PCIe Gen4 x16 `SYS`) |
+| External network (lab inventory) | `1 Gb/s` Ethernet without RDMA (nominal NIC line rate on `octave`) |
 | NVIDIA driver and CUDA | Driver `610.57.04`, CUDA `13.2` |
 | Software stack | Python `3.12.13`, PyTorch `2.15.0+cu132`, `torchvision 0.29.2`, `networkx 3.7` |
 | Run wall time across 14 runs | Median `446.0 s` (range `255.5` to `503.7 s`, 14 runs, 0 `NaN` runs) |
 | Committed dataset | [report/data/phase1_system_metrics_50k.json](../data/phase1_system_metrics_50k.json) |
 
-Because our Phase 1 simulator runs all 20 peers on a single GPU without physical socket transfers, we measure GPU compute directly and compute network transfer time analytically from exact FP32 byte counts.
+Because our Phase 1 simulator runs all 20 peers on a single GPU without physical socket transfers, we measure GPU compute directly and estimate network transfer time analytically from exact FP32 byte counts.
 
 - **Measured GPU compute.** Synchronized CUDA wall-clock times per benign peer per round across 25 rounds (median, min, and max) for local SGD training, validation gradient computation, and TrustGraph aggregation.
-- **Estimated transfer time.** Lower-bound wire serialization time $\text{transfer time} = (\text{received bytes} \times 8) / \text{link bandwidth}$ evaluated at `10 Gb/s` (datacenter), `1 Gb/s` (standard Ethernet, matching `octave`'s external link), and `100 Mb/s` (WAN or edge). This excludes TCP handshakes, packet headers, congestion, and host-to-GPU copies, so physical multi-node transfers will take longer.
+- **Estimated transfer time.** Lower-bound wire serialization time $\text{transfer time} = (\text{received bytes} \times 8) / \text{link bandwidth}$. We anchor this estimate at `1 Gb/s` (the nominal external Ethernet NIC rate recorded for our `octave` cluster) and bracket it with two standard reference tiers (`10 Gb/s` datacenter Ethernet and `100 Mb/s` WAN or edge). Because this formula uses nominal line rates and excludes TCP handshakes, packet headers, congestion, and host-to-GPU copies, physical multi-node transfers will take longer.
 
 ---
 
@@ -92,11 +93,11 @@ Figure 5b turns the `Model Poison` bar from Figure 5a into wall-clock seconds pe
 
 | Link bandwidth (Model Poison, `268.4 MB` from Fig. 5a) | Measured A100 compute (s) | Est. useful transfer, `119.1 MB` (s) | Est. wasted transfer, `149.3 MB` (s) | Total round time (s) | Communication share (%) |
 |---|---:|---:|---:|---:|---:|
-| `10 Gb/s` datacenter | 0.660 | 0.095 | 0.119 | 0.875 | 24.5 |
-| `1 Gb/s` Ethernet | 0.660 | 0.953 | 1.194 | 2.807 | 76.5 |
-| `100 Mb/s` WAN / edge | 0.660 | 9.528 | 11.941 | 22.129 | 97.0 |
+| `10 Gb/s` (datacenter reference) | 0.660 | 0.095 | 0.119 | 0.875 | 24.5 |
+| `1 Gb/s` Ethernet (our `octave` cluster NIC) | 0.660 | 0.953 | 1.194 | 2.807 | 76.5 |
+| `100 Mb/s` (WAN or edge reference) | 0.660 | 9.528 | 11.941 | 22.129 | 97.0 |
 
-Reading Figure 5b from left to right highlights two findings. At `10 Gb/s`, compute dominates (`0.660 s` of `0.875 s`, `24.5%` communication). Once bandwidth drops to `1 Gb/s` Ethernet (matching `octave`'s external NIC), transfer time jumps to `2.147 s` (`76.5%` of the `2.807 s` round), which is `3.3x` slower than GPU compute. At `100 Mb/s`, transfer takes `21.469 s` (`97.0%` of the round). Eliminating the red wasted bar alone is not enough, because the blue useful bar alone (`0.953 s` at `1 Gb/s` and `9.528 s` at `100 Mb/s`) still exceeds all local A100 compute (`0.660 s`). Across the other topologies under 30% label flipping at `1 Gb/s`, communication still takes `51.7%` of round time on Ring (`0.72 s` transfer vs. `0.67 s` compute) and `68.0%` on Small-World (`1.41 s` transfer vs. `0.66 s` compute).
+Reading Figure 5b from left to right highlights two findings. At the `10 Gb/s` datacenter reference rate, compute dominates (`0.660 s` of `0.875 s`, `24.5%` communication). At our `octave` cluster's `1 Gb/s` Ethernet NIC rate, transfer time jumps to `2.147 s` (`76.5%` of the `2.807 s` round), which is `3.3x` slower than GPU compute. At the `100 Mb/s` WAN reference rate, transfer takes `21.469 s` (`97.0%` of the round). Eliminating the red wasted bar alone is not enough, because the blue useful bar alone (`0.953 s` at `1 Gb/s` and `9.528 s` at `100 Mb/s`) still exceeds all local A100 compute (`0.660 s`). Across the other topologies under 30% label flipping at our cluster's `1 Gb/s` rate, communication still takes `51.7%` of round time on Ring (`0.72 s` transfer vs. `0.67 s` compute) and `68.0%` on Small-World (`1.41 s` transfer vs. `0.66 s` compute).
 
 ---
 

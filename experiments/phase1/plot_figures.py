@@ -503,7 +503,7 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
     mp = _select_run(runs, "random", "model_poison", 30)
     sm_mp = mp["system_metrics"]
     t_comp = float(sm_mp["train_sec_per_peer"]["median"]) + float(sm_mp["val_grad_sec_per_peer"]["median"]) + float(sm_mp["agg_sec_per_peer"]["median"])
-    links = [("10gbps", "10 Gb/s\nDatacenter"), ("1gbps", "1 Gb/s\nEthernet"), ("100mbps", "100 Mb/s\nWAN / Edge")]
+    links = [("10gbps", "10 Gb/s\nDatacenter Ref."), ("1gbps", "1 Gb/s Ethernet\n(Our Cluster)"), ("100mbps", "100 Mb/s\nWAN / Edge Ref.")]
     xl = np.arange(len(links), dtype=float)
     comp_vals = []
     useful_c = []
