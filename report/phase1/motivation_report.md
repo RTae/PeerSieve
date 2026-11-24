@@ -6,7 +6,7 @@ This report measures the communication, round-time, receive-memory, and repeat-t
 
 ## Hardware and measurement setup
 
-We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using our Phase 1 simulator with synchronized GPU timers and exact FP32 transfer accounting. Every run trained `PretrainedResNet18CIFAR` (`11,181,642` FP32 parameters, `44.73 MB` or `42.65 MiB` per update) across 20 peers for 25 communication rounds with 0 `NaN` runs.
+We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using our Phase 1 simulator with synchronized GPU timers and FP32 transfer accounting. Every run trained `PretrainedResNet18CIFAR` (`11,181,642` FP32 parameters, `44.73 MB` or `42.65 MiB` per update) across 20 peers for 25 communication rounds with 0 `NaN` runs.
 
 | Component | Configuration |
 |---|---|
@@ -18,7 +18,7 @@ We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using
 | Run wall time across 14 runs | Median `446.0 s` (range `255.5` to `503.7 s`, 14 runs, 0 `NaN` runs) |
 | Committed dataset | [report/data/phase1_system_metrics_50k.json](../data/phase1_system_metrics_50k.json) |
 
-Because our Phase 1 simulator runs all 20 peers on a single GPU without physical socket transfers, we measure GPU compute directly and estimate network transfer time analytically from exact FP32 byte counts.
+Because our Phase 1 simulator runs all 20 peers on a single GPU without physical socket transfers, we measure GPU compute directly and estimate network transfer time analytically from FP32 byte counts.
 
 - **Measured GPU compute.** Synchronized CUDA wall-clock times per benign peer per round across 25 rounds (median, min, and max) for local SGD training, validation gradient computation, and TrustGraph aggregation.
 - **Estimated transfer time.** Lower-bound wire serialization time $\text{transfer time} = (\text{received bytes} \times 8) / \text{link bandwidth}$. We anchor this estimate at `1 Gb/s` (the nominal external Ethernet NIC rate recorded for our `octave` cluster) and bracket it with two standard reference tiers (`10 Gb/s` datacenter Ethernet and `100 Mb/s` WAN or edge). Because this formula uses nominal line rates and excludes TCP handshakes, packet headers, congestion, and host-to-GPU copies, physical multi-node transfers will take longer.
@@ -89,7 +89,7 @@ The same pattern holds across topologies and attacker fractions. Under 30% label
 Figure 5b turns the `Model Poison` bar from Figure 5a into wall-clock seconds per benign peer per round by adding two parts.
 
 1. **Gray bar (measured A100 compute, `0.660 s`).** On our A100-PCIE-40GB GPU during the 30% model-poisoning run, one benign peer takes a median of `0.602 s` for local SGD (range `0.587` to `1.223 s`, 25 rounds), `0.055 s` for the validation gradient (range `0.053` to `3.323 s`, peaking on round 1 cuDNN initialization), and `0.0032 s` for cosine scoring and aggregation (range `0.0029` to `0.134 s`). Across all 14 runs, total median compute stays between `0.647 s` and `0.669 s`.
-2. **Blue and red bars (estimated FP32 transfer time from Panel a).** From the `Model Poison` bar in Figure 5a, each peer downloads `119.1 MB` of useful updates (blue) and `149.3 MB` of wasted updates (`64.4 MB` pink plus `84.8 MB` red, combined as the red bar in Panel b), totaling `268.4 MB` (`2.147` gigabits) per round. Dividing those exact bit counts by each link speed (`bytes x 8 / link_bps`) gives the stacked transfer times below.
+2. **Blue and red bars (estimated FP32 transfer time from Panel a).** From the `Model Poison` bar in Figure 5a, each peer downloads `119.1 MB` of useful updates (blue) and `149.3 MB` of wasted updates (`64.4 MB` pink plus `84.8 MB` red, combined as the red bar in Panel b), totaling `268.4 MB` (`2.147` gigabits) per round. Dividing those bit counts by each link speed (`bytes x 8 / link_bps`) gives the stacked transfer times below.
 
 | Link bandwidth (Model Poison, `268.4 MB` from Fig. 5a) | Measured A100 compute (s) | Est. useful transfer, `119.1 MB` (s) | Est. wasted transfer, `149.3 MB` (s) | Total round time (s) | Communication share (%) |
 |---|---:|---:|---:|---:|---:|
