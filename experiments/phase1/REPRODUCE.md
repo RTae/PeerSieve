@@ -1,6 +1,6 @@
 # Phase 1 experiments
 
-This guide covers environment checks, paper-aligned experiment suites, multi-GPU Slurm execution, and figure regeneration for [report/phase1_report.md](../../report/phase1_report.md).
+This guide covers environment checks, paper-aligned experiment suites, multi-GPU Slurm execution, and figure regeneration for [report/phase1/reproduce_report.md](../../report/phase1/reproduce_report.md).
 
 ## Environment and quick check
 
