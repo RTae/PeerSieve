@@ -10,12 +10,12 @@ We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using
 
 | Component | Configuration |
 |---|---|
-| Training node and Slurm job | `octave`, job `327539`, commit `3899c13`, elapsed `00:20:55` |
+| Training node | `octave` |
 | GPUs | 8x NVIDIA A100-PCIE-40GB (`01:00.0` to `E1:00.0`, PCIe Gen4 x16 `SYS`) |
 | NVIDIA driver and CUDA | Driver `610.57.04`, CUDA `13.2` |
 | Software stack | Python `3.12.13`, PyTorch `2.15.0+cu132`, `torchvision 0.29.2`, `networkx 3.7` |
 | Training run wall time (14 runs) | Median `446.0 s` (range `255.5` to `503.7 s`, 14 runs, 0 `NaN` runs) |
-| Inter-node TCP benchmark | `ja4` (`172.23.15.14`) to `ja3` (`172.23.15.13`), job `327546`, `0` GPUs, elapsed `00:01:12` |
+| Inter-node TCP benchmark | `ja4` (`172.23.15.14`) to `ja3` (`172.23.15.13`), CPU-only (`0` GPUs) |
 | Measured Ethernet NIC | `enp68s0f0`, `1000 Mb/s` (`1 Gb/s`), MTU `1500`, achieved TCP goodput `941.2 Mb/s` |
 | Committed dataset | [report/data/phase1_system_metrics_50k.json](../data/phase1_system_metrics_50k.json) |
 
@@ -91,14 +91,17 @@ The same pattern holds across topologies and attacker fractions. Under 30% label
 Figure 5b turns the `Model Poison` bar from Figure 5a (`119.1 MB` useful plus `149.3 MB` wasted, totaling `268.4 MB` per benign peer per round) into wall-clock seconds by pairing our measured A100 compute with real inter-node TCP transfers on the cluster.
 
 1. **Gray bar (measured A100 compute, `0.660 s`).** On our `octave` A100-PCIE-40GB GPU during the 30% model-poisoning run, one benign peer takes a median of `0.602 s` for local SGD (range `0.587` to `1.223 s`, 25 rounds), `0.055 s` for the validation gradient (range `0.053` to `3.323 s`, peaking on round 1 cuDNN initialization), and `0.0032 s` for cosine scoring and aggregation (range `0.0029` to `0.134 s`). Across all 14 runs, total median compute stays between `0.647 s` and `0.669 s`.
-2. **Blue and red bars at `1 Gb/s` (measured inter-node TCP on `ja4` to `ja3`).** We timed real TCP socket transfers across `enp68s0f0` (`1000 Mb/s` Ethernet, MTU `1500`, job `327546`) for all four ResNet-18 payload sizes below. TCP framing caps real goodput at `941.2 Mb/s` (`94.1%` of nominal `1 Gb/s`), making real transfers `6.2%` slower than an idealized `1000 Mb/s` wire bound.
+2. **Blue and red bars at `1 Gb/s` (measured inter-node TCP on `ja4` to `ja3`).** We timed real TCP socket transfers across `enp68s0f0` (`1000 Mb/s` Ethernet, MTU `1500`) for all four ResNet-18 payload sizes below. TCP framing caps real goodput at `941.2 Mb/s` (`94.1%` of nominal `1 Gb/s`), making real transfers `6.2%` slower than an idealized `1000 Mb/s` wire bound.
 
 | Measured TCP workload (`ja4` to `ja3`, `enp68s0f0` 1 Gb/s) | Payload (MB) | Repeats | Median (s) | Min to max (s) | Goodput (Mb/s) |
 |---|---:|---:|---:|---:|---:|
-| Single ResNet-18 FP32 update | 44.73 | 25 | 0.3804 | 0.3803 to 0.3805 | 940.7 |
+| Single ResNet-18 FP32 update (one-way) | 44.73 | 25 | 0.3804 | 0.3803 to 0.3805 | 940.7 |
 | Model poison useful share (Panel b blue) | 119.10 | 10 | 1.0123 | 1.0123 to 1.0124 | 941.2 |
 | Model poison wasted share (Panel b red) | 149.26 | 10 | 1.2686 | 1.2686 to 1.2728 | 941.2 |
-| Full 6-neighbor round burst | 268.36 | 10 | 2.2807 | 2.2805 to 2.2807 | 941.3 |
+| Full 6-neighbor round burst (one-way) | 268.36 | 10 | 2.2807 | 2.2805 to 2.2807 | 941.3 |
+| Simultaneous full-duplex exchange (`ja3` and `ja4`) | 268.36 | 5 | 2.2959 | 2.2940 to 2.2991 | 935.1 |
+
+Simultaneous bidirectional transfers on `ja3` and `ja4` (`44.73 MB` at `0.3829 s` / `934.6 Mb/s` and `268.36 MB` at `2.2959 s` / `935.1 Mb/s`) confirm full-duplex contention adds a small overhead over one-way transfers (`2.296 s` vs. `2.281 s`). We keep `octave` A100 as our sole GPU compute platform because `ja3` and `ja4` run NVIDIA driver `525.116.04` (CUDA `12.0`), which is incompatible with our `PyTorch 2.15.0+cu132` stack (running the GPU phase on `ja3` and `ja4` fell back to CPU and timed out at 5 minutes, not OOM).
 
 Combining the measured A100 compute (`0.660 s`) with our measured `1 Gb/s` cluster TCP timings (`1.012 s` useful plus `1.269 s` wasted) and the two analytical reference tiers (`10 Gb/s` datacenter and `100 Mb/s` WAN via `bytes x 8 / link_bps`) gives Figure 5b.
 

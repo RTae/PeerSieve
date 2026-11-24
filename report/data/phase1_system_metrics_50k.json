@@ -2546,6 +2546,33 @@
         "max_sec": 1.272805,
         "goodput_mbps": 941.25
       }
+    },
+    "full_duplex_check": {
+      "slurm_job_id": "327551",
+      "nodes": [
+        "ja3",
+        "ja4"
+      ],
+      "interface": "enp68s0f0",
+      "note": "Part 1 full-duplex TCP microbenchmark completed; Part 2 GPU step fell back to CPU due to ja3/ja4 NVIDIA driver 525.116.04 (CUDA 12.0) vs PyTorch 2.15.0+cu132 and hit the 5-minute wall-time limit (TIMEOUT, not OOM).",
+      "workloads": {
+        "all_to_all_1x": {
+          "rx_mb": 44.727,
+          "repeats": 8,
+          "median_sec": 0.3829,
+          "min_sec": 0.3828,
+          "max_sec": 0.383,
+          "goodput_mbps": 934.6
+        },
+        "all_to_all_deg6_equiv": {
+          "rx_mb": 268.359,
+          "repeats": 5,
+          "median_sec": 2.2959,
+          "min_sec": 2.294,
+          "max_sec": 2.2991,
+          "goodput_mbps": 935.1
+        }
+      }
     }
   }
 }
