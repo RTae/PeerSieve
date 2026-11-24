@@ -479,7 +479,7 @@ def test_simulator_logs_system_cost_metrics(tmp_path: Path) -> None:
 def test_transfer_benchmark_socketpair(tmp_path: Path) -> None:
     import socket
     import threading
-    from experiments.phase1.run import run_transfer_benchmark
+    from src.transport import run_transfer_benchmark
 
     srv_sock, cli_sock = socket.socketpair()
     try:
@@ -525,70 +525,84 @@ def test_transfer_benchmark_socketpair(tmp_path: Path) -> None:
     assert w["round_6_neighbors"]["bytes"] == 4096 * 6 and w["round_6_neighbors"]["goodput_mbps"] > 0.0
 
 
-def test_multinode_mesh_primitives_socketpair() -> None:
-    import socket
+def test_distributed_peers_end_to_end_socketpair(tmp_path: Path) -> None:
     import threading
-    from experiments.phase1.run import _exchange_all_to_all, _fanin_to_rank0, _mesh_barrier
+    from src.distributed import run_distributed_peer
+    from src.simulator import prepare_dataset, seed_everything
+    from src.transport import TcpPeerTransport
 
     world_size = 4
-    send_maps: list[dict[int, socket.socket]] = [{} for _ in range(world_size)]
-    recv_maps: list[dict[int, socket.socket]] = [{} for _ in range(world_size)]
-    all_socks: list[socket.socket] = []
-    for src in range(world_size):
-        for dst in range(world_size):
-            if src == dst:
-                continue
-            s_a, s_b = socket.socketpair()
-            send_maps[src][dst] = s_a
-            recv_maps[dst][src] = s_b
-            all_socks.extend([s_a, s_b])
+    cfg = ExperimentConfig(
+        dataset="synthetic",
+        n_nodes=world_size,
+        samples_per_node=200,
+        alpha_dir=5.0,
+        val_split="iid",
+        rounds=4,
+        model_name="cnn2x2",
+        topology="ring",
+        byzantine_frac=0.25,
+        attack="model_poison",
+        aggregator="trustgraph",
+        val_grad_sign="descent_neg",
+        trustgraph_clip_norm=True,
+        device="cpu",
+        eval_every=4,
+        seed=11,
+        output_dir=str(tmp_path / "dist_run"),
+        verbose=False,
+    )
+    seed_everything(cfg.seed)
+    preloaded = prepare_dataset(cfg)
+    shared_init = model_to_vector(build_model(cfg.model_name))
+    graph = build_topology("ring", n_nodes=world_size, seed=cfg.seed)
+    param_count = int(shared_init.numel())
+    transports = TcpPeerTransport.build_socketpair_group(
+        graph_neighbors={r: list(graph.neighbors(r)) for r in range(world_size)},
+        param_count=param_count,
+        device=torch.device("cpu"),
+        send_both_vectors=True,
+    )
 
-    received_all: list[dict[int, bytes]] = [{} for _ in range(world_size)]
-    fanin_rank0: dict[int, bytes] = {}
+    results: list[dict[str, object] | None] = [None] * world_size
     errors: list[BaseException] = []
 
-    def _worker(r: int) -> None:
+    def _peer_worker(r: int) -> None:
         try:
-            _mesh_barrier(r, world_size, send_maps[r], recv_maps[r])
-            payload = bytes([r + 1]) * 1024
-            recv_bufs = {src: bytearray(1024) for src in recv_maps[r]}
-            _exchange_all_to_all(
-                send_maps[r],
-                recv_maps[r],
-                memoryview(payload),
-                {src: memoryview(b) for src, b in recv_bufs.items()},
+            results[r] = run_distributed_peer(
+                cfg=cfg,
+                rank=r,
+                world_size=world_size,
+                local_rank=0,
+                transport=transports[r],
+                preloaded_data=preloaded,
+                init_vec=shared_init,
             )
-            received_all[r] = {src: bytes(b) for src, b in recv_bufs.items()}
-
-            _mesh_barrier(r, world_size, send_maps[r], recv_maps[r])
-            f_bufs = {src: bytearray(1024) for src in recv_maps[r]}
-            _fanin_to_rank0(
-                r,
-                send_maps[r],
-                recv_maps[r],
-                memoryview(payload),
-                {src: memoryview(b) for src, b in f_bufs.items()},
-            )
-            if r == 0:
-                fanin_rank0.update({src: bytes(b) for src, b in f_bufs.items()})
         except BaseException as exc:
             errors.append(exc)
 
     try:
-        threads = [threading.Thread(target=_worker, args=(r,)) for r in range(world_size)]
+        threads = [threading.Thread(target=_peer_worker, args=(r,)) for r in range(world_size)]
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=5.0)
+            t.join(timeout=60.0)
     finally:
-        for s in all_socks:
-            s.close()
+        for tr in transports:
+            tr.close()
 
-    assert not errors
-    for r in range(world_size):
-        assert set(received_all[r].keys()) == {j for j in range(world_size) if j != r}
-        for src, data in received_all[r].items():
-            assert data == bytes([src + 1]) * 1024
-    assert set(fanin_rank0.keys()) == {1, 2, 3}
-    for src in (1, 2, 3):
-        assert fanin_rank0[src] == bytes([src + 1]) * 1024
+    assert not errors, f"Distributed peer errors: {errors}"
+    assert results[0] is not None
+    assert all(results[r] is None for r in range(1, world_size))
+    summary = results[0]["summary"]
+    assert summary["execution_mode"] == "distributed"
+    assert summary["world_size"] == world_size
+    assert summary["had_nan"] is False
+    assert (tmp_path / "dist_run" / "summary.json").exists()
+    assert (tmp_path / "dist_run" / "history.jsonl").exists()
+    sm = summary["system_metrics"]
+    assert "measured_transport_sec" in sm
+    assert sm["measured_transport_sec"]["net_sec_per_peer"]["repeats"] == 4
+    assert float(summary["mean_benign_score"]) > 0.0
+    assert float(summary["mean_byz_score"]) < 0.0
+    assert float(summary["byz_accept_cumulative"]) == 0.0

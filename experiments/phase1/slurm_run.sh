@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
-# Phase 1 Slurm runner for TrustGraph-DFL CIFAR-10 reproduction.
-# Supports multi-GPU parallel sharding across all GPUs allocated to the job.
+# Phase 1 Slurm runner for TrustGraph-DFL CIFAR-10 experiments.
+# Supports two execution styles:
+#   1. Sharded multi-GPU sweeps (default, e.g. --mode suite --suite paper_resnet18_50k)
+#   2. Real multi-process distributed FL (--mode distributed), launching one peer process
+#      per allocated GPU (or across nodes via srun) over TcpPeerTransport.
 #
-# Example (after explicit approval):
+# Examples (after explicit approval):
 #   mkdir -p logs
+#   # Sharded suite across 8x A100 GPUs:
 #   sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
 #     --cpus-per-task=32 --mem=128G --time=00:45:00 --open-mode=append --output=logs/%x-%j.out \
 #     experiments/phase1/slurm_run.sh --mode suite --suite paper_resnet18_50k --skip-existing --eval-every 5 --seeds 42 43 44
+#
+#   # Real 8-GPU distributed FL (one peer process per A100 GPU over TCP):
+#   sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
+#     --cpus-per-task=32 --mem=128G --time=00:15:00 --open-mode=append --output=logs/%x-%j.out \
+#     experiments/phase1/slurm_run.sh --mode distributed --model resnet18_pretrained --dataset cifar10 \
+#     --samples-per-node 2500 --val-split iid --lr 0.005 --lr-schedule cosine --augment --grad-clip-norm 10.0 \
+#     --trustgraph-clip-norm --trustgraph-clip-mode model --trustgraph-score-threshold 0.003 \
+#     --topology random --attack model_poison --byzantine-frac 0.25 --rounds 5 --eval-every 5 --seeds 42
 
 set -euo pipefail
 
@@ -47,7 +59,6 @@ fi
 echo "--- Python / PyTorch (${PY_CMD[*]}) ---"
 "${PY_CMD[@]}" -c "import sys, torch; print('python:', sys.version); print('torch:', torch.__version__, 'cuda:', torch.version.cuda, 'avail:', torch.cuda.is_available(), 'count:', torch.cuda.device_count())"
 
-# Determine GPU list assigned to this Slurm job.
 if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   IFS=',' read -r -a GPU_IDS <<< "$CUDA_VISIBLE_DEVICES"
 else
@@ -58,10 +69,50 @@ else
   done
 fi
 
-NUM_SHARDS="${#GPU_IDS[@]}"
-echo "--- Launching ${NUM_SHARDS} parallel shard worker(s) on GPUs: ${GPU_IDS[*]} ---"
+NUM_GPUS="${#GPU_IDS[@]}"
 
-if [[ "$NUM_SHARDS" -le 1 ]]; then
+IS_DISTRIBUTED=0
+for arg in "$@"; do
+  if [[ "$arg" == "distributed" || "$arg" == "--mode=distributed" ]]; then
+    IS_DISTRIBUTED=1
+    break
+  fi
+done
+
+if [[ "$IS_DISTRIBUTED" -eq 1 ]]; then
+  DIST_RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)_$$}"
+  export DIST_RUN_ID
+  echo "--- Launching ${NUM_GPUS} distributed peer processes (run_id=${DIST_RUN_ID}) across GPUs: ${GPU_IDS[*]} ---"
+  PIDS=()
+  for idx in "${!GPU_IDS[@]}"; do
+    gpu="${GPU_IDS[$idx]}"
+    peer_log="logs/phase1-${SLURM_JOB_ID:-local}-peer${idx}.log"
+    echo "Starting peer rank ${idx}/${NUM_GPUS} on visible GPU ${gpu} -> ${peer_log}"
+    RANK="$idx" WORLD_SIZE="$NUM_GPUS" LOCAL_RANK=0 CUDA_VISIBLE_DEVICES="$gpu" \
+      "${PY_CMD[@]}" -m experiments.phase1.run --device cuda --no-download "$@" \
+      > "$peer_log" 2>&1 &
+    PIDS+=("$!")
+  done
+  FAILED=0
+  for idx in "${!PIDS[@]}"; do
+    if ! wait "${PIDS[$idx]}"; then
+      echo "ERROR: peer rank ${idx} exited non-zero!"
+      FAILED=1
+    else
+      echo "Peer rank ${idx} completed cleanly."
+    fi
+  done
+  if [[ "$FAILED" -ne 0 ]]; then
+    echo "One or more distributed peers failed. Check logs/phase1-${SLURM_JOB_ID:-local}-peer*.log"
+    exit 1
+  fi
+  echo "=== All ${NUM_GPUS} distributed peers completed cleanly at $(date -Is) ==="
+  exit 0
+fi
+
+echo "--- Launching ${NUM_GPUS} parallel shard worker(s) on GPUs: ${GPU_IDS[*]} ---"
+
+if [[ "$NUM_GPUS" -le 1 ]]; then
   exec "${PY_CMD[@]}" -m experiments.phase1.run --device cuda --no-download "$@"
 fi
 
@@ -69,10 +120,10 @@ PIDS=()
 for idx in "${!GPU_IDS[@]}"; do
   gpu="${GPU_IDS[$idx]}"
   shard_log="logs/phase1-${SLURM_JOB_ID:-local}-shard${idx}.log"
-  echo "Starting shard ${idx}/${NUM_SHARDS} on physical/visible GPU ${gpu} -> ${shard_log}"
+  echo "Starting shard ${idx}/${NUM_GPUS} on physical/visible GPU ${gpu} -> ${shard_log}"
   CUDA_VISIBLE_DEVICES="$gpu" "${PY_CMD[@]}" -m experiments.phase1.run \
     --device cuda --no-download \
-    --shard-index "$idx" --num-shards "$NUM_SHARDS" "$@" \
+    --shard-index "$idx" --num-shards "$NUM_GPUS" "$@" \
     > "$shard_log" 2>&1 &
   PIDS+=("$!")
 done
@@ -93,4 +144,4 @@ if [[ "$FAILED" -ne 0 ]]; then
   exit 1
 fi
 
-echo "=== All ${NUM_SHARDS} shards completed cleanly at $(date -Is) ==="
+echo "=== All ${NUM_GPUS} shards completed cleanly at $(date -Is) ==="

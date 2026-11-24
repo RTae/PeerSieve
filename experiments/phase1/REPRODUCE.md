@@ -19,7 +19,7 @@ uv run python -m experiments.phase1.run --mode suite --suite smoke --dataset cif
 [suites.py](suites.py) defines all paper-aligned experiment suites, and `experiments.phase1.run` runs them.
 
 ```bash
-# Full 50k ResNet-18 suite covering Fig. 2, Fig. 3a, Table 1, Fig. 3b, and Section 5.5 (14 runs/seed, 42 total runs)
+# Full 50k ResNet-18 suite covering Fig. 2, Fig. 3a, Table 1, Fig. 3b, and Section 5.5 (14 runs per seed, 42 total runs)
 uv run python -m experiments.phase1.run --mode suite --suite paper_resnet18_50k \
   --dataset cifar10 --eval-every 5 --seeds 42 43 44 --output-root outputs/phase1_50k
 
@@ -36,14 +36,35 @@ uv run python -m experiments.phase1.run --mode suite --suite fig3b_fpr_rxdelta \
   --dataset cifar10 --eval-every 5 --seeds 42 --output-root outputs/fig3b_fpr_rxdelta
 ```
 
-On the cluster, [slurm_run.sh](slurm_run.sh) shards a suite across all GPUs allocated to the Slurm job and records job metadata, GPU topology, and `nvidia-smi` output.
+On the cluster, [slurm_run.sh](slurm_run.sh) runs either sharded multi-GPU sweeps (`--mode suite`) or real multi-process distributed DFL (`--mode distributed`, launching one peer process per allocated GPU over persistent TCP sockets), while recording job metadata, GPU topology, and `nvidia-smi` output.
 
 ```bash
 mkdir -p logs
+# Sharded 20-peer suite across 8x A100 GPUs
 sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
   --cpus-per-task=32 --mem=128G --time=00:45:00 --open-mode=append --output=logs/%x-%j.out \
   experiments/phase1/slurm_run.sh --mode suite --suite paper_resnet18_50k \
   --dataset cifar10 --eval-every 5 --seeds 42 --output-root outputs/phase1_50k
+
+# Real 8-GPU distributed DFL (one peer process per A100 GPU over TcpPeerTransport)
+sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
+  --cpus-per-task=32 --mem=128G --time=00:15:00 --open-mode=append --output=logs/%x-%j.out \
+  experiments/phase1/slurm_run.sh --mode distributed --dataset cifar10 --model resnet18_pretrained \
+  --samples-per-node 2500 --val-split iid --lr 0.005 --lr-schedule cosine --augment --grad-clip-norm 10.0 \
+  --trustgraph-clip-norm --trustgraph-clip-mode model --trustgraph-score-threshold 0.003 \
+  --topology random --attack model_poison --byzantine-frac 0.25 --rounds 5 --eval-every 5 \
+  --seeds 42 --output-root outputs/phase1_dist_smoke
+```
+
+## Inter-node TCP transfer benchmark
+
+Measure point-to-point ResNet-18 FP32 TCP transfer times between two cluster nodes (CPU-only) using `--mode transfer_bench`.
+
+```bash
+# Run on server node (rank 0) and client node (rank 1) targeting the 1 Gb/s Ethernet IP
+srun --ntasks=2 --ntasks-per-node=1 uv run --no-sync python -m experiments.phase1.run \
+  --mode transfer_bench --bench-role auto --bench-host 172.23.15.13 --bench-port 29501 \
+  --bench-out outputs/phase1_transfer_bench/ja3_ja4_transfer.json
 ```
 
 ## Summarizing results and regenerating figures

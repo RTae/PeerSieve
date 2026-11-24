@@ -60,6 +60,17 @@ uv run python -m experiments.phase1.run \
   --rounds 25 --seeds 42 --output-root outputs/single_run
 ```
 
+Run multi-process, multi-GPU decentralized FL with `--mode distributed` (one peer process per GPU over persistent topology-scoped TCP sockets via `torchrun` or `slurm_run.sh`).
+
+```bash
+uv run torchrun --standalone --nproc_per_node=8 -m experiments.phase1.run \
+  --mode distributed --dataset cifar10 --model resnet18_pretrained \
+  --samples-per-node 2500 --val-split iid --lr 0.005 --lr-schedule cosine \
+  --augment --grad-clip-norm 10.0 --trustgraph-clip-norm --trustgraph-clip-mode model \
+  --trustgraph-score-threshold 0.003 --topology random --attack model_poison \
+  --byzantine-frac 0.25 --rounds 25 --eval-every 5 --seeds 42 --output-root outputs/dist_run
+```
+
 ### Available suites
 
 [experiments/phase1/suites.py](experiments/phase1/suites.py) defines all named experiment suites.
@@ -82,8 +93,8 @@ uv run python -m experiments.phase1.run \
 
 | Flag group | Options |
 |---|---|
-| Execution | `--mode single \| suite`, `--suite <name>`, `--seeds 42 43 44`, `--device auto \| cpu \| cuda`, `--skip-existing` |
-| Sharding | `--shard-index`, `--num-shards` |
+| Execution | `--mode single \| suite \| distributed \| transfer_bench`, `--suite <name>`, `--seeds 42 43 44`, `--device auto \| cpu \| cuda`, `--skip-existing` |
+| Sharding and transport | `--shard-index`, `--num-shards`, `--dist-iface`, `--dist-port` |
 | Model and data | `--model cnn2x2 \| cnn2x2_gn \| resnet18_pretrained \| resnet18_scratch`, `--val-split local \| iid`, `--grad-clip-norm` |
 | TrustGraph scoring | `--val-grad-sign descent_neg \| paper_pos`, `--trustgraph-score-threshold`, `--trustgraph-delta-mode sender \| receiver` |
 | Norm clipping | `--trustgraph-clip-norm`, `--trustgraph-clip-mode update \| model`, `--trustgraph-clip-factor` |
@@ -112,18 +123,22 @@ See [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) for t
 │   ├── aggregators.py              # TrustGraph-DFL aggregation (sender/receiver delta and clipping)
 │   ├── attacks.py                  # none, label_flip, label_flip_all, model_poison, random_noise
 │   ├── data.py                     # CIFAR-10 and synthetic test loaders, Dirichlet split
+│   ├── distributed.py              # Multi-process and multi-GPU DFL peer runner
+│   ├── metrics.py                  # Per-round accuracy, FPR, rejection streak, and system-cost tracker
 │   ├── models.py                   # SimpleCIFARCNN, GroupNormCIFARCNN, PretrainedResNet18CIFAR
-│   ├── simulator.py                # Synchronous DFL simulator, metrics, and JSON/JSONL logging
-│   └── topology.py                 # Ring, Erdos-Renyi (p=0.3), Watts-Strogatz (k=4, p=0.3)
+│   ├── peer.py                     # Self-contained PeerNode runtime shared by local and distributed runs
+│   ├── simulator.py                # Single-process synchronous DFL runner over LocalTransport
+│   ├── topology.py                 # Ring, Erdos-Renyi (p=0.3), Watts-Strogatz (k=4, p=0.3)
+│   └── transport.py                # PeerTransport, LocalTransport, TcpPeerTransport, TCP benchmark
 ├── experiments/phase1/
 │   ├── REPRODUCE.md                # Full experiment, Slurm, and figure reproduction guide
 │   ├── suites.py                   # Named TrustGraph-DFL suites
-│   ├── run.py                      # CLI runner with multi-GPU sharding and --skip-existing
-│   ├── summarize.py                # Aggregates summary.json files into Markdown tables
+│   ├── run.py                      # Slim CLI runner (single, suite, distributed, transfer_bench)
+│   ├── summarize.py                # Aggregates summary.json files into Markdown tables and JSON
 │   ├── plot_figures.py             # Generates PNG and PDF figures in report/figures/
 │   ├── figstyle.py                 # Shared matplotlib house style
 │   ├── figroles.py                 # Fixed colors, markers, and line styles
-│   └── slurm_run.sh                # Multi-GPU Slurm launcher
+│   └── slurm_run.sh                # Multi-GPU Slurm launcher (sharded sweeps and distributed peers)
 ├── tests/
 │   └── test_phase1.py              # Unit and offline synthetic DFL integration suite
 └── report/
