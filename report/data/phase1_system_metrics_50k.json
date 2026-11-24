@@ -2490,5 +2490,62 @@
         ]
       }
     }
-  ]
+  ],
+  "measured_cluster_transfer": {
+    "client_link": {
+      "hostname": "ja4",
+      "peer_host": "172.23.15.13",
+      "peer_ip": "172.23.15.13",
+      "ip_route": "172.23.15.13 dev enp68s0f0 src 172.23.15.14 uid 18109",
+      "interface": "enp68s0f0",
+      "link_speed_mbps": "1000",
+      "mtu": "1500"
+    },
+    "server_hostname": "ja3",
+    "slurm_job_id": "327546",
+    "run_py_sha256": "e01f502fe0896ffa810a345503df938e2fd2ffc8322a61feed1bc4a4334d8b52",
+    "port": 29501,
+    "workloads": {
+      "single_update": {
+        "bytes": 44726568,
+        "mb": 44.727,
+        "repeats": 25,
+        "warmups": 3,
+        "median_sec": 0.38036,
+        "min_sec": 0.380273,
+        "max_sec": 0.380462,
+        "goodput_mbps": 940.72
+      },
+      "round_6_neighbors": {
+        "bytes": 268359408,
+        "mb": 268.359,
+        "repeats": 10,
+        "warmups": 2,
+        "median_sec": 2.280662,
+        "min_sec": 2.28054,
+        "max_sec": 2.28071,
+        "goodput_mbps": 941.34
+      },
+      "model_poison_useful": {
+        "bytes": 119100000,
+        "mb": 119.1,
+        "repeats": 10,
+        "warmups": 2,
+        "median_sec": 1.012334,
+        "min_sec": 1.012304,
+        "max_sec": 1.012412,
+        "goodput_mbps": 941.19
+      },
+      "model_poison_wasted": {
+        "bytes": 149260000,
+        "mb": 149.26,
+        "repeats": 10,
+        "warmups": 2,
+        "median_sec": 1.268614,
+        "min_sec": 1.268554,
+        "max_sec": 1.272805,
+        "goodput_mbps": 941.25
+      }
+    }
+  }
 }

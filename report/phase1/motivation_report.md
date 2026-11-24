@@ -10,17 +10,20 @@ We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using
 
 | Component | Configuration |
 |---|---|
+| Training node and Slurm job | `octave`, job `327539`, commit `3899c13`, elapsed `00:20:55` |
 | GPUs | 8x NVIDIA A100-PCIE-40GB (`01:00.0` to `E1:00.0`, PCIe Gen4 x16 `SYS`) |
-| External network (lab inventory) | `1 Gb/s` Ethernet without RDMA (nominal NIC line rate on `octave`) |
 | NVIDIA driver and CUDA | Driver `610.57.04`, CUDA `13.2` |
 | Software stack | Python `3.12.13`, PyTorch `2.15.0+cu132`, `torchvision 0.29.2`, `networkx 3.7` |
-| Run wall time across 14 runs | Median `446.0 s` (range `255.5` to `503.7 s`, 14 runs, 0 `NaN` runs) |
+| Training run wall time (14 runs) | Median `446.0 s` (range `255.5` to `503.7 s`, 14 runs, 0 `NaN` runs) |
+| Inter-node TCP benchmark | `ja4` (`172.23.15.14`) to `ja3` (`172.23.15.13`), job `327546`, `0` GPUs, elapsed `00:01:12` |
+| Measured Ethernet NIC | `enp68s0f0`, `1000 Mb/s` (`1 Gb/s`), MTU `1500`, achieved TCP goodput `941.2 Mb/s` |
 | Committed dataset | [report/data/phase1_system_metrics_50k.json](../data/phase1_system_metrics_50k.json) |
 
-Because our Phase 1 simulator runs all 20 peers on a single GPU without physical socket transfers, we measure GPU compute directly and estimate network transfer time analytically from FP32 byte counts.
+We combine two direct hardware measurements and two reference network tiers for the round-time comparison.
 
-- **Measured GPU compute.** Synchronized CUDA wall-clock times per benign peer per round across 25 rounds (median, min, and max) for local SGD training, validation gradient computation, and TrustGraph aggregation.
-- **Estimated transfer time.** Lower-bound wire serialization time $\text{transfer time} = (\text{received bytes} \times 8) / \text{link bandwidth}$. We anchor this estimate at `1 Gb/s` (the nominal external Ethernet NIC rate recorded for our `octave` cluster) and bracket it with two standard reference tiers (`10 Gb/s` datacenter Ethernet and `100 Mb/s` WAN or edge). Because this formula uses nominal line rates and excludes TCP handshakes, packet headers, congestion, and host-to-GPU copies, physical multi-node transfers will take longer.
+- **Measured GPU compute (`octave` A100).** Synchronized CUDA wall-clock times per benign peer per round across 25 rounds (median, min, and max) for local SGD training, validation gradient computation, and TrustGraph aggregation.
+- **Measured `1 Gb/s` cluster TCP transfer (`ja4` to `ja3`).** Direct host-to-host TCP socket transfers (`sendall` and `recv_into`, waiting for a receiver completion ack after the last byte) across two cluster nodes over `enp68s0f0` (`1000 Mb/s` Ethernet, MTU `1500`, matching `octave`'s `1 Gb/s` external Ethernet rate). Running CPU-only avoids V100 GPUs while measuring real TCP framing and kernel overhead.
+- **Reference link estimates (`10 Gb/s` and `100 Mb/s`).** Analytical wire-time bounds $\text{transfer time} = (\text{received bytes} \times 8) / \text{link bandwidth}$ bracketing our measured `1 Gb/s` cluster Ethernet by 10x faster (datacenter) and 10x slower (WAN or edge).
 
 ---
 
@@ -32,7 +35,7 @@ Because our Phase 1 simulator runs all 20 peers on a single GPU without physical
 - **Blocked-attacker waste (MB per peer per round).** Downloaded FP32 bytes from Byzantine neighbors that receive zero trust weight and are discarded after download.
 - **Wasted share (%).** Percentage of all downloaded FP32 bytes (false-positive waste plus blocked-attacker waste) that receive zero trust weight.
 - **Total wasted (GB over 25 rounds).** Total gigabytes of zero-weight FP32 payloads downloaded across all benign peers over the full 25-round training run.
-- **Per-peer round time (seconds).** Measured median A100 compute time per benign peer plus estimated FP32 download time at `10 Gb/s`, `1 Gb/s`, or `100 Mb/s`.
+- **Per-peer round time (seconds).** Measured median A100 compute time per benign peer plus measured `1 Gb/s` cluster TCP transfer time (or estimated wire time at `10 Gb/s` and `100 Mb/s`).
 - **Simultaneous receive buffer (MiB).** Memory required to hold all incoming FP32 neighbor updates at once during batched aggregation (`peer degree x 42.65 MiB`).
 - **Repeat downloads after first block.** Full FP32 payloads downloaded from a Byzantine neighbor in later rounds after that edge was already blocked once.
 - **Consecutive rejection streak.** Longest run of back-to-back rounds in which a directed peer edge receives zero trust weight.
@@ -44,7 +47,7 @@ Because our Phase 1 simulator runs all 20 peers on a single GPU without physical
 | System gap | What Phase 1 TrustGraph-DFL does | Measured cost on 50k ResNet-18 |
 |---|---|---|
 | 1. Bandwidth wasted on discarded updates | Downloads every neighbor's full `44.73 MB` FP32 update before scoring and zeroing weights | `42.5%` to `67.6%` of received bytes discarded (`127.2` to `181.3 MB` per peer per round; `46.8` to `63.6 GB` over 25 rounds) |
-| 2. Transfer cost of uncompressed FP32 updates | Transfers full FP32 vectors even for accepted neighbors | `2.15` to `2.43 s` transfer vs. `0.66 s` compute at `1 Gb/s` (`76.5%` to `79.0%` of round time; `97.0%` at `100 Mb/s`) |
+| 2. Transfer cost of uncompressed FP32 updates | Transfers full FP32 vectors even for accepted neighbors | Measured `2.28 s` (`1.01 s` useful + `1.27 s` wasted) over `1 Gb/s` cluster TCP vs. `0.66 s` A100 compute (`77.5%` of round time; `97.0%` est. at `100 Mb/s`) |
 | 3. Receive-side memory growth with degree | Holds all `d` incoming FP32 neighbor models in memory during batched aggregation | `85.3 MiB` (`2.0x`) on Ring to `341.2 MiB` (`8.0x`) and up to `469.2 MiB` (`11.0x`) on Random |
 | 4. Repeated downloads from blocked attackers | Re-downloads full payloads from the same attacker edges every round while benign edges see false positives | Attacker edges blocked `15.6` to `25.0` of 25 rounds (`24.9` to `40.8 GB` repeat waste); `97.8%` to `100%` of benign edges hit at least one false positive |
 
@@ -85,18 +88,27 @@ The same pattern holds across topologies and attacker fractions. Under 30% label
 
 ### 1.2 Converting FP32 bytes to round time (Gap 2, Figure 5b)
 
-Figure 5b turns the `Model Poison` bar from Figure 5a into wall-clock seconds per benign peer per round by adding two parts.
+Figure 5b turns the `Model Poison` bar from Figure 5a (`119.1 MB` useful plus `149.3 MB` wasted, totaling `268.4 MB` per benign peer per round) into wall-clock seconds by pairing our measured A100 compute with real inter-node TCP transfers on the cluster.
 
-1. **Gray bar (measured A100 compute, `0.660 s`).** On our A100-PCIE-40GB GPU during the 30% model-poisoning run, one benign peer takes a median of `0.602 s` for local SGD (range `0.587` to `1.223 s`, 25 rounds), `0.055 s` for the validation gradient (range `0.053` to `3.323 s`, peaking on round 1 cuDNN initialization), and `0.0032 s` for cosine scoring and aggregation (range `0.0029` to `0.134 s`). Across all 14 runs, total median compute stays between `0.647 s` and `0.669 s`.
-2. **Blue and red bars (estimated FP32 transfer time from Panel a).** From the `Model Poison` bar in Figure 5a, each peer downloads `119.1 MB` of useful updates (blue) and `149.3 MB` of wasted updates (`64.4 MB` pink plus `84.8 MB` red, combined as the red bar in Panel b), totaling `268.4 MB` (`2.147` gigabits) per round. Dividing those bit counts by each link speed (`bytes x 8 / link_bps`) gives the stacked transfer times below.
+1. **Gray bar (measured A100 compute, `0.660 s`).** On our `octave` A100-PCIE-40GB GPU during the 30% model-poisoning run, one benign peer takes a median of `0.602 s` for local SGD (range `0.587` to `1.223 s`, 25 rounds), `0.055 s` for the validation gradient (range `0.053` to `3.323 s`, peaking on round 1 cuDNN initialization), and `0.0032 s` for cosine scoring and aggregation (range `0.0029` to `0.134 s`). Across all 14 runs, total median compute stays between `0.647 s` and `0.669 s`.
+2. **Blue and red bars at `1 Gb/s` (measured inter-node TCP on `ja4` to `ja3`).** We timed real TCP socket transfers across `enp68s0f0` (`1000 Mb/s` Ethernet, MTU `1500`, job `327546`) for all four ResNet-18 payload sizes below. TCP framing caps real goodput at `941.2 Mb/s` (`94.1%` of nominal `1 Gb/s`), making real transfers `6.2%` slower than an idealized `1000 Mb/s` wire bound.
 
-| Link bandwidth (Model Poison, `268.4 MB` from Fig. 5a) | Measured A100 compute (s) | Est. useful transfer, `119.1 MB` (s) | Est. wasted transfer, `149.3 MB` (s) | Total round time (s) | Communication share (%) |
+| Measured TCP workload (`ja4` to `ja3`, `enp68s0f0` 1 Gb/s) | Payload (MB) | Repeats | Median (s) | Min to max (s) | Goodput (Mb/s) |
 |---|---:|---:|---:|---:|---:|
-| `10 Gb/s` (datacenter reference) | 0.660 | 0.095 | 0.119 | 0.875 | 24.5 |
-| `1 Gb/s` Ethernet (our `octave` cluster NIC) | 0.660 | 0.953 | 1.194 | 2.807 | 76.5 |
-| `100 Mb/s` (WAN or edge reference) | 0.660 | 9.528 | 11.941 | 22.129 | 97.0 |
+| Single ResNet-18 FP32 update | 44.73 | 25 | 0.3804 | 0.3803 to 0.3805 | 940.7 |
+| Model poison useful share (Panel b blue) | 119.10 | 10 | 1.0123 | 1.0123 to 1.0124 | 941.2 |
+| Model poison wasted share (Panel b red) | 149.26 | 10 | 1.2686 | 1.2686 to 1.2728 | 941.2 |
+| Full 6-neighbor round burst | 268.36 | 10 | 2.2807 | 2.2805 to 2.2807 | 941.3 |
 
-Reading Figure 5b from left to right highlights two findings. At the `10 Gb/s` datacenter reference rate, compute dominates (`0.660 s` of `0.875 s`, `24.5%` communication). At our `octave` cluster's `1 Gb/s` Ethernet NIC rate, transfer time jumps to `2.147 s` (`76.5%` of the `2.807 s` round), which is `3.3x` slower than GPU compute. At the `100 Mb/s` WAN reference rate, transfer takes `21.469 s` (`97.0%` of the round). Eliminating the red wasted bar alone is not enough, because the blue useful bar alone (`0.953 s` at `1 Gb/s` and `9.528 s` at `100 Mb/s`) still exceeds all local A100 compute (`0.660 s`). Across the other topologies under 30% label flipping at our cluster's `1 Gb/s` rate, communication still takes `51.7%` of round time on Ring (`0.72 s` transfer vs. `0.67 s` compute) and `68.0%` on Small-World (`1.41 s` transfer vs. `0.66 s` compute).
+Combining the measured A100 compute (`0.660 s`) with our measured `1 Gb/s` cluster TCP timings (`1.012 s` useful plus `1.269 s` wasted) and the two analytical reference tiers (`10 Gb/s` datacenter and `100 Mb/s` WAN via `bytes x 8 / link_bps`) gives Figure 5b.
+
+| Link bandwidth (Model Poison, `268.4 MB` from Fig. 5a) | Source | Measured A100 compute (s) | Useful transfer, `119.1 MB` (s) | Wasted transfer, `149.3 MB` (s) | Total round time (s) | Communication share (%) |
+|---|---|---:|---:|---:|---:|---:|
+| `10 Gb/s` datacenter | Reference estimate | 0.660 | 0.095 | 0.119 | 0.875 | 24.5 |
+| `1 Gb/s` Ethernet (`enp68s0f0`) | Measured (`ja4` to `ja3`) | 0.660 | 1.012 | 1.269 | 2.941 | 77.5 |
+| `100 Mb/s` WAN / edge | Reference estimate | 0.660 | 9.528 | 11.941 | 22.129 | 97.0 |
+
+Reading Figure 5b from left to right highlights two findings. At the `10 Gb/s` datacenter reference rate, compute dominates (`0.660 s` of `0.875 s`, `24.5%` communication). On our cluster's measured `1 Gb/s` Ethernet (`941.2 Mb/s` real goodput), transfer time reaches `2.281 s` (`77.5%` of the `2.941 s` round), which is `3.5x` slower than A100 compute. At the `100 Mb/s` WAN reference rate, transfer takes `21.469 s` (`97.0%` of the round). Eliminating the red wasted bar alone is not enough, because the measured useful transfer alone (`1.012 s` on cluster `1 Gb/s`, and `9.528 s` estimated at `100 Mb/s`) still exceeds all local A100 compute (`0.660 s`) by `1.53x`. Scaling the other topologies by our measured `941.2 Mb/s` cluster goodput under 30% label flipping puts communication at `53.2%` of round time on Ring (`0.76 s` transfer vs. `0.67 s` compute) and `69.3%` on Small-World (`1.49 s` transfer vs. `0.66 s` compute).
 
 ---
 
@@ -147,7 +159,7 @@ The contrast between the blue and red bars in Figure 6b defines the design const
 These Phase 1 measurements confirm all four system gaps on ResNet-18 before scaling to larger models. In Phase 2, we will build PeerSieve to reduce each measured gap while preserving Byzantine resilience.
 
 1. **Pre-transfer sketch screening for Gap 1.** Because `42.5%` to `67.6%` of received FP32 bytes receive zero trust weight (Figure 5a), Phase 2 will screen compact CountSketch summaries against the receiver's validation descent direction before requesting full payloads.
-2. **Blockwise INT4 compression with error feedback for Gap 2.** Because even useful FP32 updates take `0.953 s` at `1 Gb/s` and `9.528 s` at `100 Mb/s`, exceeding `0.660 s` of A100 compute (Figure 5b), Phase 2 will compress accepted payloads with blockwise 4-bit quantization and error feedback to shrink transfer time.
+2. **Blockwise INT4 compression with error feedback for Gap 2.** Because even useful FP32 updates take a measured `1.012 s` over cluster `1 Gb/s` Ethernet (`941.2 Mb/s` goodput) and an estimated `9.528 s` at `100 Mb/s`, exceeding `0.660 s` of A100 compute (Figure 5b), Phase 2 will compress accepted payloads with blockwise 4-bit quantization and error feedback to shrink transfer time.
 3. **Audited streaming aggregation for Gap 3.** Because batched receive buffers grow up to `8x` to `11x` a single update with peer degree (Figure 6a), Phase 2 will verify and accumulate one neighbor payload at a time in constant receive buffer space, preventing rejected payloads from modifying the running aggregate.
 4. **Per-edge probation with recovery for Gap 4.** Because attacker edges trigger `556` to `912` repeat downloads (`24.9` to `40.8 GB`) while `97.8%` to `100%` of benign edges experience transient false positives (Figure 6b), Phase 2 will place repeatedly failing edges on temporary probation rather than permanent bans and allow recovery after a passing sketch check.
 
