@@ -43,7 +43,7 @@ def _index_rows(rows: list[dict[str, object]]) -> dict[tuple[str, str, int, str]
     return out
 
 
-def _find_run(runs: list[dict[str, object]], suffix: str) -> dict[str, object]:
+def _select_run_by_suffix(runs: list[dict[str, object]], suffix: str) -> dict[str, object]:
     for r in runs:
         if str(r["run_name"]).endswith(suffix):
             return r
@@ -57,12 +57,12 @@ def _find_baseline_row(data: dict[str, object], attack: str) -> dict[str, object
     raise KeyError(f"Baseline 3-seed row for attack={attack!r} not found.")
 
 
-def plot_fig1_attacks(
+def plot_attack_accuracy(
     rows_idx: dict[tuple[str, str, int, str], dict[str, object]],
     data: dict[str, object],
     out_dir: Path,
 ) -> None:
-    """Fig. 1: TrustGraph-DFL convergence and final accuracy across all 4 attack regimes."""
+    """Plot convergence and final accuracy across all four attack regimes."""
     curves = data["curves"]
     fig, (ax_conv, ax_bar) = plt.subplots(1, 2, figsize=(15.4, 6.4))
     fs.light_grid(ax_conv, "y")
@@ -145,11 +145,11 @@ def plot_fig1_attacks(
     fs.save(fig, out_dir, "fig1-attacks-50k")
 
 
-def plot_fig2_topologies_and_stress(
+def plot_topology_and_byzantine_sweep(
     rows_idx: dict[tuple[str, str, int, str], dict[str, object]],
     out_dir: Path,
 ) -> None:
-    """Fig. 2: Topology robustness (Table 1) and 10%-50% Byzantine stress sweep."""
+    """Plot topology accuracy comparison and 10%-50% Byzantine stress sweep."""
     fig, (ax_topo, ax_sweep) = plt.subplots(1, 2, figsize=(15.4, 6.4))
     fs.light_grid(ax_topo, "y")
     fs.light_grid(ax_sweep, "y")
@@ -229,12 +229,12 @@ def plot_fig2_topologies_and_stress(
     fs.save(fig, out_dir, "fig2-topologies-and-stress-50k")
 
 
-def plot_fig3_ablations_and_fpr_dynamics(
+def plot_ablations_and_fpr_dynamics(
     rows_idx: dict[tuple[str, str, int, str], dict[str, object]],
     data: dict[str, object],
     out_dir: Path,
 ) -> None:
-    """Fig. 3: Section 5.5 ablations (model_poison) + per-round FPR trajectory."""
+    """Plot component ablations under model poisoning and per-round FPR trajectory."""
     fig, (ax_abl, ax_dyn) = plt.subplots(1, 2, figsize=(14.8, 6.4))
     fs.light_grid(ax_abl, "y")
     fs.light_grid(ax_dyn, "y")
@@ -318,15 +318,15 @@ def plot_fig3_ablations_and_fpr_dynamics(
     fs.save(fig, out_dir, "fig3-ablations-and-fpr-dynamics-50k")
 
 
-def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
-    """Fig. 4: 2-panel comparison of sender vs. rxdelta on full 50k CIFAR-10 (model_poison)."""
+def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
+    """Plot sender vs. receiver-anchored (rxdelta) FPR trade-off and per-round trajectory."""
     runs: list[dict[str, object]] = data["runs"]
     base_mp = _find_baseline_row(data, "model_poison")
     base_curve = data["baseline_50k_3seed"]["curves"]["model_poison__tg_strong"]
 
-    rx_t003_mp = _find_run(runs, "fig3b_fpr_rxdelta/model_poison__iidval")
-    rx_t020_mp = _find_run(runs, "fig3b_fpr_rxdelta_tau/t020__model_poison")
-    rx_t035_mp = _find_run(runs, "fig3b_fpr_rxdelta_tau/t035__model_poison")
+    rx_t003_mp = _select_run_by_suffix(runs, "fig3b_fpr_rxdelta/model_poison__iidval")
+    rx_t020_mp = _select_run_by_suffix(runs, "fig3b_fpr_rxdelta_tau/t020__model_poison")
+    rx_t035_mp = _select_run_by_suffix(runs, "fig3b_fpr_rxdelta_tau/t035__model_poison")
 
     fig, (ax_trade, ax_traj) = plt.subplots(1, 2, figsize=(15.6, 6.5))
     fs.light_grid(ax_trade, "y")
@@ -657,10 +657,10 @@ def main() -> None:
     out_dir = Path(args.out_dir)
 
     fs.apply("compact")
-    plot_fig1_attacks(rows_idx, data_50k, out_dir)
-    plot_fig2_topologies_and_stress(rows_idx, out_dir)
-    plot_fig3_ablations_and_fpr_dynamics(rows_idx, data_50k, out_dir)
-    plot_fig4_fpr_rxdelta(data_rxdelta, out_dir)
+    plot_attack_accuracy(rows_idx, data_50k, out_dir)
+    plot_topology_and_byzantine_sweep(rows_idx, out_dir)
+    plot_ablations_and_fpr_dynamics(rows_idx, data_50k, out_dir)
+    plot_receiver_anchored_fpr(data_rxdelta, out_dir)
 
     system_data_path = Path(args.data_system)
     if system_data_path.exists():
