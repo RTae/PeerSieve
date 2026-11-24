@@ -5,6 +5,7 @@ This repository implements [TrustGraph-DFL.pdf](TrustGraph-DFL.pdf) (Xu et al., 
 | Document | Contents |
 |---|---|
 | [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) | TrustGraph-DFL reproduction findings, gap table, and figures |
+| [report/phase1/motivation_report.md](report/phase1/motivation_report.md) | Batched FP32 system-cost gaps (bandwidth, round time, receive memory, repeat transfers) motivating Phase 2 |
 | [experiments/phase1/REPRODUCE.md](experiments/phase1/REPRODUCE.md) | Full experiment suites, Slurm launch commands, and figure regeneration steps |
 
 ## Prerequisites
@@ -98,7 +99,7 @@ For full 50k, 10k, `rxdelta`, and multi-GPU Slurm reproduction commands, see [ex
 
 ## Experiment results
 
-See [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) for the TrustGraph-DFL reproduction results, adjustments, and remaining gaps. The committed JSON datasets are in [report/data/](report/data/), and the PNG and PDF figures are in [report/figures/](report/figures/).
+See [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) for the TrustGraph-DFL reproduction results, adjustments, and remaining accuracy or FPR gaps, and [report/phase1/motivation_report.md](report/phase1/motivation_report.md) for the measured FP32 communication, memory, and repeat-transfer gaps motivating Phase 2. The committed JSON datasets are in [report/data/](report/data/), and the PNG and PDF figures are in [report/figures/](report/figures/).
 
 ## Project structure
 
@@ -127,8 +128,9 @@ See [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) for t
 │   └── test_phase1.py              # Unit and offline synthetic DFL integration suite
 └── report/
     ├── phase1/
-    │   └── reproduce_report.md     # TrustGraph-DFL reproduction and FPR report
-    ├── data/                       # Committed 50k 3-seed and rxdelta FPR JSON datasets
+    │   ├── reproduce_report.md     # TrustGraph-DFL reproduction and FPR report
+    │   └── motivation_report.md    # Phase 1 FP32 system-cost gaps motivating Phase 2
+    ├── data/                       # Committed 50k 3-seed, rxdelta FPR, and system-metrics JSON datasets
     └── figures/                    # 300 dpi PNG and header-free PDF figures
 ```
 

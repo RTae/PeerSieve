@@ -1,26 +1,26 @@
-# TrustGraph-DFL Reproduction Repository
+# TrustGraph-DFL reproduction repository
 
 ## Scope and source files
 
-This repository contains the PyTorch CIFAR-10 reproduction, robustness audit, and receiver-anchored (`rxdelta`) False Positive Rate (FPR) study of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026), managed with `uv`.
+This repository contains the PyTorch CIFAR-10 reproduction, robustness audit, receiver-anchored (`rxdelta`) false positive rate (FPR) study, and system-cost measurements of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026), managed with `uv`.
 
-- **`src/`:** Core synchronous TrustGraph-DFL components — [aggregators.py](src/aggregators.py) (`aggregate_trustgraph`), [attacks.py](src/attacks.py), [data.py](src/data.py), [models.py](src/models.py) (`SimpleCIFARCNN`, `GroupNormCIFARCNN`, `PretrainedResNet18CIFAR`), [simulator.py](src/simulator.py), and [topology.py](src/topology.py).
-- **`experiments/phase1/`:** Suite definitions ([suites.py](experiments/phase1/suites.py)), CLI & multi-GPU sharded runner ([run.py](experiments/phase1/run.py)), summary aggregator ([summarize.py](experiments/phase1/summarize.py)), publication figure generator ([plot_figures.py](experiments/phase1/plot_figures.py)), house style ([figstyle.py](experiments/phase1/figstyle.py), leave unedited), fixed visual encodings ([figroles.py](experiments/phase1/figroles.py)), reproduction guide ([REPRODUCE.md](experiments/phase1/REPRODUCE.md)), and Slurm launcher ([slurm_run.sh](experiments/phase1/slurm_run.sh)).
-- **`tests/`:** Unit and offline synthetic DFL integration suite ([test_phase1.py](tests/test_phase1.py)).
-- **`report/`:** Phase 1 reports under `report/phase1/` ([reproduce_report.md](report/phase1/reproduce_report.md)), committed TrustGraph-DFL 3-seed and `rxdelta` FPR datasets under `report/data/`, and 300 dpi PNG + header-free PDF figures under `report/figures/`.
+- **`src/`.** Core synchronous TrustGraph-DFL components: [aggregators.py](src/aggregators.py) (`aggregate_trustgraph`), [attacks.py](src/attacks.py), [data.py](src/data.py), [models.py](src/models.py) (`SimpleCIFARCNN`, `GroupNormCIFARCNN`, `PretrainedResNet18CIFAR`), [simulator.py](src/simulator.py), and [topology.py](src/topology.py).
+- **`experiments/phase1/`.** Suite definitions ([suites.py](experiments/phase1/suites.py)), CLI and multi-GPU sharded runner ([run.py](experiments/phase1/run.py)), summary aggregator ([summarize.py](experiments/phase1/summarize.py)), publication figure generator ([plot_figures.py](experiments/phase1/plot_figures.py)), house style ([figstyle.py](experiments/phase1/figstyle.py), leave unedited), fixed visual encodings ([figroles.py](experiments/phase1/figroles.py)), reproduction guide ([REPRODUCE.md](experiments/phase1/REPRODUCE.md)), and Slurm launcher ([slurm_run.sh](experiments/phase1/slurm_run.sh)).
+- **`tests/`.** Unit and offline synthetic DFL integration suite ([test_phase1.py](tests/test_phase1.py)).
+- **`report/`.** Phase 1 reports under `report/phase1/` ([reproduce_report.md](report/phase1/reproduce_report.md) and [motivation_report.md](report/phase1/motivation_report.md)), committed TrustGraph-DFL 3-seed, `rxdelta` FPR, and system-metrics datasets under `report/data/`, and 300 dpi PNG plus header-free PDF figures under `report/figures/`.
 
 Keep `outputs/`, `data/`, and `logs/` out of Git. Do not restore deleted intermediate reports or obsolete datasets unless the owner asks.
 
 ## Editing, testing, and figures
 
 - Run `uv run pytest -v` after modifying any code under `src/`, `experiments/`, or `tests/`.
-- Preserve key methodological distinctions in code, reports, and explanations:
-  - Validation gradient sign: literal `paper_pos` ($+\nabla F_i$) vs. corrected `descent_neg` ($-\nabla F_i$).
-  - Magnitude control: unclipped cosine vs. model-space receiver-norm cap (`mclip 2 r_i`) and `grad_clip_norm=10.0`.
-  - Validation split: literal `val=local` (10% local non-IID shard) vs. balanced `val=iid` (250 stratified samples/node on 50k).
-  - Reference anchor: strict `sender` ($\theta_j^{t+1/2}-\theta_j^t$) vs. receiver-anchored `rxdelta` ($\theta_j^{t+1/2}-\theta_i^t$).
-  - Accuracy metrics: per-peer benign mean (`Final Acc`) vs. consensus parameter average (`Cons Acc`), alongside FPR and Byzantine acceptance rate.
-- Keep `experiments/phase1/figstyle.py` unchanged when drawing figures unless explicitly instructed. Generate figures strictly from committed `report/data/*.json` via `uv run python -m experiments.phase1.plot_figures`, visually inspect generated PNGs for layout clarity, and verify exported PDFs contain no header or footnote text (`pdftotext`).
+- Keep these five methodological distinctions clear in code, reports, and explanations:
+  - **Validation gradient sign.** Compare literal `paper_pos` ($+\nabla F_i$) against corrected `descent_neg` ($-\nabla F_i$).
+  - **Magnitude control.** Compare unclipped cosine against model-space receiver-norm clipping (`mclip 2 r_i`) and `grad_clip_norm=10.0`.
+  - **Validation split.** Compare literal `val=local` (10% local non-IID shard) against balanced `val=iid` (250 stratified samples per node on 50k).
+  - **Reference anchor.** Compare strict `sender` ($\theta_j^{t+1/2}-\theta_j^t$) against receiver-anchored `rxdelta` ($\theta_j^{t+1/2}-\theta_i^t$).
+  - **Accuracy metrics.** Report per-peer benign mean (`Final Acc`) alongside consensus parameter average (`Cons Acc`), FPR, and Byzantine acceptance rate.
+- Leave `experiments/phase1/figstyle.py` unchanged when drawing figures unless explicitly instructed. Generate figures strictly from committed `report/data/*.json` via `uv run python -m experiments.phase1.plot_figures`, visually inspect generated PNGs for layout clarity, and verify exported PDFs contain no header or footnote text (`pdftotext`).
 
 ## Lab hardware and Slurm
 
@@ -29,15 +29,15 @@ Keep `outputs/`, `data/`, and `logs/` out of Git. Do not restore deleted interme
 
 ### Cluster testbed
 
-Full 50k CIFAR-10 ResNet-18 evaluations use `octave`, sharding parallel runs across allocated GPUs (`experiments/phase1/slurm_run.sh`). The inventory below is from lab notes collected on November 4, 2026, not a live hardware check. Verify the assigned devices, topology, and software inside each approved job.
+Full 50k CIFAR-10 ResNet-18 evaluations run on `octave`, sharding parallel runs across allocated GPUs (`experiments/phase1/slurm_run.sh`). The inventory below is from lab notes collected on November 4, 2026, not a live hardware check. Verify the assigned devices, topology, and software inside each approved job.
 
-- **`octave`:** eight NVIDIA A100 PCIe 40 GB GPUs (about 39.52 GiB usable per card), two AMD EPYC 7742 CPUs (256 logical CPUs total), and 512 GB host RAM. The lab recorded eight NUMA nodes with one GPU per NUMA node.
-- **Links:** PCIe Gen4 x16, with GPU pairs reported as `SYS` in `nvidia-smi topo -m`, and no NVLink. The external network was 1 Gb/s Ethernet without RDMA.
-- **Host transfers:** the lab recorded pinned host-copy rates of 22.8–23.2 GiB/s on buses `01:00.0` through `61:00.0` and 19.6–21.6 GiB/s on buses `81:00.0` through `e1:00.0` on 2026-09-30, one GPU at a time. These are historical hardware measurements, not experiment results. Use matching devices and report the PCI bus IDs when comparing timings.
-- **Software snapshot:** on 2026-09-28 the lab recorded NVIDIA driver 610.57.4 and a reported CUDA version of 13.3 on `octave`. These are not pinned dependencies. Record the actual driver and the CUDA runtime used by the training environment.
-- **Smaller nodes:** the lab listed `ja1` through `ja4` with one PCIe V100 16 GB each. If available, use them only for approved small checks, not as substitutes for `octave` A100 runs.
+- **`octave`.** Eight NVIDIA A100 PCIe 40 GB GPUs (about 39.52 GiB usable per card), two AMD EPYC 7742 CPUs (256 logical CPUs total), and 512 GB host RAM. The lab recorded eight NUMA nodes with one GPU per NUMA node.
+- **Links.** PCIe Gen4 x16, with GPU pairs reported as `SYS` in `nvidia-smi topo -m`, and no NVLink. The external network was 1 Gb/s Ethernet without RDMA.
+- **Host transfers.** On 2026-09-30, one GPU at a time, the lab recorded pinned host-copy rates of 22.8 to 23.2 GiB/s on buses `01:00.0` through `61:00.0` and 19.6 to 21.6 GiB/s on buses `81:00.0` through `e1:00.0`. These are historical hardware measurements, not experiment results. Use matching devices and report the PCI bus IDs when comparing timings.
+- **Software snapshot.** On 2026-09-28, the lab recorded NVIDIA driver 610.57.4 and CUDA 13.3 on `octave`. These are not pinned dependencies. Record the actual driver and CUDA runtime used by the training environment.
+- **Smaller nodes.** The lab listed `ja1` through `ja4` with one PCIe V100 16 GB each. Use them only for approved small checks, not as substitutes for `octave` A100 runs.
 
-Prior `octave` device map. Slurm indices are not ordered by PCI bus, and the order within the `4–6` group was not recorded. Recheck the map instead of assuming an index always selects the same card.
+Prior `octave` device map. Slurm indices are not ordered by PCI bus, and the order within the `4 to 6` group was not recorded. Recheck the map instead of assuming an index always selects the same card.
 
 | Slurm index | PCI bus |
 |---|---|
@@ -45,7 +45,7 @@ Prior `octave` device map. Slurm indices are not ordered by PCI bus, and the ord
 | 1 | `41:00.0` |
 | 2 | `01:00.0` |
 | 3 | `25:00.0` |
-| 4–6 | `81:00.0`, `c1:00.0`, `e1:00.0` (order unknown) |
+| 4 to 6 | `81:00.0`, `c1:00.0`, `e1:00.0` (order unknown) |
 | 7 | `a1:00.0` |
 
 ### Access and scheduling
