@@ -19,7 +19,7 @@ from experiments.phase1 import figroles as fr
 from experiments.phase1 import figstyle as fs
 
 
-def _method_key(label: str) -> str | None:
+def _parse_variant_key(label: str) -> str | None:
     if label.startswith("trustgraph(descent_neg,mclip,t=0.003,val=iid)["):
         return "tg_stab"
     if label.startswith("trustgraph(descent_neg,mclip,t=0.003,a=0.3,val=iid)"):
@@ -33,10 +33,10 @@ def _method_key(label: str) -> str | None:
     return None
 
 
-def _index_rows(rows: list[dict[str, object]]) -> dict[tuple[str, str, int, str], dict[str, object]]:
+def _index_summary_rows(rows: list[dict[str, object]]) -> dict[tuple[str, str, int, str], dict[str, object]]:
     out: dict[tuple[str, str, int, str], dict[str, object]] = {}
     for r in rows:
-        mk = _method_key(str(r["method"]))
+        mk = _parse_variant_key(str(r["method"]))
         if mk is None:
             continue
         out[(str(r["topology"]), str(r["attack"]), int(r["byz_pct"]), mk)] = r
@@ -50,7 +50,7 @@ def _select_run_by_suffix(runs: list[dict[str, object]], suffix: str) -> dict[st
     raise KeyError(f"Run ending with {suffix!r} not found.")
 
 
-def _find_baseline_row(data: dict[str, object], attack: str) -> dict[str, object]:
+def _select_baseline_row(data: dict[str, object], attack: str) -> dict[str, object]:
     for r in data["baseline_50k_3seed"]["rows"]:
         if str(r["attack"]) == attack and int(r["byz_pct"]) == 30:
             return r
@@ -321,7 +321,7 @@ def plot_ablations_and_fpr_dynamics(
 def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
     """Plot sender vs. receiver-anchored (rxdelta) FPR trade-off and per-round trajectory."""
     runs: list[dict[str, object]] = data["runs"]
-    base_mp = _find_baseline_row(data, "model_poison")
+    base_mp = _select_baseline_row(data, "model_poison")
     base_curve = data["baseline_50k_3seed"]["curves"]["model_poison__tg_strong"]
 
     rx_t003_mp = _select_run_by_suffix(runs, "fig3b_fpr_rxdelta/model_poison__iidval")
@@ -333,7 +333,7 @@ def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
     fs.light_grid(ax_traj, "y")
 
     ax_trade.axvspan(3.0, 9.0, color=fs.PALETTE["green_1"], alpha=0.65, zorder=1)
-    ax_trade.text(6.0, 48.5, "Paper\n3–9%\ntarget", ha="center", va="top", fontsize=11.5, fontweight="bold", color=fs.INK)
+    ax_trade.text(6.0, 48.5, "Paper\n3-9%\ntarget", ha="center", va="top", fontsize=11.5, fontweight="bold", color=fs.INK)
 
     base_pt = (float(base_mp["fpr_mean"]), float(base_mp["byz_accept_mean"]))
     rx_pts = [
@@ -377,13 +377,13 @@ def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
     fpr_b_m = np.array(base_curve["fpr_mean"], dtype=float)
     fpr_b_s = np.array(base_curve["fpr_std"], dtype=float)
 
-    def _traj(run: dict[str, object]) -> tuple[np.ndarray, np.ndarray]:
+    def _extract_fpr_curve(run: dict[str, object]) -> tuple[np.ndarray, np.ndarray]:
         h = run["history"]
         return np.array([float(x["round"]) + 1.0 for x in h]), np.array([100.0 * float(x["fpr_round"]) for x in h])
 
-    r_rx003, fpr_rx003 = _traj(rx_t003_mp)
-    r_rx020, fpr_rx020 = _traj(rx_t020_mp)
-    r_rx035, fpr_rx035 = _traj(rx_t035_mp)
+    r_rx003, fpr_rx003 = _extract_fpr_curve(rx_t003_mp)
+    r_rx020, fpr_rx020 = _extract_fpr_curve(rx_t020_mp)
+    r_rx035, fpr_rx035 = _extract_fpr_curve(rx_t035_mp)
     marks = [0, 4, 9, 14, 19, 24]
 
     ax_traj.plot(
@@ -547,7 +547,7 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
     )
     bot = fs.footnote(
         fig,
-        "Left: 41-58% of received FP32 updates receive zero trust weight and are discarded. Right: Uncompressed FP32 transfer dominates round time at 1 Gb/s and 100 Mb/s.",
+        "Left: 42.5-67.6% of received FP32 updates receive zero trust weight and are discarded. Right: Uncompressed FP32 transfer dominates round time at 1 Gb/s and 100 Mb/s.",
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
     fs.save(fig, out_dir, "fig5-bandwidth-and-round-time-50k")
@@ -637,7 +637,7 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
     )
     bot = fs.footnote(
         fig,
-        "Left: Batched FP32 receive buffers grow linearly with peer degree (up to 10x a single update on Random graphs). Right: Single-rejection banning would hit nearly all honest edges.",
+        "Left: Batched FP32 receive buffers grow linearly with peer degree (up to 8x a single update on 30% Byzantine Random graphs). Right: Single-rejection banning would hit 98-100% of honest edges.",
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
     fs.save(fig, out_dir, "fig6-memory-and-rejection-streaks-50k")
@@ -653,7 +653,7 @@ def main() -> None:
 
     data_50k = json.loads(Path(args.data_50k).read_text(encoding="utf-8"))
     data_rxdelta = json.loads(Path(args.data_rxdelta).read_text(encoding="utf-8"))
-    rows_idx = _index_rows(data_50k["rows"])
+    rows_idx = _index_summary_rows(data_50k["rows"])
     out_dir = Path(args.out_dir)
 
     fs.apply("compact")

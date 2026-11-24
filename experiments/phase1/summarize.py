@@ -80,11 +80,7 @@ def method_label(cfg: dict[str, object]) -> str:
     return f"{agg}{suffix}"
 
 
-# Backwards-compatible alias.
-_method_label = method_label
-
-
-def _is_nan_run(summary: dict[str, object]) -> bool:
+def _has_nan_result(summary: dict[str, object]) -> bool:
     if bool(summary.get("had_nan", False)):
         return True
     ben = summary.get("mean_benign_score")
@@ -123,7 +119,7 @@ def summarize_directory(root: str | Path) -> list[SummaryRow]:
         byz_acc = [100.0 * float(r["byz_accept_cumulative"]) for r in items]
         ben_cos = [float(r["mean_benign_score"]) for r in items if r.get("mean_benign_score") is not None]
         byz_cos = [float(r["mean_byz_score"]) for r in items if r.get("mean_byz_score") is not None]
-        nan_count = sum(1 for r in items if _is_nan_run(r))
+        nan_count = sum(1 for r in items if _has_nan_result(r))
 
         rows_out.append(
             SummaryRow(
@@ -149,7 +145,7 @@ def summarize_directory(root: str | Path) -> list[SummaryRow]:
     return rows_out
 
 
-def _fmt_mean_std(mean: float, std: float, seeds: int) -> str:
+def _format_mean_std(mean: float, std: float, seeds: int) -> str:
     return f"{mean:.2f} ± {std:.2f}" if seeds > 1 else f"{mean:.2f}"
 
 
@@ -365,9 +361,9 @@ def format_markdown_report(rows: list[SummaryRow], root: str | Path, title: str)
         prefix = f"| {r.model} | {r.alpha_dir:g} " if multi_context else ""
         lines.append(
             f"{prefix}| {r.topology} | {r.attack} | {r.byz_pct} | {r.method} | {r.seeds} | "
-            f"{_fmt_mean_std(r.acc_mean, r.acc_std, r.seeds)} | "
-            f"{_fmt_mean_std(r.cons_mean, r.cons_std, r.seeds)} | "
-            f"{_fmt_mean_std(r.fpr_mean, r.fpr_std, r.seeds)} | "
+            f"{_format_mean_std(r.acc_mean, r.acc_std, r.seeds)} | "
+            f"{_format_mean_std(r.cons_mean, r.cons_std, r.seeds)} | "
+            f"{_format_mean_std(r.fpr_mean, r.fpr_std, r.seeds)} | "
             f"{r.byz_accept_mean:.2f} | {cos_txt} | {r.nan_count}/{r.seeds} |"
         )
     return "\n".join(lines) + "\n"

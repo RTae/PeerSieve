@@ -1,6 +1,6 @@
 # Phase 1 experiments
 
-This guide covers environment checks, paper-aligned experiment suites, multi-GPU Slurm execution, and figure regeneration for [report/phase1/reproduce_report.md](../../report/phase1/reproduce_report.md).
+This guide covers environment checks, paper-aligned experiment suites, multi-GPU Slurm execution, and figure regeneration for [report/phase1/reproduce_report.md](../../report/phase1/reproduce_report.md) and [report/phase1/motivation_report.md](../../report/phase1/motivation_report.md).
 
 ## Environment and quick check
 
@@ -48,10 +48,13 @@ sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
 
 ## Summarizing results and regenerating figures
 
-Generate Markdown summary tables from any run output directory with `summarize.py`. Regenerate all four PNG and header-free PDF figures in `report/figures/` from the committed JSON datasets with `plot_figures.py`.
+Generate Markdown accuracy and system-cost tables from any run output directory with `summarize.py`, and optionally export system metrics to JSON with `--export-system-json`. Regenerate all six PNG and header-free PDF figures in `report/figures/` from the committed JSON datasets with `plot_figures.py`.
 
 ```bash
 uv run python -m experiments.phase1.summarize outputs/phase1_50k --title "TrustGraph-DFL Summary"
+uv run python -m experiments.phase1.summarize outputs/phase1_motivation \
+  --title "TrustGraph-DFL System Cost Summary" \
+  --export-system-json report/data/phase1_system_metrics_50k.json
 uv run python -m experiments.phase1.plot_figures
 ```
 

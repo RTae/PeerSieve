@@ -1,4 +1,4 @@
-"""CLI runner for Phase 1 (TrustGraph-DFL CIFAR-10 reproduction)."""
+"""CLI runner for Phase 1 TrustGraph-DFL CIFAR-10 experiments."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
-from experiments.phase1.suites import SUITES, _suite_runs, build_suite_runs
+from experiments.phase1.suites import SUITES, build_suite_runs
 from src.simulator import ExperimentConfig, prepare_dataset, run_experiment
 
-__all__ = ["SUITES", "build_suite_runs", "_suite_runs", "parse_args", "main"]
+__all__ = ["SUITES", "build_suite_runs", "parse_args", "main"]
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Phase 1: TrustGraph-DFL reproduction runner.")
+    p = argparse.ArgumentParser(description="Run single or suite TrustGraph-DFL Phase 1 experiments.")
     p.add_argument("--mode", choices=["single", "suite"], default="single")
     p.add_argument("--suite", choices=sorted(SUITES), default="smoke")
     p.add_argument("--dataset", choices=["cifar10", "synthetic"], default="cifar10")
