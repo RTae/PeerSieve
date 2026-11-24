@@ -153,6 +153,190 @@ def _fmt_mean_std(mean: float, std: float, seeds: int) -> str:
     return f"{mean:.2f} ± {std:.2f}" if seeds > 1 else f"{mean:.2f}"
 
 
+@dataclass
+class SystemSummaryRow:
+    topology: str
+    attack: str
+    byz_pct: int
+    method: str
+    seeds: int
+    mean_deg: float
+    max_deg: int
+    rx_mb: float
+    useful_mb: float
+    wasted_mb: float
+    wasted_byz_mb: float
+    wasted_honest_mb: float
+    wasted_pct: float
+    recv_buf_mean_mib: float
+    recv_buf_max_mib: float
+    peak_gpu_alloc_mib: float | None
+    train_sec: float
+    val_sec: float
+    agg_sec: float
+    comm_1gbps_sec: float
+    comm_1gbps_share_pct: float
+    byz_mean_rej_rounds: float
+    byz_repeat_gb: float
+    byz_streak_ge3_pct: float
+    honest_ge1_pct: float
+    honest_streak_ge3_pct: float
+
+
+def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
+    """Aggregate system_metrics across all summary.json files under root."""
+    files = sorted(Path(root).rglob("summary.json"))
+    grouped: dict[tuple[str, str, int, str], list[dict[str, object]]] = defaultdict(list)
+    seen_seed: set[tuple[str, str, int, str, int]] = set()
+
+    for path in files:
+        with open(path, encoding="utf-8") as f:
+            s = json.load(f)
+        if "system_metrics" not in s:
+            continue
+        cfg = s["config"]
+        key = (
+            str(cfg["topology"]),
+            str(cfg["attack"]),
+            int(round(float(cfg["byzantine_frac"]) * 100)),
+            method_label(cfg),
+        )
+        dedup_key = (*key, int(cfg["seed"]))
+        if dedup_key in seen_seed:
+            continue
+        seen_seed.add(dedup_key)
+        grouped[key].append(s)
+
+    rows_out: list[SystemSummaryRow] = []
+    for (topo, atk, byz_pct, method), items in sorted(grouped.items()):
+        sms = [r["system_metrics"] for r in items]
+        gpu_peaks = [float(sm["peak_gpu_alloc_mib"]) for sm in sms if sm.get("peak_gpu_alloc_mib") is not None]
+        rows_out.append(
+            SystemSummaryRow(
+                topology=topo,
+                attack=atk,
+                byz_pct=byz_pct,
+                method=method,
+                seeds=len(items),
+                mean_deg=float(np.mean([float(sm["mean_benign_degree"]) for sm in sms])),
+                max_deg=max(int(sm["max_benign_degree"]) for sm in sms),
+                rx_mb=float(np.mean([float(sm["rx_mb_per_peer_round"]) for sm in sms])),
+                useful_mb=float(np.mean([float(sm["useful_mb_per_peer_round"]) for sm in sms])),
+                wasted_mb=float(np.mean([float(sm["wasted_mb_per_peer_round"]) for sm in sms])),
+                wasted_byz_mb=float(np.mean([float(sm["wasted_byz_mb_per_peer_round"]) for sm in sms])),
+                wasted_honest_mb=float(np.mean([float(sm["wasted_honest_mb_per_peer_round"]) for sm in sms])),
+                wasted_pct=float(np.mean([float(sm["wasted_transfer_pct"]) for sm in sms])),
+                recv_buf_mean_mib=float(np.mean([float(sm["batched_recv_buf_mean_mib"]) for sm in sms])),
+                recv_buf_max_mib=float(np.mean([float(sm["batched_recv_buf_max_mib"]) for sm in sms])),
+                peak_gpu_alloc_mib=float(np.mean(gpu_peaks)) if gpu_peaks else None,
+                train_sec=float(np.mean([float(sm["train_sec_per_peer"]["median"]) for sm in sms])),
+                val_sec=float(np.mean([float(sm["val_grad_sec_per_peer"]["median"]) for sm in sms])),
+                agg_sec=float(np.mean([float(sm["agg_sec_per_peer"]["median"]) for sm in sms])),
+                comm_1gbps_sec=float(np.mean([float(sm["round_time_by_link"]["1gbps"]["comm_sec"]) for sm in sms])),
+                comm_1gbps_share_pct=float(np.mean([float(sm["round_time_by_link"]["1gbps"]["comm_share_pct"]) for sm in sms])),
+                byz_mean_rej_rounds=float(np.mean([float(sm["byz_repeat_rejections"]["mean_rejected_rounds"]) for sm in sms])),
+                byz_repeat_gb=float(np.mean([float(sm["byz_repeat_rejections"]["repeat_wasted_gb_after_first_rej"]) for sm in sms])),
+                byz_streak_ge3_pct=float(np.mean([float(sm["byz_repeat_rejections"]["frac_edges_with_streak_ge3_pct"]) for sm in sms])),
+                honest_ge1_pct=float(np.mean([float(sm["honest_rejection_streaks"]["frac_edges_with_ge1_rej_pct"]) for sm in sms])),
+                honest_streak_ge3_pct=float(np.mean([float(sm["honest_rejection_streaks"]["frac_edges_with_streak_ge3_pct"]) for sm in sms])),
+            )
+        )
+    return rows_out
+
+
+def format_system_markdown_report(rows: list[SystemSummaryRow], title: str = "System Cost Summary") -> str:
+    """Render aggregated SystemSummaryRows as a Markdown table."""
+    lines = [
+        f"## {title}",
+        "",
+        "| Topology | Attack | Byz% | Method | Mean/Max Deg | Rx MB/r | Wasted MB/r (%) | Recv Buf Mean/Max (MiB) | Train/Val/Agg (s) | 1 Gb/s Comm (s, %) | Byz Rej (r) | Hon >=3 Streak (%) |",
+        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for r in rows:
+        lines.append(
+            f"| {r.topology} | {r.attack} | {r.byz_pct} | {r.method} | {r.mean_deg:.1f}/{r.max_deg} | "
+            f"{r.rx_mb:.1f} | {r.wasted_mb:.1f} ({r.wasted_pct:.1f}%) | "
+            f"{r.recv_buf_mean_mib:.0f}/{r.recv_buf_max_mib:.0f} | "
+            f"{r.train_sec:.2f}/{r.val_sec:.3f}/{r.agg_sec:.4f} | "
+            f"{r.comm_1gbps_sec:.2f} ({r.comm_1gbps_share_pct:.1f}%) | "
+            f"{r.byz_mean_rej_rounds:.1f} | {r.honest_streak_ge3_pct:.1f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def export_motivation_json(
+    root: str | Path,
+    out_path: str | Path,
+    job_id: str | None = None,
+    commit: str | None = None,
+) -> dict[str, object]:
+    """Export all summary.json system_metrics + per-round curves to a committed JSON dataset."""
+    root_p = Path(root)
+    files = sorted(root_p.rglob("summary.json"))
+    runs: list[dict[str, object]] = []
+    for path in files:
+        s = json.loads(path.read_text(encoding="utf-8"))
+        if "system_metrics" not in s:
+            continue
+        rel_name = str(path.parent.relative_to(root_p))
+        hist_path = path.parent / "history.jsonl"
+        round_wasted: list[float] = []
+        round_fpr: list[float] = []
+        round_byz_acc: list[float] = []
+        if hist_path.exists():
+            for line in hist_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                round_wasted.append(round(100.0 * float(rec.get("wasted_transfer_rate", 0.0)), 2))
+                round_fpr.append(round(100.0 * float(rec.get("fpr_round", 0.0)), 2))
+                round_byz_acc.append(round(100.0 * float(rec.get("byz_accept_rate", 0.0)), 2))
+        cfg = s["config"]
+        runs.append(
+            {
+                "run_name": rel_name,
+                "topology": cfg["topology"],
+                "attack": cfg["attack"],
+                "byz_pct": int(round(float(cfg["byzantine_frac"]) * 100)),
+                "method": method_label(cfg),
+                "seed": int(cfg["seed"]),
+                "param_count": int(s["param_count"]),
+                "had_nan": bool(s.get("had_nan", False)),
+                "final_benign_test_acc_mean": round(100.0 * float(s["final_benign_test_acc_mean"]), 2),
+                "final_consensus_test_acc": round(100.0 * float(s["final_consensus_test_acc"]), 2),
+                "fpr_cumulative_pct": round(100.0 * float(s["fpr_cumulative"]), 2),
+                "byz_accept_cumulative_pct": round(100.0 * float(s["byz_accept_cumulative"]), 2),
+                "total_wall_sec": round(float(s["total_wall_sec"]), 2),
+                "system_metrics": s["system_metrics"],
+                "curves": {
+                    "round_wasted_pct": round_wasted,
+                    "round_fpr_pct": round_fpr,
+                    "round_byz_accept_pct": round_byz_acc,
+                },
+            }
+        )
+    walls = [float(r["total_wall_sec"]) for r in runs]
+    payload: dict[str, object] = {
+        "description": "Phase 1 CIFAR-10 ResNet-18 batched FP32 TrustGraph-DFL system-cost metrics (motivation dataset)",
+        "source_root": str(root_p),
+        "job_id": job_id,
+        "commit": commit,
+        "total_runs": len(runs),
+        "nan_runs": sum(1 for r in runs if r["had_nan"]),
+        "timing": {
+            "count": len(walls),
+            "median_sec": round(float(np.median(walls)), 2) if walls else 0.0,
+            "min_sec": round(float(np.min(walls)), 2) if walls else 0.0,
+            "max_sec": round(float(np.max(walls)), 2) if walls else 0.0,
+        },
+        "runs": runs,
+    }
+    dst = Path(out_path)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
 def format_markdown_report(rows: list[SummaryRow], root: str | Path, title: str) -> str:
     """Render aggregated SummaryRows as a GitHub-flavored Markdown report."""
     multi_context = len({(r.model, r.alpha_dir) for r in rows}) > 1
@@ -194,6 +378,9 @@ def main() -> None:
     p.add_argument("root", help="Directory containing Phase 1 outputs (searched recursively for summary.json).")
     p.add_argument("--out", default=None, help="Optional Markdown file path to write the table.")
     p.add_argument("--title", default="Phase 1 Experiment Summary", help="Heading for the Markdown report.")
+    p.add_argument("--export-motivation-json", default=None, help="Optional path to export aggregated system_metrics JSON.")
+    p.add_argument("--job-id", default=None, help="Optional Slurm job ID stored in exported motivation JSON.")
+    p.add_argument("--commit", default=None, help="Optional git commit hash stored in exported motivation JSON.")
     args = p.parse_args()
 
     rows = summarize_directory(args.root)
@@ -202,11 +389,22 @@ def main() -> None:
         return
 
     output = format_markdown_report(rows, root=args.root, title=args.title)
+    sys_rows = summarize_system_directory(args.root)
+    if sys_rows:
+        output += "\n" + format_system_markdown_report(sys_rows)
     print(output, end="")
     if args.out:
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(output, encoding="utf-8")
+    if args.export_motivation_json:
+        exported = export_motivation_json(
+            args.root,
+            args.export_motivation_json,
+            job_id=args.job_id,
+            commit=args.commit,
+        )
+        print(f"Exported {exported['total_runs']} runs to {args.export_motivation_json}")
 
 
 if __name__ == "__main__":

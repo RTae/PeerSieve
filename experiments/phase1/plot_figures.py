@@ -434,10 +434,220 @@ def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
     fs.save(fig, out_dir, "fig4-fpr-rxdelta-50k")
 
 
+def _find_motiv_run(
+    runs: list[dict[str, object]],
+    topology: str,
+    attack: str,
+    byz_pct: int,
+    method_prefix: str = "trustgraph(descent_neg,mclip,t=0.003,val=iid)[",
+) -> dict[str, object]:
+    for r in runs:
+        if (
+            str(r["topology"]) == topology
+            and str(r["attack"]) == attack
+            and int(r["byz_pct"]) == byz_pct
+            and str(r["method"]).startswith(method_prefix)
+        ):
+            return r
+    raise KeyError(f"Motivation run not found for ({topology}, {attack}, byz={byz_pct}).")
+
+
+def plot_fig5_motivation_bandwidth_and_time(data: dict[str, object], out_dir: Path) -> None:
+    """Fig. 5: Wasted FP32 receive bandwidth across attacks + per-peer round time by link speed."""
+    runs: list[dict[str, object]] = data["runs"]
+    fig, (ax_bw, ax_time) = plt.subplots(1, 2, figsize=(15.6, 6.5))
+    fs.light_grid(ax_bw, "y")
+    fs.light_grid(ax_time, "y")
+
+    short_labels = ["No Attack\n(0% Byz)", "Label Flip\n($E_b=2$)", "Model Poison\n($\\lambda=10$)", "Random Noise\n($\\sigma=0.5$)"]
+    x = np.arange(len(fr.ATTACK_ORDER), dtype=float)
+    useful = []
+    w_hon = []
+    w_byz = []
+    w_pct = []
+    print("\n=== Fig. 5(a) Per-Peer Receive Bandwidth per Round (MB, 50k ResNet-18, Random ER p=0.3) ===")
+    for atk in fr.ATTACK_ORDER:
+        byz_p = 30
+        r = _find_motiv_run(runs, "random", atk, byz_p)
+        sm = r["system_metrics"]
+        u = float(sm["useful_mb_per_peer_round"])
+        wh = float(sm["wasted_honest_mb_per_peer_round"])
+        wb = float(sm["wasted_byz_mb_per_peer_round"])
+        wp = float(sm["wasted_transfer_pct"])
+        useful.append(u)
+        w_hon.append(wh)
+        w_byz.append(wb)
+        w_pct.append(wp)
+        print(f"  {atk:16s}: rx={u + wh + wb:6.1f} MB | useful={u:5.1f} | wasted_honest={wh:5.1f} | wasted_byz={wb:5.1f} ({wp:5.1f}% wasted)")
+
+    useful_a = np.array(useful)
+    w_hon_a = np.array(w_hon)
+    w_byz_a = np.array(w_byz)
+    bar_w = 0.54
+    ax_bw.bar(x, useful_a, width=bar_w, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label="Accepted (Useful)", zorder=3)
+    ax_bw.bar(x, w_hon_a, bottom=useful_a, width=bar_w, color=fs.PALETTE["red_2"], edgecolor="black", linewidth=1.6, label="Wasted (Rejected Honest)", zorder=3)
+    ax_bw.bar(x, w_byz_a, bottom=useful_a + w_hon_a, width=bar_w, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label="Wasted (Rejected Byzantine)", zorder=3)
+
+    totals = useful_a + w_hon_a + w_byz_a
+    for xi, tot, wp in zip(x, totals, w_pct):
+        ax_bw.text(xi, tot + 6.0, f"{wp:.1f}%\nwasted", ha="center", va="bottom", fontsize=11.5, fontweight="bold", color=fs.PALETTE["red_strong"])
+
+    ax_bw.set_xticks(x)
+    ax_bw.set_xticklabels(short_labels)
+    ax_bw.set_ylabel("Received FP32 Payload per Peer / Round (MB)")
+    ax_bw.set_title("(a) Useful vs. Wasted Receive Traffic per Round", pad=10, fontweight="bold")
+    ax_bw.set_ylim(0, max(totals) * 1.38)
+    ax_bw.legend(loc="upper center", ncol=1, fontsize=11.0)
+
+    # Panel (b): Per-peer round time breakdown on model_poison across link speeds
+    mp = _find_motiv_run(runs, "random", "model_poison", 30)
+    sm_mp = mp["system_metrics"]
+    t_comp = float(sm_mp["train_sec_per_peer"]["median"]) + float(sm_mp["val_grad_sec_per_peer"]["median"]) + float(sm_mp["agg_sec_per_peer"]["median"])
+    links = [("10gbps", "10 Gb/s\nDatacenter"), ("1gbps", "1 Gb/s\nEthernet"), ("100mbps", "100 Mb/s\nWAN / Edge")]
+    xl = np.arange(len(links), dtype=float)
+    comp_vals = []
+    useful_c = []
+    wasted_c = []
+    comm_shares = []
+
+    print("\n=== Fig. 5(b) Per-Peer Round Time Breakdown on model_poison (30% Byz, Random) ===")
+    for key, _ in links:
+        blk = sm_mp["round_time_by_link"][key]
+        c_tot = float(blk["comm_sec"])
+        c_w = float(blk["wasted_comm_sec"])
+        c_u = max(0.0, c_tot - c_w)
+        comp_vals.append(t_comp)
+        useful_c.append(c_u)
+        wasted_c.append(c_w)
+        comm_shares.append(float(blk["comm_share_pct"]))
+        print(f"  {key:8s}: compute+val+agg={t_comp:.3f}s | useful_comm={c_u:.3f}s | wasted_comm={c_w:.3f}s | total={t_comp + c_tot:.3f}s ({blk['comm_share_pct']:.1f}% comm)")
+
+    comp_a = np.array(comp_vals)
+    uc_a = np.array(useful_c)
+    wc_a = np.array(wasted_c)
+    ax_time.bar(xl, comp_a, width=0.52, color=fs.PALETTE["gray"], edgecolor="black", linewidth=1.6, label="Local Train + Val Grad + Agg", zorder=3)
+    ax_time.bar(xl, uc_a, bottom=comp_a, width=0.52, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label="Useful FP32 Transfer", zorder=3)
+    ax_time.bar(xl, wc_a, bottom=comp_a + uc_a, width=0.52, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label="Wasted FP32 Transfer", zorder=3)
+
+    tots_t = comp_a + uc_a + wc_a
+    for xi, tot, sh in zip(xl, tots_t, comm_shares):
+        ax_time.text(xi, tot + max(tots_t) * 0.02, f"{tot:.1f}s\n({sh:.0f}% comm)", ha="center", va="bottom", fontsize=11.5, fontweight="bold", color=fs.INK)
+
+    ax_time.set_xticks(xl)
+    ax_time.set_xticklabels([lbl for _, lbl in links])
+    ax_time.set_ylabel("Per-Peer Round Time (seconds)")
+    ax_time.set_title("(b) Round Time Breakdown (30% Model Poisoning)", pad=10, fontweight="bold")
+    ax_time.set_ylim(0, max(tots_t) * 1.28)
+    ax_time.legend(loc="upper left", ncol=1, fontsize=11.0)
+
+    top = fs.header(
+        fig,
+        "Batched FP32 TrustGraph-DFL Communication Waste and Round-Time Bottleneck",
+        "Pretrained ResNet-18 (11.18M FP32 params = 44.7 MB/update, full 50k CIFAR-10, 20 peers, 25 rounds, seed 42)",
+    )
+    bot = fs.footnote(
+        fig,
+        "Left: 41-58% of received FP32 updates receive zero trust weight and are discarded. Right: Uncompressed FP32 transfer dominates round time at 1 Gb/s and 100 Mb/s.",
+    )
+    fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
+    fs.save(fig, out_dir, "fig5-motivation-bandwidth-and-time-50k")
+
+
+def plot_fig6_motivation_memory_and_streaks(data: dict[str, object], out_dir: Path) -> None:
+    """Fig. 6: Batched O(d) receive-buffer memory across topologies + repeated rejection streaks."""
+    runs: list[dict[str, object]] = data["runs"]
+    fig, (ax_mem, ax_str) = plt.subplots(1, 2, figsize=(15.6, 6.5))
+    fs.light_grid(ax_mem, "y")
+    fs.light_grid(ax_str, "y")
+
+    topos = [("ring", "Ring\n(deg = 2)"), ("small_world", "Small-World\n(deg = 4)"), ("random", "Random\n(ER p = 0.3)")]
+    xt = np.arange(len(topos), dtype=float)
+    w = 0.34
+    mean_bufs = []
+    max_bufs = []
+    payload_mib = 0.0
+    print("\n=== Fig. 6(a) Batched FP32 Receive-Buffer Memory Across Topologies (MiB) ===")
+    for tp, _ in topos:
+        r = _find_motiv_run(runs, tp, "label_flip_all", 30)
+        sm = r["system_metrics"]
+        payload_mib = float(sm["payload_fp32_mib"])
+        mb = float(sm["batched_recv_buf_mean_mib"])
+        xb = float(sm["batched_recv_buf_max_mib"])
+        mean_bufs.append(mb)
+        max_bufs.append(xb)
+        print(f"  {tp:12s}: mean_deg={sm['mean_benign_degree']:.1f} ({mb:.1f} MiB) | max_deg={sm['max_benign_degree']} ({xb:.1f} MiB) | single_payload={payload_mib:.1f} MiB")
+
+    b1 = ax_mem.bar(xt - w / 2, mean_bufs, width=w, color=fs.PALETTE["blue_secondary"], edgecolor="black", linewidth=1.6, label="Mean-Degree Peer Buffer", zorder=3)
+    b2 = ax_mem.bar(xt + w / 2, max_bufs, width=w, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label="Max-Degree Peer Buffer", zorder=3)
+    ax_mem.axhline(payload_mib, color=fs.PALETTE["teal"], linestyle="--", linewidth=2.4, label=f"1-Update Reference ({payload_mib:.1f} MiB)", zorder=4)
+
+    for b, v in zip(b1, mean_bufs):
+        ax_mem.text(b.get_x() + b.get_width() / 2.0, v + 10.0, f"{v:.0f}", ha="center", va="bottom", fontsize=11.5, fontweight="bold", color=fs.PALETTE["blue_secondary"])
+    for b, v in zip(b2, max_bufs):
+        ax_mem.text(b.get_x() + b.get_width() / 2.0, v + 10.0, f"{v:.0f}", ha="center", va="bottom", fontsize=11.5, fontweight="bold", color=fs.PALETTE["blue_main"])
+
+    ax_mem.set_xticks(xt)
+    ax_mem.set_xticklabels([lbl for _, lbl in topos])
+    ax_mem.set_ylabel("Simultaneous FP32 Receive Buffers (MiB)")
+    ax_mem.set_title("(a) Batched Receive Memory Scales Linearly With Degree", pad=10, fontweight="bold")
+    ax_mem.set_ylim(0, max(max_bufs) * 1.32)
+    ax_mem.legend(loc="upper left", ncol=1, fontsize=11.0)
+
+    # Panel (b): Repeated rejections on Byzantine edges vs. honest single-round vs. >=3 consecutive rejections
+    atks = [("label_flip_all", "Label Flip\n($E_b=2$)"), ("model_poison", "Model Poison\n($\\lambda=10$)"), ("random_noise", "Random Noise\n($\\sigma=0.5$)")]
+    xa = np.arange(len(atks), dtype=float)
+    w3 = 0.25
+    byz_ge3 = []
+    hon_ge1 = []
+    hon_ge3 = []
+    print("\n=== Fig. 6(b) Repeated Rejection Streaks Across 25 Rounds (Random ER p=0.3, 30% Byz) ===")
+    for atk, _ in atks:
+        r = _find_motiv_run(runs, "random", atk, 30)
+        sm = r["system_metrics"]
+        bg3 = float(sm["byz_repeat_rejections"]["frac_edges_with_streak_ge3_pct"])
+        hg1 = float(sm["honest_rejection_streaks"]["frac_edges_with_ge1_rej_pct"])
+        hg3 = float(sm["honest_rejection_streaks"]["frac_edges_with_streak_ge3_pct"])
+        byz_ge3.append(bg3)
+        hon_ge1.append(hg1)
+        hon_ge3.append(hg3)
+        print(
+            f"  {atk:16s}: byz_mean_rej={sm['byz_repeat_rejections']['mean_rejected_rounds']:.1f}/25 (streak>=3: {bg3:.1f}%) | "
+            f"hon_ge1={hg1:.1f}% | hon_streak>=3={hg3:.1f}%"
+        )
+
+    s1 = ax_str.bar(xa - w3, byz_ge3, width=w3, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.5, label="Byzantine Edges: >=3 Consec. Rej", zorder=3)
+    s2 = ax_str.bar(xa, hon_ge1, width=w3, color=fs.PALETTE["blue_secondary"], edgecolor="black", linewidth=1.5, label="Honest Edges: >=1 Rejection", zorder=3)
+    s3 = ax_str.bar(xa + w3, hon_ge3, width=w3, color=fs.PALETTE["teal"], edgecolor="black", linewidth=1.5, label="Honest Edges: >=3 Consec. Rej", zorder=3)
+
+    for bars, vals, col in ((s1, byz_ge3, fs.PALETTE["red_strong"]), (s2, hon_ge1, fs.PALETTE["blue_secondary"]), (s3, hon_ge3, fs.PALETTE["teal"])):
+        for b, v in zip(bars, vals):
+            ax_str.text(b.get_x() + b.get_width() / 2.0, v + 2.0, f"{v:.0f}%", ha="center", va="bottom", fontsize=10.5, fontweight="bold", color=col)
+
+    ax_str.set_xticks(xa)
+    ax_str.set_xticklabels([lbl for _, lbl in atks])
+    ax_str.set_ylabel("Share of Directed Peer Edges (%)")
+    ax_str.set_title("(b) Repeat Rejections: Byzantine vs. Honest Edges", pad=10, fontweight="bold")
+    ax_str.set_ylim(0, 132)
+    ax_str.legend(loc="upper center", ncol=1, fontsize=10.5)
+
+    top = fs.header(
+        fig,
+        "Receive-Buffer Memory Growth and Repeated-Transfer Behavior in TrustGraph-DFL",
+        "Pretrained ResNet-18 (42.7 MiB/update, full 50k CIFAR-10, 20 peers, 25 rounds, seed 42)",
+    )
+    bot = fs.footnote(
+        fig,
+        "Left: Batched FP32 receive buffers grow linearly with peer degree (up to 10x a single update on Random graphs). Right: Single-rejection banning would hit nearly all honest edges.",
+    )
+    fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
+    fs.save(fig, out_dir, "fig6-motivation-memory-and-streaks-50k")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Draw all final TrustGraph-DFL figures from committed JSON data.")
     p.add_argument("--data-50k", default="report/data/phase1_paper_match_50k_3seed.json")
     p.add_argument("--data-rxdelta", default="report/data/phase1_fpr_rxdelta.json")
+    p.add_argument("--data-motivation", default="report/data/phase1_motivation_50k.json")
     p.add_argument("--out-dir", default="report/figures")
     args = p.parse_args()
 
@@ -451,6 +661,12 @@ def main() -> None:
     plot_fig2_topologies_and_stress(rows_idx, out_dir)
     plot_fig3_ablations_and_fpr_dynamics(rows_idx, data_50k, out_dir)
     plot_fig4_fpr_rxdelta(data_rxdelta, out_dir)
+
+    motiv_path = Path(args.data_motivation)
+    if motiv_path.exists():
+        data_motiv = json.loads(motiv_path.read_text(encoding="utf-8"))
+        plot_fig5_motivation_bandwidth_and_time(data_motiv, out_dir)
+        plot_fig6_motivation_memory_and_streaks(data_motiv, out_dir)
 
 
 if __name__ == "__main__":

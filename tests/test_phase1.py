@@ -430,7 +430,9 @@ def test_local_grad_clip_bounds_step_magnitude() -> None:
     assert upd_unclipped > upd_clipped * 5.0
 
 
-def test_simulator_logs_system_cost_metrics() -> None:
+def test_simulator_logs_system_cost_metrics(tmp_path: Path) -> None:
+    from experiments.phase1.summarize import export_motivation_json, format_system_markdown_report, summarize_system_directory
+
     out = run_experiment(
         ExperimentConfig(
             dataset="synthetic",
@@ -448,6 +450,7 @@ def test_simulator_logs_system_cost_metrics() -> None:
             device="cpu",
             eval_every=4,
             seed=42,
+            output_dir=str(tmp_path / "run_mp" / "seed_42"),
             verbose=False,
         )
     )
@@ -464,3 +467,10 @@ def test_simulator_logs_system_cost_metrics() -> None:
     assert "repeat_transfers_after_first_rej" in sm["byz_repeat_rejections"]
     assert "isolated_single_rejections" in sm["honest_rejection_streaks"]
     assert all("wasted_transfer_rate" in rec and "train_sec_per_peer" in rec for rec in out["history"])
+
+    sys_rows = summarize_system_directory(tmp_path)
+    assert len(sys_rows) == 1
+    md = format_system_markdown_report(sys_rows)
+    assert "System Cost Summary" in md and "model_poison" in md
+    exported = export_motivation_json(tmp_path, tmp_path / "motiv.json", job_id="123", commit="abc")
+    assert exported["total_runs"] == 1 and len(exported["runs"][0]["curves"]["round_wasted_pct"]) == 4
