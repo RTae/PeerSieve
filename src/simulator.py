@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from src.aggregators import AggregatorConfig, aggregate_node
+from src.aggregators import AggregatorConfig, aggregate_trustgraph
 from src.attacks import AttackConfig, apply_round_attack, label_flip_mode_for_attack
 from src.data import (
     PartitionedDataset,
@@ -141,7 +141,7 @@ def _sync_device(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
-def _streak_stats(seq: list[bool]) -> tuple[int, int, int, int]:
+def _compute_rejection_streaks(seq: list[bool]) -> tuple[int, int, int, int]:
     """Return (total_rejected, max_consec_rejected, repeat_after_first, isolated_single_rejections)."""
     total = sum(1 for x in seq if x)
     max_s = 0
@@ -162,7 +162,7 @@ def _streak_stats(seq: list[bool]) -> tuple[int, int, int, int]:
     return total, max_s, repeat_after_first, isolated
 
 
-def _timing_summary(vals: list[float]) -> dict[str, float]:
+def _summarize_timings(vals: list[float]) -> dict[str, float]:
     if not vals:
         return {"median": 0.0, "min": 0.0, "max": 0.0, "repeats": 0}
     return {
@@ -243,7 +243,7 @@ def _stage_device_data(
     )
 
 
-def _round_lr(cfg: ExperimentConfig, round_idx: int) -> float:
+def _learning_rate_for_round(cfg: ExperimentConfig, round_idx: int) -> float:
     if cfg.lr_schedule == "constant":
         return cfg.lr
     if cfg.lr_schedule == "cosine":
@@ -253,7 +253,7 @@ def _round_lr(cfg: ExperimentConfig, round_idx: int) -> float:
     raise ValueError(f"Unknown lr_schedule: {cfg.lr_schedule!r}")
 
 
-def _local_training_phase(
+def _run_local_training(
     cfg: ExperimentConfig,
     prev_models: list[torch.Tensor],
     work_model: nn.Module,
@@ -263,14 +263,14 @@ def _local_training_phase(
     device: torch.device,
     round_idx: int,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor], dict[int, torch.Tensor], float, float]:
-    """Run Phase 1 local SGD and pre-update validation gradient computation.
+    """Run local SGD and compute pre-update validation gradients for each peer.
 
-    Returns ``(post_models, updates, val_grads, benign_train_sec_mean, benign_val_grad_sec_mean)``.
+    Returns (post_models, updates, val_grads, benign_train_sec_mean, benign_val_grad_sec_mean).
     """
     post_models: list[torch.Tensor] = [torch.empty(0, device=device) for _ in range(cfg.n_nodes)]
     updates: list[torch.Tensor] = [torch.empty(0, device=device) for _ in range(cfg.n_nodes)]
     val_grads: dict[int, torch.Tensor] = {}
-    lr_now = _round_lr(cfg, round_idx)
+    lr_now = _learning_rate_for_round(cfg, round_idx)
     benign_train_sec = 0.0
     benign_val_sec = 0.0
     n_benign_seen = 0
@@ -281,7 +281,7 @@ def _local_training_phase(
         is_benign = i not in byzantine_ids
         vector_to_model(prev_models[i], work_model)
         if is_benign and cfg.aggregator == "trustgraph":
-            # Algorithm 1 line 8: compute validation gradient at theta_i^t before local update.
+            # Compute the validation gradient at theta_i^t before local SGD (Algorithm 1, line 8).
             _sync_device(device)
             t_v0 = time.perf_counter()
             val_grads[i] = compute_validation_gradient(
@@ -325,7 +325,7 @@ def _local_training_phase(
     return post_models, updates, val_grads, benign_train_sec / denom, benign_val_sec / denom
 
 
-def _aggregation_phase(
+def _run_aggregation(
     cfg: ExperimentConfig,
     agg_cfg: AggregatorConfig,
     graph: nx.Graph,
@@ -335,12 +335,10 @@ def _aggregation_phase(
     post_models: list[torch.Tensor],
     updates: list[torch.Tensor],
     val_grads: dict[int, torch.Tensor],
-    round_idx: int,
-    byz_frac_eff: float,
     device: torch.device,
     edge_rejected: dict[tuple[int, int], list[bool]] | None = None,
 ) -> tuple[list[torch.Tensor], _AggregationMetrics]:
-    """Run Phase 2/3 scoring and neighborhood aggregation across all benign peers."""
+    """Score neighbor updates and aggregate models across all honest peers."""
     next_models: list[torch.Tensor] = [vec.clone() for vec in prev_models]
     benign_zero = 0.0
     benign_pairs = 0
@@ -359,16 +357,12 @@ def _aggregation_phase(
         nbr_updates = {j: updates[j] for j in nbrs}
         vg = val_grads.get(i, torch.empty(0, device=device))
 
-        res = aggregate_node(
-            self_id=i,
+        res = aggregate_trustgraph(
             self_post=post_models[i],
             val_grad=vg,
             neighbor_ids=nbrs,
             neighbor_posts=nbr_posts,
             neighbor_updates=nbr_updates,
-            round_idx=round_idx,
-            total_rounds=cfg.rounds,
-            byzantine_frac=byz_frac_eff,
             cfg=agg_cfg,
             self_prev=prev_models[i],
             self_update=updates[i],
@@ -432,7 +426,7 @@ def _evaluate_benign_peers(
     y_test: torch.Tensor,
     eval_batch_size: int,
 ) -> dict[str, float]:
-    """Evaluate all benign peer models plus their consensus average on the clean test set."""
+    """Evaluate all honest peer models and their consensus average on the held-out test set."""
     accs: list[float] = []
     losses: list[float] = []
     for i in benign_ids:
@@ -536,7 +530,7 @@ def run_experiment(
             t_round_start = time.perf_counter()
             prev_models = [vec.clone() for vec in node_models]
 
-            post_models, updates, val_grads, train_sec_peer, val_sec_peer = _local_training_phase(
+            post_models, updates, val_grads, train_sec_peer, val_sec_peer = _run_local_training(
                 cfg, prev_models, work_model, dev_data, byzantine_ids, train_gen, device, round_idx=r
             )
             apply_round_attack(
@@ -548,7 +542,7 @@ def run_experiment(
                 updates=updates,
                 generator=attack_gen,
             )
-            node_models, agg_m = _aggregation_phase(
+            node_models, agg_m = _run_aggregation(
                 cfg=cfg,
                 agg_cfg=agg_cfg,
                 graph=graph,
@@ -558,8 +552,6 @@ def run_experiment(
                 post_models=post_models,
                 updates=updates,
                 val_grads=val_grads,
-                round_idx=r,
-                byz_frac_eff=byz_frac_eff,
                 device=device,
                 edge_rejected=edge_rejected,
             )
@@ -652,8 +644,8 @@ def run_experiment(
 
     honest_edges = [seq for (_, j), seq in edge_rejected.items() if j not in byzantine_ids]
     byz_edges = [seq for (_, j), seq in edge_rejected.items() if j in byzantine_ids]
-    byz_edge_stats = [_streak_stats(seq) for seq in byz_edges]
-    honest_edge_stats = [_streak_stats(seq) for seq in honest_edges]
+    byz_edge_stats = [_compute_rejection_streaks(seq) for seq in byz_edges]
+    honest_edge_stats = [_compute_rejection_streaks(seq) for seq in honest_edges]
 
     total_rx = cum_benign_pairs + cum_byz_pairs
     honest_rej = int(round(cum_benign_zero))
@@ -712,9 +704,9 @@ def run_experiment(
         "batched_recv_buf_max_mib": round(max_ben_deg * payload_mib, 2),
         "peak_gpu_alloc_mib": peak_gpu_alloc_mib,
         "peak_gpu_reserved_mib": peak_gpu_reserved_mib,
-        "train_sec_per_peer": _timing_summary(train_sec_list),
-        "val_grad_sec_per_peer": _timing_summary(val_sec_list),
-        "agg_sec_per_peer": _timing_summary(agg_sec_list),
+        "train_sec_per_peer": _summarize_timings(train_sec_list),
+        "val_grad_sec_per_peer": _summarize_timings(val_sec_list),
+        "agg_sec_per_peer": _summarize_timings(agg_sec_list),
         "round_time_by_link": round_time_by_link,
         "byz_repeat_rejections": {
             "n_byz_edges": len(byz_edges),

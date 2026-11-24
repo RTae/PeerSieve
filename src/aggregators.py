@@ -9,20 +9,19 @@ import torch
 
 @dataclass
 class AggregatorConfig:
-    """Configuration for TrustGraph-DFL aggregation and variants."""
+    """Configuration for TrustGraph-DFL aggregation and its ablations."""
 
     name: str = "trustgraph"
-    alpha: float = 0.5  # self-weight
+    alpha: float = 0.5  # Self-weight on the peer's own local model.
     eps: float = 1e-8
-    # TrustGraph-DFL specific
-    val_grad_sign: str = "descent_neg"  # descent_neg (-nabla F) | paper_pos (+nabla F)
+    val_grad_sign: str = "descent_neg"  # Either descent_neg (-nabla F) or paper_pos (+nabla F).
     trustgraph_use_relu: bool = True
-    trustgraph_metric: str = "cosine"  # cosine | euclidean
+    trustgraph_metric: str = "cosine"  # Either cosine or euclidean.
     trustgraph_score_threshold: float = 0.0
-    trustgraph_clip_norm: bool = False  # receiver-norm cap on accepted neighbor contributions
-    trustgraph_clip_mode: str = "update"  # update (receiver-norm update cap) | model (consensus-preserving)
-    trustgraph_clip_factor: float = 2.0  # multiplier on r_i for model-space displacement cap
-    trustgraph_delta_mode: str = "sender"  # sender (theta_j^{t+1/2}-theta_j^t) | receiver (theta_j^{t+1/2}-theta_i^t)
+    trustgraph_clip_norm: bool = False  # Cap accepted neighbor contributions using the receiver norm.
+    trustgraph_clip_mode: str = "update"  # Either update (update norm cap) or model (displacement cap).
+    trustgraph_clip_factor: float = 2.0  # Multiplier on r_i for the model-space displacement cap.
+    trustgraph_delta_mode: str = "sender"  # Either sender (theta_j^{t+1/2} - theta_j^t) or receiver (theta_j^{t+1/2} - theta_i^t).
 
     def validate(self) -> None:
         if self.name != "trustgraph":
@@ -82,13 +81,11 @@ def aggregate_trustgraph(
     self_prev: torch.Tensor | None = None,
     self_update: torch.Tensor | None = None,
 ) -> AggregationResult:
-    """TrustGraph-DFL consistency-weighted neighborhood aggregation (Eq. 3-5).
+    """Compute TrustGraph-DFL consistency-weighted neighborhood aggregation (Eq. 3 to Eq. 5).
 
-    Supports:
-    - val_grad_sign="paper_pos": literal Algorithm 1 / Eq. 3 using +nabla F_i(theta_i^t; D_i^val)
-    - val_grad_sign="descent_neg": corrected descent direction -nabla F_i(theta_i^t; D_i^val)
-    - trustgraph_clip_norm=True: receiver-norm cap on neighbor updates or model displacements
-    - trustgraph_delta_mode="receiver": receiver-anchored delta (theta_j^{t+1/2} - theta_i^t)
+    Supports validation gradient sign selection (paper_pos for +nabla F_i and
+    descent_neg for -nabla F_i), optional receiver-norm clipping, and
+    receiver-anchored deltas (theta_j^{t+1/2} - theta_i^t).
     """
     if not neighbor_ids:
         return _self_only_result(self_post, neighbor_ids)
@@ -108,10 +105,10 @@ def aggregate_trustgraph(
             if cfg.trustgraph_use_relu:
                 raw_weights[j] = max(0.0, s_ij - cfg.trustgraph_score_threshold)
             else:
-                # Ablation without ReLU: map [-1, 1] -> [0, 1] so negative scores retain weight.
+                # Without ReLU, map cosine scores from [-1, 1] to [0, 1] so negative scores keep weight.
                 raw_weights[j] = 0.5 * (s_ij + 1.0)
         else:
-            # Magnitude-based Euclidean distance ablation (Section 5.5).
+            # Euclidean distance ablation from Section 5.5.
             dist = float(torch.linalg.vector_norm(neighbor_posts[j] - self_post).item())
             s_ij = 1.0 / (1.0 + dist)
             scores[j] = s_ij
@@ -119,7 +116,7 @@ def aggregate_trustgraph(
 
     denom = sum(raw_weights.values())
     if denom <= 0.0:
-        # Section 4.4: if all neighbors have non-positive consistency, rely solely on self.
+        # Fall back to the local model when every neighbor receives zero weight (Section 4.4).
         return _self_only_result(self_post, neighbor_ids, scores=scores, self_fallback=True)
 
     weights = {j: raw_weights[j] / (denom + cfg.eps) for j in neighbor_ids}
@@ -128,7 +125,7 @@ def aggregate_trustgraph(
             raise ValueError("self_prev and self_update are required when trustgraph_clip_norm=True.")
         r_i = float(torch.linalg.vector_norm(self_update).item())
         if cfg.trustgraph_clip_mode == "model":
-            # Consensus-preserving model-space clip: cap displacement (theta_j^{t+1/2} - theta_i^t).
+            # Cap each neighbor's displacement from the receiver's previous model.
             cap = cfg.trustgraph_clip_factor * r_i
             nbr_avg = torch.zeros_like(self_post)
             for j in neighbor_ids:
@@ -161,33 +158,4 @@ def aggregate_trustgraph(
         neighbor_zero_weight_frac={j: (1.0 if weights[j] <= 0.0 else 0.0) for j in neighbor_ids},
         scores=scores,
         self_fallback=False,
-    )
-
-
-def aggregate_node(
-    self_id: int,
-    self_post: torch.Tensor,
-    val_grad: torch.Tensor,
-    neighbor_ids: list[int],
-    neighbor_posts: dict[int, torch.Tensor],
-    neighbor_updates: dict[int, torch.Tensor],
-    round_idx: int,
-    total_rounds: int,
-    byzantine_frac: float,
-    cfg: AggregatorConfig,
-    self_prev: torch.Tensor | None = None,
-    self_update: torch.Tensor | None = None,
-) -> AggregationResult:
-    """Dispatch to TrustGraph-DFL aggregation."""
-    if cfg.name != "trustgraph":
-        raise ValueError(f"Unknown aggregator: {cfg.name!r}; expected 'trustgraph'.")
-    return aggregate_trustgraph(
-        self_post,
-        val_grad,
-        neighbor_ids,
-        neighbor_posts,
-        neighbor_updates,
-        cfg,
-        self_prev=self_prev,
-        self_update=self_update,
     )

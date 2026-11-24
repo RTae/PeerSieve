@@ -43,7 +43,7 @@ def test_balanced_dirichlet_partition_exact_counts_and_non_iid() -> None:
         probs = probs[probs > 0]
         entropies.append(-float(np.sum(probs * np.log(probs))))
 
-    # Uniform 10-class entropy is ln(10) ~= 2.3026; Dir(0.5) must be substantially more skewed.
+    # Uniform 10-class entropy is ln(10) ~= 2.3026; Dirichlet(0.5) must be lower.
     assert np.mean(entropies) < 1.95
     total_per_class = np.sum(np.array(part.class_counts), axis=0)
     assert np.all(total_per_class == 1000)
@@ -95,20 +95,20 @@ def test_trustgraph_sign_direction_and_self_fallback() -> None:
     nbr_posts = {1: self_post + honest_update, 2: self_post + mal_update}
     nbr_updates = {1: honest_update, 2: mal_update}
 
-    # Corrected descent direction (-val_grad): honest gets weight 1, malicious gets 0.
+    # With descent_neg (-val_grad), the honest neighbor gets weight 1 and the attacker gets 0.
     cfg_neg = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", alpha=0.5)
     res_neg = aggregate_trustgraph(self_post, val_grad, [1, 2], nbr_posts, nbr_updates, cfg_neg)
     assert res_neg.scores[1] > 0.99 and res_neg.scores[2] < -0.99
     assert res_neg.neighbor_weights[1] > 0.99 and res_neg.neighbor_weights[2] == 0.0
     assert res_neg.neighbor_zero_weight_frac == {1: 0.0, 2: 1.0}
 
-    # Literal paper sign (+val_grad): inverted! Malicious gets weight 1, honest gets 0.
+    # With paper_pos (+val_grad), signs flip so the attacker gets weight 1 and the honest peer gets 0.
     cfg_pos = AggregatorConfig(name="trustgraph", val_grad_sign="paper_pos", alpha=0.5)
     res_pos = aggregate_trustgraph(self_post, val_grad, [1, 2], nbr_posts, nbr_updates, cfg_pos)
     assert res_pos.scores[1] < -0.99 and res_pos.scores[2] > 0.99
     assert res_pos.neighbor_weights[1] == 0.0 and res_pos.neighbor_weights[2] > 0.99
 
-    # All-negative fallback: node keeps self_post unchanged (not 0.5 * self_post).
+    # When all neighbors score below zero, the peer keeps self_post unchanged.
     res_fb = aggregate_trustgraph(
         self_post, val_grad, [2], {2: nbr_posts[2]}, {2: nbr_updates[2]}, cfg_neg
     )
@@ -267,7 +267,7 @@ def test_summarize_directory_deduplicates_and_counts_nans(tmp_path: Path) -> Non
         }
         p.write_text(json.dumps(payload), encoding="utf-8")
 
-    # Duplicate seed 42 in two subfolders + second seed 43 with NaN.
+    # Duplicate seed 42 in two subfolders and a second seed 43 with NaN.
     _write_summary("a/seed_42", 42, 0.40, 0.50, 0.45, False)
     _write_summary("b/seed_42", 42, 0.99, 0.99, 0.01, False)
     _write_summary("a/seed_43", 43, 0.10, 0.10, 0.95, True)
@@ -317,7 +317,7 @@ def test_model_space_clip_and_stabilized_models() -> None:
     expected = 0.5 * self_post + 0.5 * (self_prev + torch.tensor([1.0, 0.0, 0.0]))
     assert torch.allclose(res.new_model, expected, atol=1e-5)
 
-    # GroupNorm CNN & ResNet-18 (offline scratch init) preserve frozen BN stats in train().
+    # GroupNorm CNN and ResNet-18 keep BatchNorm running stats frozen during train().
     gn_model = build_model("cnn2x2_gn")
     xb = augment_cifar_batch(torch.randn(4, 3, 32, 32), generator=torch.Generator().manual_seed(0))
     assert xb.shape == (4, 3, 32, 32)

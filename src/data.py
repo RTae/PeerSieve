@@ -154,11 +154,11 @@ def _balanced_dirichlet_counts(
     alpha_dir: float,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Compute an integer (num_classes, n_nodes) count matrix with exact row/col sums.
+    """Compute an integer (num_classes, n_nodes) count matrix with exact row and column sums.
 
-    Draws Gamma(alpha_dir, 1) entries (the generative law of Dirichlet), applies
-    biproportional (Sinkhorn) scaling to match exact class totals and per-node
-    quotas, and rounds to exact integers while preserving non-IID skewness.
+    Draws Gamma(alpha_dir, 1) entries, applies Sinkhorn scaling to match exact class
+    totals and per-node sample counts, and rounds to integers while keeping the
+    non-IID skew.
     """
     num_classes = len(class_totals)
     total_samples = int(class_totals.sum())
@@ -241,10 +241,10 @@ def partition_dirichlet_balanced(
 ) -> PartitionedDataset:
     """Subsample n_nodes * samples_per_node images and split non-IID via Dirichlet(alpha_dir).
 
-    val_split="local" (literal TrustGraph-DFL Section 5.1): each node holds out val_frac of
-    its own local non-IID shard as D_i^val.
-    val_split="iid": diagnostic mode where each node's val_frac validation set is sampled
-    stratified-IID from a disjoint pool of training images while training shards remain Dir(alpha_dir).
+    When val_split is "local", each node holds out val_frac of its own non-IID shard
+    as D_i^val (TrustGraph-DFL Section 5.1). When val_split is "iid", each node gets
+    a class-balanced validation set from a disjoint pool while training shards remain
+    Dirichlet(alpha_dir).
     """
     if val_split not in {"local", "iid"}:
         raise ValueError(f"Unknown val_split {val_split!r}; expected 'local' or 'iid'.")

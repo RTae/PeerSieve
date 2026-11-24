@@ -32,10 +32,10 @@ class SimpleCIFARCNN(nn.Module):
 
 
 class GroupNormCIFARCNN(nn.Module):
-    """Stabilized 2-conv, 2-FC CNN with GroupNorm and Dropout for CIFAR-10.
+    """Two-convolution, two-FC CNN with GroupNorm and Dropout for CIFAR-10.
 
-    GroupNorm has no running-stat buffers, avoiding BatchNorm drift under
-    decentralized parameter averaging while reducing local overfitting.
+    GroupNorm has no running-stat buffers, so decentralized parameter averaging
+    does not drift across non-IID peers.
     """
 
     def __init__(self, num_classes: int = 10, dropout: float = 0.25) -> None:
@@ -60,9 +60,9 @@ class GroupNormCIFARCNN(nn.Module):
 class PretrainedResNet18CIFAR(nn.Module):
     """ImageNet-pretrained ResNet-18 adapted for 32x32 CIFAR-10 in DFL.
 
-    Upsamples batches on-the-fly to 128x128 so pretrained stem filters remain
-    valid, and keeps BatchNorm running stats frozen in eval mode so non-IID
-    and Byzantine peers never corrupt shared running buffers.
+    Upsamples batches to 128x128 for the pretrained stem filters and freezes
+    BatchNorm running statistics in eval mode so non-IID and Byzantine peers
+    do not corrupt shared buffers.
     """
 
     def __init__(self, num_classes: int = 10, image_size: int = 128, pretrained: bool = True) -> None:

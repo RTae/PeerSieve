@@ -9,9 +9,9 @@ import torch
 
 @dataclass
 class AttackConfig:
-    """Attack specification matching TrustGraph-DFL Section 3.2 & 5.1."""
+    """Attack settings matching TrustGraph-DFL Sections 3.2 and 5.1."""
 
-    name: str = "none"  # none | label_flip | label_flip_all | model_poison | random_noise
+    name: str = "none"  # One of none, label_flip, label_flip_all, model_poison, or random_noise.
     poison_lambda: float = 10.0
     noise_sigma: float = 0.5
 
@@ -43,15 +43,13 @@ def apply_round_attack(
     updates: list[torch.Tensor],
     generator: torch.Generator,
 ) -> None:
-    """Mutate Byzantine peers' post_models and updates in-place for round-level attacks.
+    """Overwrite Byzantine peers' post_models and updates in-place for round-level attacks.
 
-    For model_poison (Section 3.2):
-        Delta_theta_mal = -lambda * mean(Delta_theta_benign), lambda = 10.
-    For random_noise (Section 3.2 & 5.1):
-        Delta_theta_mal ~ N(0, sigma^2 I), sigma = 0.5.
-
-    In both cases, the broadcast model is anchored at mean(theta_benign^t) + Delta_theta_mal
-    so that post_model and update are consistent and not distorted by stale malicious state.
+    Model poisoning (Section 3.2) sets Delta_theta_mal = -lambda * mean(Delta_theta_benign)
+    with default lambda = 10. Random noise (Sections 3.2 and 5.1) draws
+    Delta_theta_mal ~ N(0, sigma^2 I) with default sigma = 0.5. Both attacks anchor
+    the broadcast model at mean(theta_benign^t) + Delta_theta_mal so post_model and
+    update remain consistent.
     """
     if not byzantine_ids or attack_cfg.name in {"none", "label_flip", "label_flip_all"}:
         return
