@@ -265,6 +265,7 @@ def export_system_metrics_json(
     out_path: str | Path,
     job_id: str | None = None,
     commit: str | None = None,
+    transfer_bench_json: str | Path | None = None,
 ) -> dict[str, object]:
     """Export all summary.json system_metrics and per-round curves to a JSON dataset."""
     root_p = Path(root)
@@ -327,6 +328,8 @@ def export_system_metrics_json(
         },
         "runs": runs,
     }
+    if transfer_bench_json is not None:
+        payload["measured_cluster_transfer"] = json.loads(Path(transfer_bench_json).read_text(encoding="utf-8"))
     dst = Path(out_path)
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -375,6 +378,7 @@ def main() -> None:
     p.add_argument("--out", default=None, help="Optional Markdown file path to write the table.")
     p.add_argument("--title", default="Phase 1 Experiment Summary", help="Heading for the Markdown report.")
     p.add_argument("--export-system-json", default=None, help="Optional path to export aggregated system_metrics JSON.")
+    p.add_argument("--transfer-bench-json", default=None, help="Optional measured 2-node transfer JSON to embed in exported system metrics.")
     p.add_argument("--job-id", default=None, help="Optional Slurm job ID stored in exported system metrics JSON.")
     p.add_argument("--commit", default=None, help="Optional git commit hash stored in exported system metrics JSON.")
     args = p.parse_args()
@@ -399,6 +403,7 @@ def main() -> None:
             args.export_system_json,
             job_id=args.job_id,
             commit=args.commit,
+            transfer_bench_json=args.transfer_bench_json,
         )
         print(f"Exported {exported['total_runs']} runs to {args.export_system_json}")
 

@@ -54,7 +54,8 @@ Generate Markdown accuracy and system-cost tables from any run output directory 
 uv run python -m experiments.phase1.summarize outputs/phase1_50k --title "TrustGraph-DFL Summary"
 uv run python -m experiments.phase1.summarize outputs/phase1_motivation \
   --title "TrustGraph-DFL System Cost Summary" \
-  --export-system-json report/data/phase1_system_metrics_50k.json
+  --export-system-json report/data/phase1_system_metrics_50k.json \
+  --transfer-bench-json outputs/phase1_transfer_bench/ja3_ja4_transfer.json
 uv run python -m experiments.phase1.plot_figures
 ```
 

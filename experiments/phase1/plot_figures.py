@@ -503,7 +503,13 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
     mp = _select_run(runs, "random", "model_poison", 30)
     sm_mp = mp["system_metrics"]
     t_comp = float(sm_mp["train_sec_per_peer"]["median"]) + float(sm_mp["val_grad_sec_per_peer"]["median"]) + float(sm_mp["agg_sec_per_peer"]["median"])
-    links = [("10gbps", "10 Gb/s\nDatacenter Ref."), ("1gbps", "1 Gb/s Ethernet\n(Our Cluster)"), ("100mbps", "100 Mb/s\nWAN / Edge Ref.")]
+    measured_tx = data.get("measured_cluster_transfer")
+    has_measured = isinstance(measured_tx, dict) and "workloads" in measured_tx
+    links = [
+        ("10gbps", "10 Gb/s\nDatacenter (Est.)"),
+        ("1gbps", "1 Gb/s Ethernet\n(Measured Cluster)" if has_measured else "1 Gb/s Ethernet\n(Our Cluster)"),
+        ("100mbps", "100 Mb/s\nWAN / Edge (Est.)"),
+    ]
     xl = np.arange(len(links), dtype=float)
     comp_vals = []
     useful_c = []
@@ -512,15 +518,24 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
 
     print("\n=== Fig. 5(b) Per-Peer Round Time Breakdown on model_poison (30% Byz, Random) ===")
     for key, _ in links:
-        blk = sm_mp["round_time_by_link"][key]
-        c_tot = float(blk["comm_sec"])
-        c_w = float(blk["wasted_comm_sec"])
-        c_u = max(0.0, c_tot - c_w)
+        if key == "1gbps" and has_measured:
+            wl = measured_tx["workloads"]
+            c_u = float(wl["model_poison_useful"]["median_sec"])
+            c_w = float(wl["model_poison_wasted"]["median_sec"])
+            c_tot = c_u + c_w
+            share = 100.0 * c_tot / max(t_comp + c_tot, 1e-9)
+        else:
+            blk = sm_mp["round_time_by_link"][key]
+            c_tot = float(blk["comm_sec"])
+            c_w = float(blk["wasted_comm_sec"])
+            c_u = max(0.0, c_tot - c_w)
+            share = float(blk["comm_share_pct"])
         comp_vals.append(t_comp)
         useful_c.append(c_u)
         wasted_c.append(c_w)
-        comm_shares.append(float(blk["comm_share_pct"]))
-        print(f"  {key:8s}: compute+val+agg={t_comp:.3f}s | useful_comm={c_u:.3f}s | wasted_comm={c_w:.3f}s | total={t_comp + c_tot:.3f}s ({blk['comm_share_pct']:.1f}% comm)")
+        comm_shares.append(share)
+        tag = " [measured]" if (key == "1gbps" and has_measured) else " [est]"
+        print(f"  {key:8s}{tag:11s}: compute+val+agg={t_comp:.3f}s | useful_comm={c_u:.3f}s | wasted_comm={c_w:.3f}s | total={t_comp + c_tot:.3f}s ({share:.1f}% comm)")
 
     comp_a = np.array(comp_vals)
     uc_a = np.array(useful_c)
@@ -529,8 +544,8 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
     mp_useful_mb = float(sm_mp["useful_mb_per_peer_round"])
     mp_wasted_mb = float(sm_mp["wasted_mb_per_peer_round"])
     ax_time.bar(xl, comp_a, width=0.52, color=fs.PALETTE["gray"], edgecolor="black", linewidth=1.6, label=f"Measured A100 Compute ({t_comp:.2f} s)", zorder=3)
-    ax_time.bar(xl, uc_a, bottom=comp_a, width=0.52, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label=f"Est. Useful Transfer ({mp_useful_mb:.1f} MB)", zorder=3)
-    ax_time.bar(xl, wc_a, bottom=comp_a + uc_a, width=0.52, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label=f"Est. Wasted Transfer ({mp_wasted_mb:.1f} MB)", zorder=3)
+    ax_time.bar(xl, uc_a, bottom=comp_a, width=0.52, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label=f"Useful FP32 Transfer ({mp_useful_mb:.1f} MB)", zorder=3)
+    ax_time.bar(xl, wc_a, bottom=comp_a + uc_a, width=0.52, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label=f"Wasted FP32 Transfer ({mp_wasted_mb:.1f} MB)", zorder=3)
 
     tots_t = comp_a + uc_a + wc_a
     for xi, tot, sh in zip(xl, tots_t, comm_shares):
@@ -539,7 +554,7 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
     ax_time.set_xticks(xl)
     ax_time.set_xticklabels([lbl for _, lbl in links])
     ax_time.set_ylabel("Per-Peer Round Time (seconds)")
-    ax_time.set_title(f"(b) Est. Round Time from (a) (Model Poison, {mp_rx_mb:.1f} MB)", pad=10, fontweight="bold")
+    ax_time.set_title(f"(b) Round Time from (a) (Model Poison, {mp_rx_mb:.1f} MB)", pad=10, fontweight="bold")
     ax_time.set_ylim(0, max(tots_t) * 1.30)
     ax_time.legend(loc="upper left", ncol=1, fontsize=10.5)
 
@@ -548,10 +563,12 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
         "Batched FP32 TrustGraph-DFL Communication Waste and Round-Time Bottleneck",
         "Pretrained ResNet-18 (11.18M FP32 params = 44.7 MB/update, full 50k CIFAR-10, 20 peers, 25 rounds, seed 42)",
     )
-    bot = fs.footnote(
-        fig,
-        "Left: 42.5-67.6% of FP32 downloads receive zero weight. Right: Measured A100 compute (0.66 s) plus bytes x 8 / link speed for the 268.4 MB Model Poison bar in (a).",
+    bot_text = (
+        "Left: 42.5-67.6% of FP32 downloads receive zero weight. Right: Measured A100 compute (0.66 s) + measured 1 Gb/s TCP (941 Mb/s on ja4->ja3) and 10 Gb/s, 100 Mb/s estimates."
+        if has_measured
+        else "Left: 42.5-67.6% of FP32 downloads receive zero weight. Right: Measured A100 compute (0.66 s) plus bytes x 8 / link speed for the 268.4 MB Model Poison bar in (a)."
     )
+    bot = fs.footnote(fig, bot_text)
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
     fs.save(fig, out_dir, "fig5-bandwidth-and-round-time-50k")
 
