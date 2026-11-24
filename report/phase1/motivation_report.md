@@ -10,7 +10,6 @@ We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using
 
 | Component | Configuration |
 |---|---|
-| Cluster node and Slurm job | `octave`, job `327539`, commit `3899c13`, elapsed `00:20:55` |
 | GPUs | 8x NVIDIA A100-PCIE-40GB (`01:00.0` to `E1:00.0`, PCIe Gen4 x16 `SYS`) |
 | External network (lab inventory) | `1 Gb/s` Ethernet without RDMA (nominal NIC line rate on `octave`) |
 | NVIDIA driver and CUDA | Driver `610.57.04`, CUDA `13.2` |
