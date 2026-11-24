@@ -431,7 +431,7 @@ def test_local_grad_clip_bounds_step_magnitude() -> None:
 
 
 def test_simulator_logs_system_cost_metrics(tmp_path: Path) -> None:
-    from experiments.phase1.summarize import export_motivation_json, format_system_markdown_report, summarize_system_directory
+    from experiments.phase1.summarize import export_system_metrics_json, format_system_markdown_report, summarize_system_directory
 
     out = run_experiment(
         ExperimentConfig(
@@ -472,5 +472,5 @@ def test_simulator_logs_system_cost_metrics(tmp_path: Path) -> None:
     assert len(sys_rows) == 1
     md = format_system_markdown_report(sys_rows)
     assert "System Cost Summary" in md and "model_poison" in md
-    exported = export_motivation_json(tmp_path, tmp_path / "motiv.json", job_id="123", commit="abc")
+    exported = export_system_metrics_json(tmp_path, tmp_path / "system_metrics.json", job_id="123", commit="abc")
     assert exported["total_runs"] == 1 and len(exported["runs"][0]["curves"]["round_wasted_pct"]) == 4

@@ -264,13 +264,13 @@ def format_system_markdown_report(rows: list[SystemSummaryRow], title: str = "Sy
     return "\n".join(lines) + "\n"
 
 
-def export_motivation_json(
+def export_system_metrics_json(
     root: str | Path,
     out_path: str | Path,
     job_id: str | None = None,
     commit: str | None = None,
 ) -> dict[str, object]:
-    """Export all summary.json system_metrics + per-round curves to a committed JSON dataset."""
+    """Export all summary.json system_metrics and per-round curves to a JSON dataset."""
     root_p = Path(root)
     files = sorted(root_p.rglob("summary.json"))
     runs: list[dict[str, object]] = []
@@ -317,7 +317,7 @@ def export_motivation_json(
         )
     walls = [float(r["total_wall_sec"]) for r in runs]
     payload: dict[str, object] = {
-        "description": "Phase 1 CIFAR-10 ResNet-18 batched FP32 TrustGraph-DFL system-cost metrics (motivation dataset)",
+        "description": "Phase 1 CIFAR-10 ResNet-18 batched FP32 TrustGraph-DFL system-cost metrics",
         "source_root": str(root_p),
         "job_id": job_id,
         "commit": commit,
@@ -378,9 +378,9 @@ def main() -> None:
     p.add_argument("root", help="Directory containing Phase 1 outputs (searched recursively for summary.json).")
     p.add_argument("--out", default=None, help="Optional Markdown file path to write the table.")
     p.add_argument("--title", default="Phase 1 Experiment Summary", help="Heading for the Markdown report.")
-    p.add_argument("--export-motivation-json", default=None, help="Optional path to export aggregated system_metrics JSON.")
-    p.add_argument("--job-id", default=None, help="Optional Slurm job ID stored in exported motivation JSON.")
-    p.add_argument("--commit", default=None, help="Optional git commit hash stored in exported motivation JSON.")
+    p.add_argument("--export-system-json", default=None, help="Optional path to export aggregated system_metrics JSON.")
+    p.add_argument("--job-id", default=None, help="Optional Slurm job ID stored in exported system metrics JSON.")
+    p.add_argument("--commit", default=None, help="Optional git commit hash stored in exported system metrics JSON.")
     args = p.parse_args()
 
     rows = summarize_directory(args.root)
@@ -397,14 +397,14 @@ def main() -> None:
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(output, encoding="utf-8")
-    if args.export_motivation_json:
-        exported = export_motivation_json(
+    if args.export_system_json:
+        exported = export_system_metrics_json(
             args.root,
-            args.export_motivation_json,
+            args.export_system_json,
             job_id=args.job_id,
             commit=args.commit,
         )
-        print(f"Exported {exported['total_runs']} runs to {args.export_motivation_json}")
+        print(f"Exported {exported['total_runs']} runs to {args.export_system_json}")
 
 
 if __name__ == "__main__":

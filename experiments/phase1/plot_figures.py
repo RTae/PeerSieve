@@ -434,7 +434,7 @@ def plot_fig4_fpr_rxdelta(data: dict[str, object], out_dir: Path) -> None:
     fs.save(fig, out_dir, "fig4-fpr-rxdelta-50k")
 
 
-def _find_motiv_run(
+def _select_run(
     runs: list[dict[str, object]],
     topology: str,
     attack: str,
@@ -449,11 +449,11 @@ def _find_motiv_run(
             and str(r["method"]).startswith(method_prefix)
         ):
             return r
-    raise KeyError(f"Motivation run not found for ({topology}, {attack}, byz={byz_pct}).")
+    raise KeyError(f"Run not found for ({topology}, {attack}, byz={byz_pct}).")
 
 
-def plot_fig5_motivation_bandwidth_and_time(data: dict[str, object], out_dir: Path) -> None:
-    """Fig. 5: Wasted FP32 receive bandwidth across attacks + per-peer round time by link speed."""
+def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> None:
+    """Plot received vs. wasted FP32 bandwidth across attacks and round time by link speed."""
     runs: list[dict[str, object]] = data["runs"]
     fig, (ax_bw, ax_time) = plt.subplots(1, 2, figsize=(15.6, 6.5))
     fs.light_grid(ax_bw, "y")
@@ -468,7 +468,7 @@ def plot_fig5_motivation_bandwidth_and_time(data: dict[str, object], out_dir: Pa
     print("\n=== Fig. 5(a) Per-Peer Receive Bandwidth per Round (MB, 50k ResNet-18, Random ER p=0.3) ===")
     for atk in fr.ATTACK_ORDER:
         byz_p = 30
-        r = _find_motiv_run(runs, "random", atk, byz_p)
+        r = _select_run(runs, "random", atk, byz_p)
         sm = r["system_metrics"]
         u = float(sm["useful_mb_per_peer_round"])
         wh = float(sm["wasted_honest_mb_per_peer_round"])
@@ -500,7 +500,7 @@ def plot_fig5_motivation_bandwidth_and_time(data: dict[str, object], out_dir: Pa
     ax_bw.legend(loc="upper center", ncol=1, fontsize=11.0)
 
     # Panel (b): Per-peer round time breakdown on model_poison across link speeds
-    mp = _find_motiv_run(runs, "random", "model_poison", 30)
+    mp = _select_run(runs, "random", "model_poison", 30)
     sm_mp = mp["system_metrics"]
     t_comp = float(sm_mp["train_sec_per_peer"]["median"]) + float(sm_mp["val_grad_sec_per_peer"]["median"]) + float(sm_mp["agg_sec_per_peer"]["median"])
     links = [("10gbps", "10 Gb/s\nDatacenter"), ("1gbps", "1 Gb/s\nEthernet"), ("100mbps", "100 Mb/s\nWAN / Edge")]
@@ -550,11 +550,11 @@ def plot_fig5_motivation_bandwidth_and_time(data: dict[str, object], out_dir: Pa
         "Left: 41-58% of received FP32 updates receive zero trust weight and are discarded. Right: Uncompressed FP32 transfer dominates round time at 1 Gb/s and 100 Mb/s.",
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
-    fs.save(fig, out_dir, "fig5-motivation-bandwidth-and-time-50k")
+    fs.save(fig, out_dir, "fig5-bandwidth-and-round-time-50k")
 
 
-def plot_fig6_motivation_memory_and_streaks(data: dict[str, object], out_dir: Path) -> None:
-    """Fig. 6: Batched O(d) receive-buffer memory across topologies + repeated rejection streaks."""
+def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: Path) -> None:
+    """Plot batched O(d) receive-buffer memory across topologies and repeated rejection streaks."""
     runs: list[dict[str, object]] = data["runs"]
     fig, (ax_mem, ax_str) = plt.subplots(1, 2, figsize=(15.6, 6.5))
     fs.light_grid(ax_mem, "y")
@@ -568,7 +568,7 @@ def plot_fig6_motivation_memory_and_streaks(data: dict[str, object], out_dir: Pa
     payload_mib = 0.0
     print("\n=== Fig. 6(a) Batched FP32 Receive-Buffer Memory Across Topologies (MiB) ===")
     for tp, _ in topos:
-        r = _find_motiv_run(runs, tp, "label_flip_all", 30)
+        r = _select_run(runs, tp, "label_flip_all", 30)
         sm = r["system_metrics"]
         payload_mib = float(sm["payload_fp32_mib"])
         mb = float(sm["batched_recv_buf_mean_mib"])
@@ -602,7 +602,7 @@ def plot_fig6_motivation_memory_and_streaks(data: dict[str, object], out_dir: Pa
     hon_ge3 = []
     print("\n=== Fig. 6(b) Repeated Rejection Streaks Across 25 Rounds (Random ER p=0.3, 30% Byz) ===")
     for atk, _ in atks:
-        r = _find_motiv_run(runs, "random", atk, 30)
+        r = _select_run(runs, "random", atk, 30)
         sm = r["system_metrics"]
         bg3 = float(sm["byz_repeat_rejections"]["frac_edges_with_streak_ge3_pct"])
         hg1 = float(sm["honest_rejection_streaks"]["frac_edges_with_ge1_rej_pct"])
@@ -640,14 +640,14 @@ def plot_fig6_motivation_memory_and_streaks(data: dict[str, object], out_dir: Pa
         "Left: Batched FP32 receive buffers grow linearly with peer degree (up to 10x a single update on Random graphs). Right: Single-rejection banning would hit nearly all honest edges.",
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
-    fs.save(fig, out_dir, "fig6-motivation-memory-and-streaks-50k")
+    fs.save(fig, out_dir, "fig6-memory-and-rejection-streaks-50k")
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Draw all final TrustGraph-DFL figures from committed JSON data.")
     p.add_argument("--data-50k", default="report/data/phase1_paper_match_50k_3seed.json")
     p.add_argument("--data-rxdelta", default="report/data/phase1_fpr_rxdelta.json")
-    p.add_argument("--data-motivation", default="report/data/phase1_motivation_50k.json")
+    p.add_argument("--data-system", default="report/data/phase1_system_metrics_50k.json")
     p.add_argument("--out-dir", default="report/figures")
     args = p.parse_args()
 
@@ -662,11 +662,11 @@ def main() -> None:
     plot_fig3_ablations_and_fpr_dynamics(rows_idx, data_50k, out_dir)
     plot_fig4_fpr_rxdelta(data_rxdelta, out_dir)
 
-    motiv_path = Path(args.data_motivation)
-    if motiv_path.exists():
-        data_motiv = json.loads(motiv_path.read_text(encoding="utf-8"))
-        plot_fig5_motivation_bandwidth_and_time(data_motiv, out_dir)
-        plot_fig6_motivation_memory_and_streaks(data_motiv, out_dir)
+    system_data_path = Path(args.data_system)
+    if system_data_path.exists():
+        data_system = json.loads(system_data_path.read_text(encoding="utf-8"))
+        plot_bandwidth_and_round_time(data_system, out_dir)
+        plot_receive_memory_and_rejection_streaks(data_system, out_dir)
 
 
 if __name__ == "__main__":
