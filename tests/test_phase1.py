@@ -474,3 +474,121 @@ def test_simulator_logs_system_cost_metrics(tmp_path: Path) -> None:
     assert "System Cost Summary" in md and "model_poison" in md
     exported = export_system_metrics_json(tmp_path, tmp_path / "system_metrics.json", job_id="123", commit="abc")
     assert exported["total_runs"] == 1 and len(exported["runs"][0]["curves"]["round_wasted_pct"]) == 4
+
+
+def test_transfer_benchmark_socketpair(tmp_path: Path) -> None:
+    import socket
+    import threading
+    from experiments.phase1.run import run_transfer_benchmark
+
+    srv_sock, cli_sock = socket.socketpair()
+    try:
+        server_thread = threading.Thread(
+            target=run_transfer_benchmark,
+            kwargs={
+                "role": "server",
+                "host": "127.0.0.1",
+                "port": 0,
+                "payload_bytes": 4096,
+                "single_repeats": 3,
+                "burst_repeats": 2,
+                "warmups": 1,
+                "useful_bytes": 2048,
+                "wasted_bytes": 3072,
+                "connected_sock": srv_sock,
+            },
+            daemon=True,
+        )
+        server_thread.start()
+        out_file = tmp_path / "transfer.json"
+        result = run_transfer_benchmark(
+            role="client",
+            host="127.0.0.1",
+            port=0,
+            payload_bytes=4096,
+            single_repeats=3,
+            burst_repeats=2,
+            warmups=1,
+            useful_bytes=2048,
+            wasted_bytes=3072,
+            out_path=out_file,
+            connected_sock=cli_sock,
+        )
+        server_thread.join(timeout=5.0)
+    finally:
+        srv_sock.close()
+        cli_sock.close()
+    assert result is not None and out_file.exists()
+    w = result["workloads"]
+    assert set(w.keys()) == {"single_update", "round_6_neighbors", "model_poison_useful", "model_poison_wasted"}
+    assert w["single_update"]["repeats"] == 3 and w["single_update"]["median_sec"] > 0.0
+    assert w["round_6_neighbors"]["bytes"] == 4096 * 6 and w["round_6_neighbors"]["goodput_mbps"] > 0.0
+
+
+def test_multinode_mesh_primitives_socketpair() -> None:
+    import socket
+    import threading
+    from experiments.phase1.run import _exchange_all_to_all, _fanin_to_rank0, _mesh_barrier
+
+    world_size = 4
+    send_maps: list[dict[int, socket.socket]] = [{} for _ in range(world_size)]
+    recv_maps: list[dict[int, socket.socket]] = [{} for _ in range(world_size)]
+    all_socks: list[socket.socket] = []
+    for src in range(world_size):
+        for dst in range(world_size):
+            if src == dst:
+                continue
+            s_a, s_b = socket.socketpair()
+            send_maps[src][dst] = s_a
+            recv_maps[dst][src] = s_b
+            all_socks.extend([s_a, s_b])
+
+    received_all: list[dict[int, bytes]] = [{} for _ in range(world_size)]
+    fanin_rank0: dict[int, bytes] = {}
+    errors: list[BaseException] = []
+
+    def _worker(r: int) -> None:
+        try:
+            _mesh_barrier(r, world_size, send_maps[r], recv_maps[r])
+            payload = bytes([r + 1]) * 1024
+            recv_bufs = {src: bytearray(1024) for src in recv_maps[r]}
+            _exchange_all_to_all(
+                send_maps[r],
+                recv_maps[r],
+                memoryview(payload),
+                {src: memoryview(b) for src, b in recv_bufs.items()},
+            )
+            received_all[r] = {src: bytes(b) for src, b in recv_bufs.items()}
+
+            _mesh_barrier(r, world_size, send_maps[r], recv_maps[r])
+            f_bufs = {src: bytearray(1024) for src in recv_maps[r]}
+            _fanin_to_rank0(
+                r,
+                send_maps[r],
+                recv_maps[r],
+                memoryview(payload),
+                {src: memoryview(b) for src, b in f_bufs.items()},
+            )
+            if r == 0:
+                fanin_rank0.update({src: bytes(b) for src, b in f_bufs.items()})
+        except BaseException as exc:
+            errors.append(exc)
+
+    try:
+        threads = [threading.Thread(target=_worker, args=(r,)) for r in range(world_size)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+    finally:
+        for s in all_socks:
+            s.close()
+
+    assert not errors
+    for r in range(world_size):
+        assert set(received_all[r].keys()) == {j for j in range(world_size) if j != r}
+        for src, data in received_all[r].items():
+            assert data == bytes([src + 1]) * 1024
+    assert set(fanin_rank0.keys()) == {1, 2, 3}
+    for src in (1, 2, 3):
+        assert fanin_rank0[src] == bytes([src + 1]) * 1024
