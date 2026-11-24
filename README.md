@@ -4,7 +4,7 @@ This repository implements [TrustGraph-DFL.pdf](TrustGraph-DFL.pdf) (Xu et al., 
 
 | Document | Contents |
 |---|---|
-| [report/phase1_report.md](report/phase1_report.md) | Experiment findings, diagnostic tables, and figures |
+| [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) | TrustGraph-DFL reproduction findings, gap table, and figures |
 | [experiments/phase1/REPRODUCE.md](experiments/phase1/REPRODUCE.md) | Full experiment suites, Slurm launch commands, and figure regeneration steps |
 
 ## Prerequisites
@@ -98,7 +98,7 @@ For full 50k, 10k, `rxdelta`, and multi-GPU Slurm reproduction commands, see [ex
 
 ## Experiment results
 
-See [report/phase1_report.md](report/phase1_report.md) for the full reproduction results, adjustments, and remaining gaps. The committed JSON datasets are in [report/data/](report/data/), and the PNG and PDF figures are in [report/figures/](report/figures/).
+See [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) for the TrustGraph-DFL reproduction results, adjustments, and remaining gaps. The committed JSON datasets are in [report/data/](report/data/), and the PNG and PDF figures are in [report/figures/](report/figures/).
 
 ## Project structure
 
@@ -126,7 +126,8 @@ See [report/phase1_report.md](report/phase1_report.md) for the full reproduction
 ├── tests/
 │   └── test_phase1.py              # Unit and offline synthetic DFL integration suite
 └── report/
-    ├── phase1_report.md            # Final reproduction and FPR report
+    ├── phase1/
+    │   └── reproduce_report.md     # TrustGraph-DFL reproduction and FPR report
     ├── data/                       # Committed 50k 3-seed and rxdelta FPR JSON datasets
     └── figures/                    # 300 dpi PNG and header-free PDF figures
 ```
