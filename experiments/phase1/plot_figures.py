@@ -485,8 +485,8 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
     w_byz_a = np.array(w_byz)
     bar_w = 0.54
     ax_bw.bar(x, useful_a, width=bar_w, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label="Accepted (Useful)", zorder=3)
-    ax_bw.bar(x, w_hon_a, bottom=useful_a, width=bar_w, color=fs.PALETTE["red_2"], edgecolor="black", linewidth=1.6, label="Wasted (Rejected Honest)", zorder=3)
-    ax_bw.bar(x, w_byz_a, bottom=useful_a + w_hon_a, width=bar_w, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label="Wasted (Rejected Byzantine)", zorder=3)
+    ax_bw.bar(x, w_hon_a, bottom=useful_a, width=bar_w, color=fs.PALETTE["red_2"], edgecolor="black", linewidth=1.6, label="Wasted (False Positive)", zorder=3)
+    ax_bw.bar(x, w_byz_a, bottom=useful_a + w_hon_a, width=bar_w, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label="Wasted (Blocked Attacker)", zorder=3)
 
     totals = useful_a + w_hon_a + w_byz_a
     for xi, tot, wp in zip(x, totals, w_pct):
@@ -615,9 +615,9 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
             f"hon_ge1={hg1:.1f}% | hon_streak>=3={hg3:.1f}%"
         )
 
-    s1 = ax_str.bar(xa - w3, byz_ge3, width=w3, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.5, label="Byzantine Edges: >=3 Consec. Rej", zorder=3)
-    s2 = ax_str.bar(xa, hon_ge1, width=w3, color=fs.PALETTE["blue_secondary"], edgecolor="black", linewidth=1.5, label="Honest Edges: >=1 Rejection", zorder=3)
-    s3 = ax_str.bar(xa + w3, hon_ge3, width=w3, color=fs.PALETTE["teal"], edgecolor="black", linewidth=1.5, label="Honest Edges: >=3 Consec. Rej", zorder=3)
+    s1 = ax_str.bar(xa - w3, byz_ge3, width=w3, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.5, label="Attacker Edges (>=3 Consecutive Blocks)", zorder=3)
+    s2 = ax_str.bar(xa, hon_ge1, width=w3, color=fs.PALETTE["blue_secondary"], edgecolor="black", linewidth=1.5, label="Honest Edges (>=1 False Positive)", zorder=3)
+    s3 = ax_str.bar(xa + w3, hon_ge3, width=w3, color=fs.PALETTE["teal"], edgecolor="black", linewidth=1.5, label="Honest Edges (>=3 Consecutive False Positives)", zorder=3)
 
     for bars, vals, col in ((s1, byz_ge3, fs.PALETTE["red_strong"]), (s2, hon_ge1, fs.PALETTE["blue_secondary"]), (s3, hon_ge3, fs.PALETTE["teal"])):
         for b, v in zip(bars, vals):
@@ -626,9 +626,9 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
     ax_str.set_xticks(xa)
     ax_str.set_xticklabels([lbl for _, lbl in atks])
     ax_str.set_ylabel("Share of Directed Peer Edges (%)")
-    ax_str.set_title("(b) Repeat Rejections: Byzantine vs. Honest Edges", pad=10, fontweight="bold")
-    ax_str.set_ylim(0, 132)
-    ax_str.legend(loc="upper center", ncol=1, fontsize=10.5)
+    ax_str.set_title("(b) Repeat Rejections: Attacker vs. Honest Edges", pad=10, fontweight="bold")
+    ax_str.set_ylim(0, 134)
+    ax_str.legend(loc="upper center", ncol=1, fontsize=10.0)
 
     top = fs.header(
         fig,
@@ -637,7 +637,7 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
     )
     bot = fs.footnote(
         fig,
-        "Left: Batched FP32 receive buffers grow linearly with peer degree (up to 8x a single update on 30% Byzantine Random graphs). Right: Single-rejection banning would hit 98-100% of honest edges.",
+        "Left: Batched FP32 receive buffers grow linearly with peer degree (up to 8x a single update on 30% Byzantine Random graphs). Right: Banning on one false positive would hit 98-100% of honest edges.",
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
     fs.save(fig, out_dir, "fig6-memory-and-rejection-streaks-50k")
