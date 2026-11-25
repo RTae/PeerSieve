@@ -90,19 +90,19 @@ def test_topologies_connected_and_degree() -> None:
 def test_trustgraph_sign_direction_and_self_fallback() -> None:
     val_grad = torch.tensor([1.0, 2.0, -1.0])
     self_post = torch.tensor([10.0, 10.0, 10.0])
-    honest_update = -0.1 * val_grad
+    benign_update = -0.1 * val_grad
     mal_update = +1.0 * val_grad  # sign-flipped poisoning
-    nbr_posts = {1: self_post + honest_update, 2: self_post + mal_update}
-    nbr_updates = {1: honest_update, 2: mal_update}
+    nbr_posts = {1: self_post + benign_update, 2: self_post + mal_update}
+    nbr_updates = {1: benign_update, 2: mal_update}
 
-    # With descent_neg (-val_grad), the honest neighbor gets weight 1 and the attacker gets 0.
+    # With descent_neg (-val_grad), the benign neighbor gets weight 1 and the attacker gets 0.
     cfg_neg = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", alpha=0.5)
     res_neg = aggregate_trustgraph(self_post, val_grad, [1, 2], nbr_posts, nbr_updates, cfg_neg)
     assert res_neg.scores[1] > 0.99 and res_neg.scores[2] < -0.99
     assert res_neg.neighbor_weights[1] > 0.99 and res_neg.neighbor_weights[2] == 0.0
     assert res_neg.neighbor_zero_weight_frac == {1: 0.0, 2: 1.0}
 
-    # With paper_pos (+val_grad), signs flip so the attacker gets weight 1 and the honest peer gets 0.
+    # With paper_pos (+val_grad), signs flip so the attacker gets weight 1 and the benign peer gets 0.
     cfg_pos = AggregatorConfig(name="trustgraph", val_grad_sign="paper_pos", alpha=0.5)
     res_pos = aggregate_trustgraph(self_post, val_grad, [1, 2], nbr_posts, nbr_updates, cfg_pos)
     assert res_pos.scores[1] < -0.99 and res_pos.scores[2] > 0.99
@@ -603,6 +603,119 @@ def test_distributed_peers_end_to_end_socketpair(tmp_path: Path) -> None:
     sm = summary["system_metrics"]
     assert "measured_transport_sec" in sm
     assert sm["measured_transport_sec"]["net_sec_per_peer"]["repeats"] == 4
+    assert sm["measured_transport_sec"]["wire_mb_per_peer_round"] > 0.0
+    assert summary["send_both_vectors"] is True
+    assert summary["wire_bytes_per_neighbor"] == param_count * 8
     assert float(summary["mean_benign_score"]) > 0.0
     assert float(summary["mean_byz_score"]) < 0.0
     assert float(summary["byz_accept_cumulative"]) == 0.0
+
+
+def test_distributed_rxdelta_wire_bytes_and_adjacent_byzantine_stability(tmp_path: Path) -> None:
+    """Confirm receiver-anchored mode sends one vector and adjacent attackers stay finite even if rank 0 is Byzantine."""
+    import threading
+    from src.distributed import run_distributed_peer
+    from src.simulator import prepare_dataset, seed_everything
+    from src.transport import TcpPeerTransport
+
+    world_size = 4
+    # Pick a seed where rank 0 is selected among the 2 adjacent Byzantine peers on the 4-ring.
+    chosen_seed = next(
+        s for s in range(1, 200) if 0 in select_byzantine_nodes(world_size, 0.5, seed=s + 1000)
+    )
+    cfg = ExperimentConfig(
+        dataset="synthetic",
+        n_nodes=world_size,
+        samples_per_node=80,
+        alpha_dir=5.0,
+        val_split="iid",
+        rounds=4,
+        model_name="cnn2x2",
+        topology="ring",
+        byzantine_frac=0.5,
+        attack="model_poison",
+        aggregator="trustgraph",
+        val_grad_sign="descent_neg",
+        trustgraph_clip_norm=True,
+        trustgraph_clip_mode="model",
+        trustgraph_delta_mode="receiver",
+        device="cpu",
+        eval_every=4,
+        seed=chosen_seed,
+        output_dir=str(tmp_path / "dist_rxdelta"),
+        verbose=False,
+    )
+    seed_everything(cfg.seed)
+    preloaded = prepare_dataset(cfg)
+    shared_init = model_to_vector(build_model(cfg.model_name))
+    graph = build_topology("ring", n_nodes=world_size, seed=cfg.seed)
+    param_count = int(shared_init.numel())
+    transports = TcpPeerTransport.build_socketpair_group(
+        graph_neighbors={r: list(graph.neighbors(r)) for r in range(world_size)},
+        param_count=param_count,
+        device=torch.device("cpu"),
+        send_both_vectors=False,
+    )
+
+    results: list[dict[str, object] | None] = [None] * world_size
+    errors: list[BaseException] = []
+
+    def _peer_worker(r: int) -> None:
+        try:
+            results[r] = run_distributed_peer(
+                cfg=cfg,
+                rank=r,
+                world_size=world_size,
+                local_rank=0,
+                transport=transports[r],
+                preloaded_data=preloaded,
+                init_vec=shared_init,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    try:
+        threads = [threading.Thread(target=_peer_worker, args=(r,)) for r in range(world_size)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60.0)
+    finally:
+        for tr in transports:
+            tr.close()
+
+    assert not errors, f"Distributed peer errors: {errors}"
+    assert results[0] is not None
+    summary = results[0]["summary"]
+    assert 0 in summary["topology"]["byzantine_ids"]
+    assert summary["had_nan"] is False
+    assert summary["send_both_vectors"] is False
+    assert summary["wire_bytes_per_neighbor"] == param_count * 4
+    expected_wire_mb = round((2 * param_count * 4) / 1e6, 2)
+    assert summary["system_metrics"]["measured_transport_sec"]["wire_mb_per_peer_round"] == expected_wire_mb
+
+
+def test_summarize_system_directory_separates_models(tmp_path: Path) -> None:
+    from experiments.phase1.summarize import summarize_system_directory
+
+    for model_name in ("cnn2x2", "cnn2x2_gn"):
+        run_experiment(
+            ExperimentConfig(
+                dataset="synthetic",
+                n_nodes=6,
+                samples_per_node=30,
+                rounds=2,
+                model_name=model_name,
+                topology="ring",
+                byzantine_frac=0.0,
+                attack="none",
+                device="cpu",
+                eval_every=2,
+                seed=7,
+                output_dir=str(tmp_path / model_name / "seed_7"),
+                verbose=False,
+            )
+        )
+    sys_rows = summarize_system_directory(tmp_path)
+    assert len(sys_rows) == 2
+    assert {r.model for r in sys_rows} == {"cnn2x2", "cnn2x2_gn"}

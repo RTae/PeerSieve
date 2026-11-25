@@ -60,7 +60,7 @@ uv run python -m experiments.phase1.run \
   --rounds 25 --seeds 42 --output-root outputs/single_run
 ```
 
-Run multi-process, multi-GPU decentralized FL with `--mode distributed` (one peer process per GPU over persistent topology-scoped TCP sockets via `torchrun` or `slurm_run.sh`).
+Run multi-process, multi-GPU decentralized FL with `--mode distributed` (one or more independent peer processes per GPU over persistent topology-scoped TCP sockets via `torchrun` or `slurm_run.sh`; pass `--n-nodes 20` to pack all 20 peers round-robin across 8 GPUs).
 
 ```bash
 uv run torchrun --standalone --nproc_per_node=8 -m experiments.phase1.run \

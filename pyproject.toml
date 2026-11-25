@@ -1,7 +1,7 @@
 [project]
 name = "trustgraph-dfl"
 version = "0.1.0"
-description = "TrustGraph-DFL decentralized federated learning reproduction and FPR study"
+description = "TrustGraph-DFL decentralized federated learning reproduction, FPR study, and distributed system benchmark"
 requires-python = ">=3.11"
 dependencies = [
     "networkx>=3.0",
