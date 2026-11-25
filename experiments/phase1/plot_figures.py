@@ -587,63 +587,57 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
     ax_bw.set_ylim(0, max(totals) * 1.38)
     ax_bw.legend(loc="upper center", ncol=1, fontsize=11.0)
 
-    # Panel (b): Per-peer round time breakdown on model_poison across link speeds
+    # Panel (b): Measured A100 compute + measured 1 Gb/s Ethernet TCP breakdown on model_poison (no link estimates)
     mp = _select_run(runs, "random", "model_poison", 30)
     sm_mp = mp["system_metrics"]
     t_comp = float(sm_mp["train_sec_per_peer"]["median"]) + float(sm_mp["val_grad_sec_per_peer"]["median"]) + float(sm_mp["agg_sec_per_peer"]["median"])
-    measured_tx = data.get("measured_cluster_transfer")
-    has_measured = isinstance(measured_tx, dict) and "workloads" in measured_tx
-    links = [
-        ("10gbps", "10 Gb/s\nDatacenter (Est.)"),
-        ("1gbps", "1 Gb/s Ethernet\n(Measured Cluster)" if has_measured else "1 Gb/s Ethernet\n(Our Cluster)"),
-        ("100mbps", "100 Mb/s\nWAN / Edge (Est.)"),
+    measured_tx = data["measured_cluster_transfer"]
+    wl = measured_tx["workloads"]
+    c_u_meas = float(wl["model_poison_useful"]["median_sec"])
+    c_w_meas = float(wl["model_poison_wasted"]["median_sec"])
+    mp_rx_mb = float(sm_mp["rx_mb_per_peer_round"])
+    mp_useful_mb = float(sm_mp["useful_mb_per_peer_round"])
+    mp_wasted_mb = float(sm_mp["wasted_mb_per_peer_round"])
+
+    stages = [
+        ("compute_only", "A100 Compute\nOnly", 0.0, 0.0),
+        ("useful_tcp", f"Compute + Useful\n({mp_useful_mb:.1f} MB TCP)", c_u_meas, 0.0),
+        ("full_tcp", f"Compute + Full\n({mp_rx_mb:.1f} MB TCP)", c_u_meas, c_w_meas),
     ]
-    xl = np.arange(len(links), dtype=float)
+    xl = np.arange(len(stages), dtype=float)
     comp_vals = []
     useful_c = []
     wasted_c = []
     comm_shares = []
 
-    print("\n=== Fig. 5(b) Per-Peer Round Time Breakdown on model_poison (30% Byz, Random) ===")
-    for key, _ in links:
-        if key == "1gbps" and has_measured:
-            wl = measured_tx["workloads"]
-            c_u = float(wl["model_poison_useful"]["median_sec"])
-            c_w = float(wl["model_poison_wasted"]["median_sec"])
-            c_tot = c_u + c_w
-            share = 100.0 * c_tot / max(t_comp + c_tot, 1e-9)
-        else:
-            blk = sm_mp["round_time_by_link"][key]
-            c_tot = float(blk["comm_sec"])
-            c_w = float(blk["wasted_comm_sec"])
-            c_u = max(0.0, c_tot - c_w)
-            share = float(blk["comm_share_pct"])
+    print("\n=== Fig. 5(b) Measured A100 Compute + Measured 1 Gb/s TCP Breakdown on model_poison ===")
+    for key, _, c_u, c_w in stages:
+        c_tot = c_u + c_w
+        tot = t_comp + c_tot
+        share = 100.0 * c_tot / max(tot, 1e-9)
         comp_vals.append(t_comp)
         useful_c.append(c_u)
         wasted_c.append(c_w)
         comm_shares.append(share)
-        tag = " [measured]" if (key == "1gbps" and has_measured) else " [est]"
-        print(f"  {key:8s}{tag:11s}: compute+val+agg={t_comp:.3f}s | useful_comm={c_u:.3f}s | wasted_comm={c_w:.3f}s | total={t_comp + c_tot:.3f}s ({share:.1f}% comm)")
+        print(f"  {key:14s}: compute={t_comp:.3f}s | useful_tcp={c_u:.3f}s | wasted_tcp={c_w:.3f}s | total={tot:.3f}s ({share:.1f}% comm)")
 
     comp_a = np.array(comp_vals)
     uc_a = np.array(useful_c)
     wc_a = np.array(wasted_c)
-    mp_rx_mb = float(sm_mp["rx_mb_per_peer_round"])
-    mp_useful_mb = float(sm_mp["useful_mb_per_peer_round"])
-    mp_wasted_mb = float(sm_mp["wasted_mb_per_peer_round"])
-    ax_time.bar(xl, comp_a, width=0.52, color=fs.PALETTE["gray"], edgecolor="black", linewidth=1.6, label=f"Measured A100 Compute ({t_comp:.2f} s)", zorder=3)
-    ax_time.bar(xl, uc_a, bottom=comp_a, width=0.52, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label=f"Useful FP32 Transfer ({mp_useful_mb:.1f} MB)", zorder=3)
-    ax_time.bar(xl, wc_a, bottom=comp_a + uc_a, width=0.52, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label=f"Wasted FP32 Transfer ({mp_wasted_mb:.1f} MB)", zorder=3)
+    ax_time.bar(xl, comp_a, width=0.50, color=fs.PALETTE["gray"], edgecolor="black", linewidth=1.6, label=f"Measured A100 Compute ({t_comp:.2f} s)", zorder=3)
+    ax_time.bar(xl, uc_a, bottom=comp_a, width=0.50, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label=f"Measured Useful 1 Gb/s TCP ({mp_useful_mb:.1f} MB)", zorder=3)
+    ax_time.bar(xl, wc_a, bottom=comp_a + uc_a, width=0.50, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label=f"Measured Wasted 1 Gb/s TCP ({mp_wasted_mb:.1f} MB)", zorder=3)
 
     tots_t = comp_a + uc_a + wc_a
     for xi, tot, sh in zip(xl, tots_t, comm_shares):
-        ax_time.text(xi, tot + max(tots_t) * 0.02, f"{tot:.2f}s\n({sh:.1f}% comm)", ha="center", va="bottom", fontsize=11.0, fontweight="bold", color=fs.INK)
+        label_txt = f"{tot:.2f}s\n(0% comm)" if sh == 0.0 else f"{tot:.2f}s\n({sh:.1f}% comm)"
+        ax_time.text(xi, tot + max(tots_t) * 0.025, label_txt, ha="center", va="bottom", fontsize=11.0, fontweight="bold", color=fs.INK)
 
     ax_time.set_xticks(xl)
-    ax_time.set_xticklabels([lbl for _, lbl in links])
+    ax_time.set_xticklabels([lbl for _, lbl, _, _ in stages])
     ax_time.set_ylabel("Per-Peer Round Time (seconds)")
-    ax_time.set_title(f"(b) Round Time from (a) (Model Poison, {mp_rx_mb:.1f} MB)", pad=10, fontweight="bold")
-    ax_time.set_ylim(0, max(tots_t) * 1.30)
+    ax_time.set_title(f"(b) Measured 1 Gb/s Round Time (Model Poison, {mp_rx_mb:.1f} MB)", pad=10, fontweight="bold")
+    ax_time.set_ylim(0, max(tots_t) * 1.34)
     ax_time.legend(loc="upper left", ncol=1, fontsize=10.5)
 
     top = fs.header(
@@ -651,12 +645,10 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
         "Batched FP32 TrustGraph-DFL Communication Waste and Round-Time Bottleneck",
         "Pretrained ResNet-18 (11.18M FP32 params = 44.7 MB/update, full 50k CIFAR-10, 20 peers, 25 rounds, seed 42)",
     )
-    bot_text = (
-        "Left: 42.5-67.6% of FP32 downloads receive zero weight. Right: Measured A100 compute (0.66 s) + measured 1 Gb/s TCP (941 Mb/s on ja4->ja3) and 10 Gb/s, 100 Mb/s estimates."
-        if has_measured
-        else "Left: 42.5-67.6% of FP32 downloads receive zero weight. Right: Measured A100 compute (0.66 s) plus bytes x 8 / link speed for the 268.4 MB Model Poison bar in (a)."
+    bot = fs.footnote(
+        fig,
+        "Left: 42.5-67.6% of FP32 downloads get zero weight. Right: Measured A100 compute (0.66 s) + measured 1 Gb/s TCP (941 Mb/s, ja4->ja3); useful FP32 alone exceeds compute.",
     )
-    bot = fs.footnote(fig, bot_text)
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
     fs.save(fig, out_dir, "fig5-bandwidth-and-round-time-50k")
 
@@ -757,6 +749,121 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
     )
     fig.subplots_adjust(left=0.075, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.5, wspace=0.22)
     fs.save(fig, out_dir, "fig6-memory-and-rejection-streaks-50k")
+
+
+def plot_v100_bandwidth_waste(data: dict[str, object], out_dir: Path) -> None:
+    """Plot real multi-node V100 received vs. wasted wire traffic per round (Figure 5).
+
+    Args:
+        data: Full parsed phase1_v100_distributed_2node.json dataset.
+        out_dir: Output directory for PNG and PDF figures.
+
+    Returns:
+        None.
+    """
+    runs_by_label = {str(r["label"]): r for r in data["runs"]}
+    hw = data.get("hardware", {})
+    gpu_name = str(hw.get("gpu", "Tesla V100-PCIE-16GB"))
+    iface = str(hw.get("interface", "enp68s0f0"))
+    speed = hw.get("link_speed_mbps", 1000)
+    mtu = hw.get("mtu", 1500)
+    nodes = "+".join(str(n) for n in data.get("nodes", ["ja3", "ja4"]))
+
+    def _extract_wire_mb(specs: list[tuple[str, str]]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[float]]:
+        """Extract per-peer useful, false-positive waste, and attacker waste wire MB arrays.
+
+        Args:
+            specs: Ordered list of (run_label, tick_label) tuples.
+
+        Returns:
+            Tuple of (useful_mb, fp_waste_mb, byz_waste_mb, waste_pcts).
+        """
+        use_l, fp_l, byz_l, wp_l = [], [], [], []
+        for key, _ in specs:
+            r = runs_by_label[key]
+            sm = r["system_metrics"]
+            wire_mb = float(r["wire_bytes_per_neighbor"]) / 1e6
+            deg = float(sm["mean_benign_degree"])
+            tot_tx = max(int(sm["total_transfers"]), 1)
+            hon_rej = int(sm["honest_rejected_transfers"])
+            byz_rej = int(sm["byz_rejected_transfers"])
+            tot_rej = int(sm["total_rejected_transfers"])
+            kept = tot_tx - tot_rej
+            rx_mb = wire_mb * deg
+            u_mb = rx_mb * kept / tot_tx
+            fp_mb = rx_mb * hon_rej / tot_tx
+            bz_mb = rx_mb * byz_rej / tot_tx
+            wp = 100.0 * tot_rej / tot_tx
+            use_l.append(u_mb)
+            fp_l.append(fp_mb)
+            byz_l.append(bz_mb)
+            wp_l.append(wp)
+            print(
+                f"  {key:24s}: rx={rx_mb:6.2f} MB | useful={u_mb:6.2f} | fp_waste={fp_mb:5.2f} | byz_waste={bz_mb:5.2f} ({wp:5.1f}% wasted)"
+            )
+        return np.array(use_l), np.array(fp_l), np.array(byz_l), wp_l
+
+    fig, (ax_4p, ax_2p) = plt.subplots(1, 2, figsize=(16.4, 6.6), gridspec_kw={"width_ratios": [1.45, 1.0]})
+    fs.light_grid(ax_4p, "y")
+    fs.light_grid(ax_2p, "y")
+
+    specs_4p = [
+        ("4p_none_sender", "No Attack\n(sender)"),
+        ("4p_label_flip_sender", "Label Flip\n(sender)"),
+        ("4p_model_poison_sender", "Model Poison\n(sender)"),
+        ("4p_random_noise_sender", "Random Noise\n(sender)"),
+        ("4p_model_poison_rxdelta", "Model Poison\n(rxdelta)"),
+    ]
+    print("\n=== Fig. 5(a) Real 4-Peer V100 Wire Receive Traffic per Peer / Round (MB) ===")
+    u4, f4, b4, w4 = _extract_wire_mb(specs_4p)
+    x4 = np.arange(len(specs_4p), dtype=float)
+    bw4 = 0.54
+    ax_4p.bar(x4, u4, width=bw4, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label="Accepted (Useful)", zorder=3)
+    ax_4p.bar(x4, f4, bottom=u4, width=bw4, color=fs.PALETTE["red_2"], edgecolor="black", linewidth=1.6, label="Wasted (False Positive)", zorder=3)
+    ax_4p.bar(x4, b4, bottom=u4 + f4, width=bw4, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label="Wasted (Blocked Attacker)", zorder=3)
+    tot4 = u4 + f4 + b4
+    for xi, tot, wp in zip(x4, tot4, w4):
+        ax_4p.text(xi, tot + 7.0, f"{wp:.1f}%\nwasted", ha="center", va="bottom", fontsize=11.0, fontweight="bold", color=fs.PALETTE["red_strong"])
+    ax_4p.set_xticks(x4)
+    ax_4p.set_xticklabels([lbl for _, lbl in specs_4p], fontsize=12.0)
+    ax_4p.set_ylabel("Received Wire Traffic / Round (MB)")
+    ax_4p.set_title("(a) 4 Peers Across 2 V100 Nodes (Degree 3)", pad=10, fontweight="bold")
+    ax_4p.set_ylim(0, max(tot4) * 1.44)
+    ax_4p.legend(loc="upper center", ncol=3, fontsize=10.5, columnspacing=1.0, handletextpad=0.5)
+
+    specs_2p = [
+        ("2p_none_sender", "No Attack\n(sender)"),
+        ("2p_model_poison_sender", "Model Poison\n(sender)"),
+        ("2p_model_poison_rxdelta", "Model Poison\n(rxdelta)"),
+    ]
+    print("\n=== Fig. 5(b) Real 2-Peer V100 Wire Receive Traffic per Peer / Round (MB) ===")
+    u2, f2, b2, w2 = _extract_wire_mb(specs_2p)
+    x2 = np.arange(len(specs_2p), dtype=float)
+    bw2 = 0.50
+    ax_2p.bar(x2, u2, width=bw2, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label="Accepted (Useful)", zorder=3)
+    ax_2p.bar(x2, f2, bottom=u2, width=bw2, color=fs.PALETTE["red_2"], edgecolor="black", linewidth=1.6, label="Wasted (False Positive)", zorder=3)
+    ax_2p.bar(x2, b2, bottom=u2 + f2, width=bw2, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label="Wasted (Blocked Attacker)", zorder=3)
+    tot2 = u2 + f2 + b2
+    for xi, tot, wp in zip(x2, tot2, w2):
+        ax_2p.text(xi, tot + 2.5, f"{wp:.1f}%\nwasted", ha="center", va="bottom", fontsize=11.0, fontweight="bold", color=fs.PALETTE["red_strong"])
+    ax_2p.set_xticks(x2)
+    ax_2p.set_xticklabels([lbl for _, lbl in specs_2p], fontsize=12.0)
+    ax_2p.set_ylabel("Received Wire Traffic / Round (MB)")
+    ax_2p.set_title("(b) Dedicated 1 Peer / V100 (Degree 1)", pad=10, fontweight="bold")
+    ax_2p.set_ylim(0, max(tot2) * 1.48)
+    ax_2p.legend(loc="upper right", ncol=1, fontsize=10.5)
+
+    top = fs.header(
+        fig,
+        "Real Multi-Node V100 Received vs. Wasted FP32 Wire Traffic",
+        f"2x {gpu_name} ({nodes}, {iface} {speed} Mb/s MTU {mtu}, ResNet-18, 2,500 images/peer, 25 rounds, seed 42)",
+    )
+    bot = fs.footnote(
+        fig,
+        "Left: 4 peers discard 34.3-52.4% of real TCP wire bytes (268.4 MB/round in sender, 134.2 MB in rxdelta). Right: 2 peers discard 26% (no attack) to 100% (model poison).",
+    )
+    fig.subplots_adjust(left=0.065, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.6, wspace=0.20)
+    fs.save(fig, out_dir, "fig5-v100-bandwidth-waste")
 
 
 def plot_v100_distributed_ethernet(data: dict[str, object], out_dir: Path) -> None:
@@ -914,6 +1021,7 @@ def main() -> None:
     v100_data_path = Path(args.data_v100)
     if v100_data_path.exists():
         data_v100 = json.loads(v100_data_path.read_text(encoding="utf-8"))
+        plot_v100_bandwidth_waste(data_v100, out_dir)
         plot_v100_distributed_ethernet(data_v100, out_dir)
 
 
