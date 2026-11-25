@@ -5,7 +5,7 @@ This repository implements [TrustGraph-DFL.pdf](TrustGraph-DFL.pdf) (Xu et al., 
 | Document | Contents |
 |---|---|
 | [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) | TrustGraph-DFL reproduction findings, gap table, and figures |
-| [report/phase1/motivation_report.md](report/phase1/motivation_report.md) | Batched FP32 system-cost gaps (bandwidth, round time, receive memory, repeat transfers) motivating Phase 2 |
+| [report/phase1/motivation_report.md](report/phase1/motivation_report.md) | Real multi-node V100 `1 Gb/s` Ethernet communication gaps (wasted bandwidth and FP32 transfer time) motivating Phase 2 |
 | [experiments/phase1/REPRODUCE.md](experiments/phase1/REPRODUCE.md) | Full experiment suites, Slurm launch commands, and figure regeneration steps |
 
 ## Prerequisites
@@ -110,7 +110,7 @@ For full 50k, 10k, `rxdelta`, and multi-GPU Slurm reproduction commands, see [ex
 
 ## Experiment results
 
-See [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) for the TrustGraph-DFL reproduction results, adjustments, and remaining accuracy or FPR gaps, and [report/phase1/motivation_report.md](report/phase1/motivation_report.md) for the measured FP32 communication, memory, and repeat-transfer gaps motivating Phase 2. The committed JSON datasets are in [report/data/](report/data/), and the PNG and PDF figures are in [report/figures/](report/figures/).
+See [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) for the TrustGraph-DFL reproduction results, adjustments, and remaining accuracy or FPR gaps, and [report/phase1/motivation_report.md](report/phase1/motivation_report.md) for the real multi-node V100 `1 Gb/s` Ethernet bandwidth and round-time gaps motivating Phase 2. The committed JSON datasets are in [report/data/](report/data/), and the PNG and PDF figures are in [report/figures/](report/figures/).
 
 ## Project structure
 
@@ -144,8 +144,8 @@ See [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) for t
 └── report/
     ├── phase1/
     │   ├── reproduce_report.md     # TrustGraph-DFL reproduction and FPR report
-    │   └── motivation_report.md    # Phase 1 FP32 system-cost gaps motivating Phase 2
-    ├── data/                       # Committed 50k 3-seed, rxdelta FPR, and system-metrics JSON datasets
+    │   └── motivation_report.md    # Real multi-node V100 Ethernet gaps motivating Phase 2
+    ├── data/                       # Committed 50k 3-seed, rxdelta FPR, and multi-node V100 JSON datasets
     └── figures/                    # 300 dpi PNG and header-free PDF figures
 ```
 
