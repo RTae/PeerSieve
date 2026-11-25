@@ -1,4 +1,4 @@
-# TrustGraph-DFL CIFAR-10 reproduction report
+# TrustGraph-DFL reproduction report
 
 This report tests [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026) on CIFAR-10 with 20 decentralized peers. In TrustGraph-DFL, each peer compares incoming neighbor updates against its own validation gradient, drops negative scores with ReLU, and averages the rest.
 
