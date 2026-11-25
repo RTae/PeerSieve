@@ -31,6 +31,8 @@ from src.transport import LocalTransport
 
 @dataclass
 class ExperimentConfig:
+    """Full configuration for one TrustGraph-DFL training and evaluation run."""
+
     # Dataset and partitioning (TrustGraph-DFL Section 5.1)
     dataset: str = "cifar10"  # cifar10 or synthetic
     data_dir: str = "data"
@@ -83,6 +85,7 @@ class ExperimentConfig:
     verbose: bool = True
 
     def aggregator_config(self) -> AggregatorConfig:
+        """Build and validate the AggregatorConfig from this experiment configuration."""
         cfg = AggregatorConfig(
             name=self.aggregator,
             alpha=self.alpha,
@@ -99,6 +102,7 @@ class ExperimentConfig:
         return cfg
 
     def attack_config(self) -> AttackConfig:
+        """Build and validate the AttackConfig from this experiment configuration."""
         cfg = AttackConfig(
             name=self.attack,
             poison_lambda=self.poison_lambda,
@@ -109,6 +113,7 @@ class ExperimentConfig:
 
 
 def resolve_device(requested: str) -> torch.device:
+    """Resolve 'auto' to CUDA, MPS, or CPU, or return the explicitly requested torch device."""
     if requested == "auto":
         if torch.cuda.is_available():
             return torch.device("cuda")
@@ -119,6 +124,7 @@ def resolve_device(requested: str) -> torch.device:
 
 
 def seed_everything(seed: int) -> None:
+    """Seed Python, NumPy, and PyTorch random number generators for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -127,6 +133,7 @@ def seed_everything(seed: int) -> None:
 
 
 def prepare_dataset(cfg: ExperimentConfig) -> PartitionedDataset:
+    """Load CIFAR-10 or synthetic tensors and split them across peers via balanced Dirichlet."""
     if cfg.dataset == "cifar10":
         x_tr, y_tr, x_te, y_te = load_cifar10_tensors(cfg.data_dir, download=cfg.download_data)
     elif cfg.dataset == "synthetic":
@@ -154,6 +161,7 @@ def prepare_dataset(cfg: ExperimentConfig) -> PartitionedDataset:
 
 
 def learning_rate_for_round(cfg: ExperimentConfig, round_idx: int) -> float:
+    """Return the learning rate for round_idx under constant or cosine decay schedule."""
     if cfg.lr_schedule == "constant":
         return cfg.lr
     if cfg.lr_schedule == "cosine":
@@ -164,6 +172,7 @@ def learning_rate_for_round(cfg: ExperimentConfig, round_idx: int) -> float:
 
 
 def should_eval(round_idx: int, total_rounds: int, eval_every: int) -> bool:
+    """Return True if test evaluation should run on round_idx (always runs on first and last round)."""
     if eval_every <= 0:
         return round_idx == total_rounds - 1
     return (round_idx == 0) or ((round_idx + 1) % eval_every == 0) or (round_idx == total_rounds - 1)

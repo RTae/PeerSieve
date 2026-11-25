@@ -1,5 +1,3 @@
-"""Dataset loading, balanced Dirichlet partitioning, and label-flip helpers."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,6 +13,8 @@ CIFAR10_STD = (0.2023, 0.1994, 0.2010)
 
 @dataclass
 class NodeDataset:
+    """Local train and validation tensors owned by a single peer."""
+
     x_train: torch.Tensor
     y_train: torch.Tensor
     x_val: torch.Tensor
@@ -23,6 +23,8 @@ class NodeDataset:
 
 @dataclass
 class PartitionedDataset:
+    """Per-peer shards, shared held-out test set, and per-node class counts."""
+
     nodes: list[NodeDataset]
     x_test: torch.Tensor
     y_test: torch.Tensor
@@ -115,6 +117,7 @@ def make_synthetic_cifar_tensors(
         prototypes[c, (c + 2) % 3] = 0.4 * np.sin(freq * yy)
 
     def _sample(n: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Draw n synthetic images and balanced class labels with Gaussian noise."""
         y = np.arange(n, dtype=np.int64) % num_classes
         rng.shuffle(y)
         x = prototypes[y] + rng.normal(0.0, noise_std, size=(n, 3, 32, 32)).astype(np.float32)
@@ -126,6 +129,7 @@ def make_synthetic_cifar_tensors(
 
 
 def _stratified_class_totals(n_total: int, num_classes: int) -> np.ndarray:
+    """Split n_total evenly across num_classes so all class totals sum to n_total."""
     totals = np.full(num_classes, n_total // num_classes, dtype=np.int64)
     totals[: n_total % num_classes] += 1
     return totals
@@ -136,6 +140,7 @@ def _sample_class_pools(
     class_totals: np.ndarray,
     rng: np.random.Generator,
 ) -> list[np.ndarray]:
+    """Randomly draw shuffled index pools of the requested size for each class."""
     pools: list[np.ndarray] = []
     for c, need in enumerate(class_totals):
         idx_c = np.where(y_np == c)[0]

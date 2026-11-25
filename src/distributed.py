@@ -1,5 +1,3 @@
-"""Multi-process, multi-GPU, and multi-node distributed TrustGraph-DFL runner."""
-
 from __future__ import annotations
 
 from dataclasses import asdict, replace
@@ -42,6 +40,7 @@ def _resolve_distributed_rank() -> tuple[int, int, int]:
 
 
 def _resolve_rank_device(requested: str, local_rank: int) -> torch.device:
+    """Select the torch device for this rank, binding CUDA ranks by local_rank."""
     base = resolve_device(requested)
     if base.type == "cuda":
         n_gpu = max(1, torch.cuda.device_count())

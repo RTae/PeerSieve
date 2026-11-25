@@ -16,16 +16,19 @@ class AttackConfig:
     noise_sigma: float = 0.5
 
     def validate(self) -> None:
+        """Check that the attack name is one of the supported attack modes."""
         valid = {"none", "label_flip", "label_flip_all", "model_poison", "random_noise"}
         if self.name not in valid:
             raise ValueError(f"Unknown attack {self.name!r}; expected one of {sorted(valid)}.")
 
 
 def is_data_poisoning_attack(attack_name: str) -> bool:
+    """Return True if the attack poisons local training labels instead of model updates."""
     return attack_name in {"label_flip", "label_flip_all"}
 
 
 def label_flip_mode_for_attack(attack_name: str) -> str | None:
+    """Map a label-flipping attack name to its label-remapping mode, or None."""
     if attack_name == "label_flip":
         return "pair_0_1"
     if attack_name == "label_flip_all":

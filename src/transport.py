@@ -53,6 +53,7 @@ class LocalTransport(PeerTransport):
     """In-process transport for fast single-GPU multi-peer sweeps with exact byte accounting."""
 
     def __init__(self) -> None:
+        """Create an empty in-process payload table for synchronous rounds."""
         self._round_payloads: dict[int, PeerPayload] = {}
 
     def stage_round(self, payloads: dict[int, PeerPayload]) -> None:
@@ -65,6 +66,7 @@ class LocalTransport(PeerTransport):
         neighbors: list[int],
         payload: PeerPayload,
     ) -> tuple[dict[int, PeerPayload], TransportStats]:
+        """Look up neighbor payloads staged for this round and count logical byte volume."""
         received = {j: self._round_payloads[j] for j in neighbors}
         out_bytes = payload.payload_bytes() * len(neighbors)
         in_bytes = sum(p.payload_bytes() for p in received.values())
@@ -193,6 +195,7 @@ class TcpPeerTransport(PeerTransport):
         ctrl_recv: dict[int, socket.socket],
         send_both_vectors: bool = True,
     ) -> None:
+        """Bind connected neighbor/control sockets and allocate pinned CPU staging buffers."""
         self.rank = rank
         self.world_size = world_size
         self.neighbors = list(neighbors)
@@ -219,6 +222,7 @@ class TcpPeerTransport(PeerTransport):
 
     @property
     def wire_bytes_per_neighbor(self) -> int:
+        """Return the number of bytes sent per neighbor in each round."""
         return len(self._send_view)
 
     @classmethod
@@ -253,6 +257,7 @@ class TcpPeerTransport(PeerTransport):
         srv.listen(max(total_expected * 2, 8))
 
         def _accept_loop() -> None:
+            """Accept all expected incoming neighbor data sockets and control sockets."""
             try:
                 for _ in range(total_expected):
                     conn, _ = srv.accept()
@@ -274,6 +279,7 @@ class TcpPeerTransport(PeerTransport):
         acc_thread.start()
 
         def _dial(dst: int, kind: int) -> socket.socket:
+            """Connect to peer dst with retries and send the 5-byte (kind, rank) header."""
             dst_ip = str(peers[dst]["ip"])
             dst_port = int(peers[dst]["port"])
             hdr = struct.pack("!BI", kind, rank)
@@ -429,12 +435,14 @@ class TcpPeerTransport(PeerTransport):
         errors: list[BaseException] = []
 
         def _do_send(conn: socket.socket) -> None:
+            """Send the staged host buffer over one neighbor socket."""
             try:
                 conn.sendall(self._send_view)
             except BaseException as exc:
                 errors.append(exc)
 
         def _do_recv(conn: socket.socket, view: memoryview) -> None:
+            """Receive one neighbor's full wire payload directly into its host buffer."""
             try:
                 recv_exact(conn, view)
             except BaseException as exc:
@@ -475,6 +483,7 @@ class TcpPeerTransport(PeerTransport):
         )
 
     def close(self) -> None:
+        """Close all open neighbor data sockets and rank-0 control sockets."""
         for sock_map in (self.send_conns, self.recv_conns, self.ctrl_send, self.ctrl_recv):
             for s in sock_map.values():
                 try:
@@ -484,6 +493,7 @@ class TcpPeerTransport(PeerTransport):
 
 
 def _serve_transfer_workloads(conn: socket.socket, workloads: list[tuple[str, int, int, int]]) -> None:
+    """Receive each benchmark payload from the client and send a 1-byte completion ack."""
     max_bytes = max(n_bytes for _, n_bytes, _, _ in workloads)
     view = memoryview(bytearray(max_bytes))
     for _, n_bytes, n_warm, n_rep in workloads:
@@ -499,6 +509,7 @@ def _time_transfer_workloads(
     host: str,
     workloads: list[tuple[str, int, int, int]],
 ) -> dict[str, dict[str, object]]:
+    """Send each benchmark payload over sock, wait for server ack, and summarize timings."""
     max_bytes = max(n_bytes for _, n_bytes, _, _ in workloads)
     view = memoryview(bytearray(max_bytes))
     go_buf = bytearray(1)

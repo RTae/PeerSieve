@@ -24,6 +24,7 @@ class AggregatorConfig:
     trustgraph_delta_mode: str = "sender"  # Either sender (theta_j^{t+1/2} - theta_j^t) or receiver (theta_j^{t+1/2} - theta_i^t).
 
     def validate(self) -> None:
+        """Check that all aggregation configuration options are supported."""
         if self.name != "trustgraph":
             raise ValueError(f"Unknown aggregator {self.name!r}; expected 'trustgraph'.")
         if self.val_grad_sign not in {"descent_neg", "paper_pos"}:
@@ -53,6 +54,7 @@ def _self_only_result(
     scores: dict[int, float] | None = None,
     self_fallback: bool = True,
 ) -> AggregationResult:
+    """Return an aggregation result that keeps self_post unchanged and zeroes all neighbors."""
     return AggregationResult(
         new_model=self_post.clone(),
         neighbor_weights={j: 0.0 for j in neighbor_ids},
@@ -63,6 +65,7 @@ def _self_only_result(
 
 
 def _cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
+    """Return cosine similarity between two 1D tensors, or 0.0 if either norm is zero."""
     na = float(torch.linalg.vector_norm(a).item())
     nb = float(torch.linalg.vector_norm(b).item())
     if na == 0.0 or nb == 0.0:

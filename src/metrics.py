@@ -72,6 +72,7 @@ class MetricsTracker:
         param_count: int,
         rounds: int,
     ) -> None:
+        """Initialize per-edge rejection history, timing lists, and cumulative counters."""
         self.graph = graph
         self.benign_ids = benign_ids
         self.byzantine_ids = byzantine_ids
@@ -96,6 +97,7 @@ class MetricsTracker:
         self.history: list[dict[str, object]] = []
 
     def record_edge_outcome(self, receiver_id: int, sender_id: int, rejected: bool) -> None:
+        """Append one round's accept/reject decision for a directed benign-receiver edge."""
         key = (receiver_id, sender_id)
         if key in self.edge_rejected:
             self.edge_rejected[key].append(rejected)
@@ -166,6 +168,7 @@ class MetricsTracker:
         eval_metrics: dict[str, float] | None = None,
         round_wall_sec: float = 0.0,
     ) -> dict[str, object]:
+        """Store one round's metrics and timings, append to history, and return the JSON record."""
         self.train_sec_list.append(train_sec_per_peer)
         self.val_sec_list.append(val_grad_sec_per_peer)
         self.agg_sec_list.append(agg_stats.agg_sec_per_peer)
@@ -211,6 +214,7 @@ class MetricsTracker:
         peak_gpu_alloc_mib: float | None = None,
         peak_gpu_reserved_mib: float | None = None,
     ) -> dict[str, object]:
+        """Compute bandwidth, receive-memory, link-time, and rejection-streak summaries."""
         payload_bytes = self.param_count * 4
         payload_mb = payload_bytes / 1e6
         payload_mib = payload_bytes / float(1024 ** 2)
@@ -333,6 +337,7 @@ class MetricsTracker:
         peak_gpu_alloc_mib: float | None = None,
         peak_gpu_reserved_mib: float | None = None,
     ) -> dict[str, object]:
+        """Assemble the final run summary dictionary matching the summary.json schema."""
         eval_records = [rec for rec in self.history if "benign_test_acc_mean" in rec]
         final_eval = eval_records[-1]
         best_eval = max(eval_records, key=lambda rec: float(rec["benign_test_acc_mean"]))

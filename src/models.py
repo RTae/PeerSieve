@@ -16,6 +16,7 @@ class SimpleCIFARCNN(nn.Module):
     """
 
     def __init__(self, num_classes: int = 10) -> None:
+        """Initialize convolutional and linear layers for the 2-conv CIFAR CNN."""
         super().__init__()
         self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
@@ -24,6 +25,7 @@ class SimpleCIFARCNN(nn.Module):
         self.fc2 = nn.Linear(256, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute class logits for a batch of 32x32 RGB images."""
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
         x = torch.flatten(x, 1)
@@ -39,6 +41,7 @@ class GroupNormCIFARCNN(nn.Module):
     """
 
     def __init__(self, num_classes: int = 10, dropout: float = 0.25) -> None:
+        """Initialize convolutional, GroupNorm, dropout, and linear layers."""
         super().__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
         self.gn1 = nn.GroupNorm(8, 64)
@@ -50,6 +53,7 @@ class GroupNormCIFARCNN(nn.Module):
         self.fc2 = nn.Linear(256, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute class logits for a batch of 32x32 RGB images."""
         x = self.pool(F.relu(self.gn1(self.conv1(x))))
         x = self.pool(F.relu(self.gn2(self.conv2(x))))
         x = self.drop(torch.flatten(x, 1))
@@ -66,6 +70,7 @@ class PretrainedResNet18CIFAR(nn.Module):
     """
 
     def __init__(self, num_classes: int = 10, image_size: int = 128, pretrained: bool = True) -> None:
+        """Build a ResNet-18 backbone with a num_classes head and frozen BatchNorm stats."""
         super().__init__()
         from torchvision.models import ResNet18_Weights, resnet18
 
@@ -77,22 +82,26 @@ class PretrainedResNet18CIFAR(nn.Module):
         self._freeze_bn_stats()
 
     def _freeze_bn_stats(self) -> None:
+        """Put all BatchNorm2d modules into eval mode to freeze running mean and variance."""
         for mod in self.backbone.modules():
             if isinstance(mod, nn.BatchNorm2d):
                 mod.eval()
 
     def train(self, mode: bool = True) -> PretrainedResNet18CIFAR:
+        """Toggle training mode while keeping BatchNorm running stats frozen."""
         super().train(mode)
         self._freeze_bn_stats()
         return self
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Resize inputs to image_size if needed and return ResNet-18 class logits."""
         if x.shape[-1] != self.image_size or x.shape[-2] != self.image_size:
             x = F.interpolate(x, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
         return self.backbone(x)
 
 
 def build_model(name: str = "cnn2x2", num_classes: int = 10) -> nn.Module:
+    """Instantiate one of the supported CIFAR-10 model architectures by name."""
     if name == "cnn2x2":
         return SimpleCIFARCNN(num_classes=num_classes)
     if name == "cnn2x2_gn":

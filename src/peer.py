@@ -34,6 +34,7 @@ class PeerPayload:
     update: torch.Tensor
 
     def payload_bytes(self) -> int:
+        """Return the byte size of one model parameter vector in this payload."""
         return int(self.post_model.numel()) * self.post_model.element_size()
 
 
@@ -65,6 +66,7 @@ class PeerNode:
         y_val: torch.Tensor,
         device: torch.device,
     ) -> None:
+        """Initialize a peer with its local shards, graph neighbors, and initial weights."""
         self.peer_id = peer_id
         self.neighbors = list(neighbors)
         self.is_byzantine = is_byzantine
@@ -78,9 +80,11 @@ class PeerNode:
 
     @property
     def param_count(self) -> int:
+        """Return the total number of scalar parameters in this peer's model."""
         return int(self.model_vec.numel())
 
     def has_finite_weights(self) -> bool:
+        """Return True if every model weight is finite (no NaN or Inf values)."""
         return bool(torch.isfinite(self.model_vec).all().item())
 
     def local_step(
