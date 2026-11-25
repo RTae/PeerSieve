@@ -151,6 +151,8 @@ def _format_mean_std(mean: float, std: float, seeds: int) -> str:
 
 @dataclass
 class SystemSummaryRow:
+    model: str
+    alpha_dir: float
     topology: str
     attack: str
     byz_pct: int
@@ -162,7 +164,7 @@ class SystemSummaryRow:
     useful_mb: float
     wasted_mb: float
     wasted_byz_mb: float
-    wasted_honest_mb: float
+    wasted_benign_mb: float
     wasted_pct: float
     recv_buf_mean_mib: float
     recv_buf_max_mib: float
@@ -175,15 +177,15 @@ class SystemSummaryRow:
     byz_mean_rej_rounds: float
     byz_repeat_gb: float
     byz_streak_ge3_pct: float
-    honest_ge1_pct: float
-    honest_streak_ge3_pct: float
+    benign_ge1_pct: float
+    benign_streak_ge3_pct: float
 
 
 def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
     """Aggregate system_metrics across all summary.json files under root."""
     files = sorted(Path(root).rglob("summary.json"))
-    grouped: dict[tuple[str, str, int, str], list[dict[str, object]]] = defaultdict(list)
-    seen_seed: set[tuple[str, str, int, str, int]] = set()
+    grouped: dict[tuple[str, float, str, str, int, str], list[dict[str, object]]] = defaultdict(list)
+    seen_seed: set[tuple[str, float, str, str, int, str, int]] = set()
 
     for path in files:
         with open(path, encoding="utf-8") as f:
@@ -192,6 +194,8 @@ def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
             continue
         cfg = s["config"]
         key = (
+            str(cfg.get("model_name", "cnn2x2")),
+            float(cfg.get("alpha_dir", 0.5)),
             str(cfg["topology"]),
             str(cfg["attack"]),
             int(round(float(cfg["byzantine_frac"]) * 100)),
@@ -204,11 +208,18 @@ def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
         grouped[key].append(s)
 
     rows_out: list[SystemSummaryRow] = []
-    for (topo, atk, byz_pct, method), items in sorted(grouped.items()):
+    for (model, alpha_dir, topo, atk, byz_pct, method), items in sorted(grouped.items()):
         sms = [r["system_metrics"] for r in items]
         gpu_peaks = [float(sm["peak_gpu_alloc_mib"]) for sm in sms if sm.get("peak_gpu_alloc_mib") is not None]
+
+        def _benign_streak(sm: dict[str, object], field: str) -> float:
+            block = sm.get("benign_rejection_streaks") or sm["honest_rejection_streaks"]
+            return float(block[field])
+
         rows_out.append(
             SystemSummaryRow(
+                model=model,
+                alpha_dir=alpha_dir,
                 topology=topo,
                 attack=atk,
                 byz_pct=byz_pct,
@@ -220,7 +231,14 @@ def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
                 useful_mb=float(np.mean([float(sm["useful_mb_per_peer_round"]) for sm in sms])),
                 wasted_mb=float(np.mean([float(sm["wasted_mb_per_peer_round"]) for sm in sms])),
                 wasted_byz_mb=float(np.mean([float(sm["wasted_byz_mb_per_peer_round"]) for sm in sms])),
-                wasted_honest_mb=float(np.mean([float(sm["wasted_honest_mb_per_peer_round"]) for sm in sms])),
+                wasted_benign_mb=float(
+                    np.mean(
+                        [
+                            float(sm.get("wasted_benign_mb_per_peer_round", sm["wasted_honest_mb_per_peer_round"]))
+                            for sm in sms
+                        ]
+                    )
+                ),
                 wasted_pct=float(np.mean([float(sm["wasted_transfer_pct"]) for sm in sms])),
                 recv_buf_mean_mib=float(np.mean([float(sm["batched_recv_buf_mean_mib"]) for sm in sms])),
                 recv_buf_max_mib=float(np.mean([float(sm["batched_recv_buf_max_mib"]) for sm in sms])),
@@ -233,8 +251,8 @@ def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
                 byz_mean_rej_rounds=float(np.mean([float(sm["byz_repeat_rejections"]["mean_rejected_rounds"]) for sm in sms])),
                 byz_repeat_gb=float(np.mean([float(sm["byz_repeat_rejections"]["repeat_wasted_gb_after_first_rej"]) for sm in sms])),
                 byz_streak_ge3_pct=float(np.mean([float(sm["byz_repeat_rejections"]["frac_edges_with_streak_ge3_pct"]) for sm in sms])),
-                honest_ge1_pct=float(np.mean([float(sm["honest_rejection_streaks"]["frac_edges_with_ge1_rej_pct"]) for sm in sms])),
-                honest_streak_ge3_pct=float(np.mean([float(sm["honest_rejection_streaks"]["frac_edges_with_streak_ge3_pct"]) for sm in sms])),
+                benign_ge1_pct=float(np.mean([_benign_streak(sm, "frac_edges_with_ge1_rej_pct") for sm in sms])),
+                benign_streak_ge3_pct=float(np.mean([_benign_streak(sm, "frac_edges_with_streak_ge3_pct") for sm in sms])),
             )
         )
     return rows_out
@@ -255,7 +273,7 @@ def format_system_markdown_report(rows: list[SystemSummaryRow], title: str = "Sy
             f"{r.recv_buf_mean_mib:.0f}/{r.recv_buf_max_mib:.0f} | "
             f"{r.train_sec:.2f}/{r.val_sec:.3f}/{r.agg_sec:.4f} | "
             f"{r.comm_1gbps_sec:.2f} ({r.comm_1gbps_share_pct:.1f}%) | "
-            f"{r.byz_mean_rej_rounds:.1f} | {r.honest_streak_ge3_pct:.1f} |"
+            f"{r.byz_mean_rej_rounds:.1f} | {r.benign_streak_ge3_pct:.1f} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -292,6 +310,8 @@ def export_system_metrics_json(
         runs.append(
             {
                 "run_name": rel_name,
+                "execution_mode": s.get("execution_mode", "local"),
+                "model": cfg.get("model_name", "cnn2x2"),
                 "topology": cfg["topology"],
                 "attack": cfg["attack"],
                 "byz_pct": int(round(float(cfg["byzantine_frac"]) * 100)),
