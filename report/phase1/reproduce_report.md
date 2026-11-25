@@ -15,21 +15,41 @@ This report evaluates [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) (Xu et al.,
 
 ---
 
-## Metrics we aim to reproduce
+## Metrics
 
-- **Per-peer accuracy.** The average CIFAR-10 test accuracy across all benign peers' local models at the end of training.
-- **Consensus accuracy.** The test accuracy of the single parameter-averaged model across all benign peers.
-- **False positive rate (FPR).** The percentage of benign neighbor updates that a peer assigns zero trust weight and ignores. Lower is better.
-- **Byzantine acceptance.** The percentage of malicious neighbor updates that a peer assigns positive trust weight. Lower is better.
+Section 5.1 of [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) defines two metrics: test accuracy and false positive rate (FPR). Because the paper does not state how it combines separate peer models into one test accuracy value and does not report attacker acceptance, we report four metrics.
 
-| Metric | Paper target | Our result | Status |
-|---|---|---|---|
-| No-attack accuracy (Fig. 2, Fig. 3a) | About 93% | 91.39% per-peer, 92.87% consensus | Reproduced on 50k ResNet-18 |
-| Attack resilience at 30% Byzantine peers (Fig. 3a) | 89.5% to 93% | 91.53% to 92.38% consensus, 0/42 `NaN` runs | Reproduced with $-\nabla F_i$ and norm clipping |
-| Topologies at 30% label flip (Table 1) | Ring 89.1%, Random 91.2%, Small-World 90.4% | 84.70% Ring, 89.28% Random, 89.48% Small-World per-peer, 91.69% to 92.38% consensus | Reproduced on Random and Small-World; Ring per-peer is 4.4 points lower |
-| Resilience at 50% Byzantine peers (Fig. 3b) | High accuracy at 50% attackers | 89.53% per-peer, 92.03% consensus | Reproduced |
-| Component ablations (Section 5.5) | ReLU, cosine, and $\alpha=0.5$ matter | Removing ReLU loses 35.9 points; Euclidean distance loses 9.0 points | Reproduced with 0 `NaN` runs |
-| False positive rate (Fig. 3b) | 3% to 9% | 36.2% to 43.9% (`sender`), 6.5% to 9.5% (`rxdelta` with `val=iid`) | Gap in default `sender` mode; reduced into 3% to 9% with `rxdelta` and balanced validation |
+### Per-peer accuracy (primary accuracy metric)
+
+The test accuracy a deployed benign peer achieves with its own local model weights $\theta_i^t$.
+
+$$\text{Per-peer accuracy} = \frac{1}{|\mathcal{B}|} \sum_{i \in \mathcal{B}} \text{Acc}(\theta_i^t)$$
+
+Evaluate each benign peer $i \in \mathcal{B}$ on the held-out test set and average the scores. Higher means better accuracy on individual nodes; lower means nodes are degraded by attacks or local non-IID drift.
+
+### Consensus accuracy (added diagnostic)
+
+The test accuracy of one offline model formed by averaging the parameter vectors of all benign peers.
+
+$$\text{Consensus accuracy} = \text{Acc}\!\left(\frac{1}{|\mathcal{B}|} \sum_{i \in \mathcal{B}} \theta_i^t\right)$$
+
+Average all benign weight vectors $\theta_i^t$ into one model $\bar{\theta}^t$, then evaluate $\bar{\theta}^t$ on the test set. Higher means the network collectively learned stronger shared weights; lower means the shared model itself degraded. We add this diagnostic because the paper leaves its single accuracy definition unspecified, and comparing it with per-peer accuracy separates collective learning quality from slow graph mixing.
+
+### False positive rate (FPR, from the paper)
+
+The share of benign neighbor updates that a benign peer rejects with zero trust weight.
+
+$$\text{FPR} = \frac{\text{rejected benign-to-benign updates}}{\text{total benign-to-benign updates}}$$
+
+Count every benign-to-benign directed transfer assigned $w_{ij} = 0$ across all rounds and divide by all benign-to-benign transfers. Lower means the filter keeps more useful collaboration; higher means benign peers mistakenly discard useful updates.
+
+### Byzantine acceptance (added diagnostic)
+
+The share of malicious neighbor updates that a benign peer accepts with positive trust weight.
+
+$$\text{Byzantine acceptance} = \frac{\text{accepted Byzantine-to-benign updates}}{\text{total Byzantine-to-benign updates}}$$
+
+Count every Byzantine-to-benign directed transfer assigned $w_{ij} > 0$ across all rounds and divide by all Byzantine-to-benign transfers. Lower means stronger attacker filtering; higher means malicious updates pass through the filter. We add this diagnostic because a weak filter can reach low FPR simply by accepting every neighbor, including attackers.
 
 ---
 
@@ -168,5 +188,18 @@ Four practical limitations remain.
 2. **Low FPR needs `rxdelta` plus balanced validation, and trades off attacker rejection.** Default `sender` scoring leaves FPR 27 to 35 percentage points above the paper's 3% to 9% target, and local validation (`val=local`) keeps FPR at 36.9% to 53.5% even with `rxdelta`. Using `rxdelta` with `val=iid` hits 6.5% to 9.5% FPR at $\tau = 0.003$, but raises Byzantine acceptance to 61.58% on label flipping and 41.26% on model poisoning. Raising $\tau$ to 0.035 brings Byzantine acceptance below the `sender` baseline, but raises FPR back to 22.3% to 28.6%.
 3. **Ring per-peer accuracy stays 4.4 points below Table 1.** Individual Ring peers average 84.70% accuracy because each peer connects to only two neighbors, though the averaged Ring consensus model reaches 91.69%.
 4. **The `rxdelta` runs used one random seed.** The main 50k experiments average seeds 42, 43, and 44, while the 16 `rxdelta` runs used seed 42 only.
+
+---
+
+## 9. Summary against paper targets
+
+| Metric | Paper target | Our result | Status |
+|---|---|---|---|
+| No-attack accuracy (Fig. 2, Fig. 3a) | About 93% | 91.39% per-peer, 92.87% consensus | Reproduced on 50k ResNet-18 |
+| Attack resilience at 30% Byzantine peers (Fig. 3a) | 89.5% to 93% | 88.88% to 89.28% per-peer, 91.53% to 92.38% consensus, 0/42 `NaN` runs | Reproduced with $-\nabla F_i$ and norm clipping |
+| Topologies at 30% label flip (Table 1) | Ring 89.1%, Random 91.2%, Small-World 90.4% | 84.70% Ring, 89.28% Random, 89.48% Small-World per-peer, 91.69% to 92.38% consensus | Reproduced on Random and Small-World; Ring per-peer is 4.4 points lower |
+| Resilience at 50% Byzantine peers (Fig. 3b) | High accuracy at 50% attackers | 89.53% per-peer, 92.03% consensus | Reproduced |
+| Component ablations (Section 5.5) | ReLU, cosine, and $\alpha=0.5$ matter | Removing ReLU loses 35.9 points; Euclidean distance loses 9.0 points | Reproduced with 0 `NaN` runs |
+| False positive rate (Fig. 3b) | 3% to 9% | 36.2% to 43.9% (`sender`), 6.5% to 9.5% (`rxdelta` with `val=iid`) | Gap in default `sender` mode; reduced into 3% to 9% with `rxdelta` and balanced validation |
 
 For commands to reproduce every run and figure, see [experiments/phase1/REPRODUCE.md](../../experiments/phase1/REPRODUCE.md).
