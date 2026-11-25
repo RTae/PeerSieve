@@ -1,12 +1,12 @@
 # TrustGraph-DFL system cost and Phase 2 motivation
 
-This report measures the communication, round-time, receive-memory, and repeat-transfer overhead of batched FP32 TrustGraph-DFL on our Phase 1 CIFAR-10 ResNet-18 setup. Accuracy, attack resilience, topology, ablation, and false positive rate (FPR) findings live in [reproduce_report.md](reproduce_report.md). Here we quantify the four system bottlenecks in our Phase 1 baseline so Phase 2 can reduce them directly.
+This report measures the system cost of batched FP32 TrustGraph-DFL on our Phase 1 CIFAR-10 ResNet-18 setup. Accuracy and defense results are in [reproduce_report.md](reproduce_report.md). Here we measure four system bottlenecks that Phase 2 will fix directly.
 
 ---
 
 ## Hardware and measurement setup
 
-We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using our in-process `LocalTransport` runner (`src/simulator.py`) with synchronized GPU timers and FP32 transfer accounting, and verified end-to-end multi-process execution across all 8 A100 GPUs over persistent TCP sockets (`src/distributed.py`, `TcpPeerTransport`). Every sweep run trained `PretrainedResNet18CIFAR` (`11,181,642` FP32 parameters, `44.73 MB` or `42.65 MiB` per model vector) across 20 peers for 25 communication rounds with 0 `NaN` runs.
+We ran all 14 `paper_resnet18_50k` settings (seed 42, 20 peers, 25 rounds, 0 `NaN` runs) on `octave` with synchronized GPU timers (`src/simulator.py`), and verified multi-process TCP execution across all 8 A100 GPUs (`src/distributed.py`). Each ResNet-18 model has `11,181,642` FP32 parameters (`44.73 MB` or `42.65 MiB`).
 
 | Component | Configuration |
 |---|---|
@@ -19,26 +19,46 @@ We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using
 | Measured Ethernet NIC | `enp68s0f0`, `1000 Mb/s` (`1 Gb/s`), MTU `1500`, achieved TCP goodput `941.2 Mb/s` |
 | Committed dataset | [report/data/phase1_system_metrics_50k.json](../data/phase1_system_metrics_50k.json) |
 
-We combine two direct hardware measurements and two reference network tiers for the round-time comparison.
+For round time, we pair two direct measurements with two reference link speeds:
 
-- **Measured GPU compute (`octave` A100).** Synchronized CUDA wall-clock times per benign peer per round across 25 rounds (median, min, and max) for local SGD training, validation gradient computation, and TrustGraph aggregation.
-- **Measured `1 Gb/s` cluster TCP transfer (`ja4` to `ja3`).** Direct host-to-host TCP socket transfers (`sendall` and `recv_into`, waiting for a receiver completion ack after the last byte) across two cluster nodes over `enp68s0f0` (`1000 Mb/s` Ethernet, MTU `1500`, matching `octave`'s `1 Gb/s` external Ethernet rate). Running CPU-only avoids V100 GPUs while measuring real TCP framing and kernel overhead.
-- **Reference link estimates (`10 Gb/s` and `100 Mb/s`).** Analytical wire-time bounds $\text{transfer time} = (\text{received bytes} \times 8) / \text{link bandwidth}$ bracketing our measured `1 Gb/s` cluster Ethernet by 10x faster (datacenter) and 10x slower (WAN or edge).
+- **Measured GPU compute (`octave` A100).** Per-peer time per round for local training, validation gradient, and TrustGraph aggregation.
+- **Measured `1 Gb/s` cluster TCP (`ja4` to `ja3`).** Real node-to-node TCP transfers over `enp68s0f0` (`1000 Mb/s` Ethernet, MTU `1500`), run CPU-only to time real TCP framing without V100 GPUs.
+- **Reference link speeds (`10 Gb/s` and `100 Mb/s`).** Simple wire-time estimates ($\text{bytes} \times 8 / \text{bandwidth}$) representing a fast datacenter link and a slow edge link.
 
 ---
 
-## Metrics we measure
+## Metrics
 
-- **Received traffic (MB per peer per round).** Total uncompressed FP32 payload downloaded by one benign peer from all of its neighbors in one communication round (`peer degree x 44.73 MB`).
-- **Useful traffic (MB per peer per round).** Downloaded FP32 bytes from neighbors that receive positive trust weight and contribute to model aggregation.
-- **False-positive waste (MB per peer per round).** Downloaded FP32 bytes from benign neighbors whose cosine score falls at or below the threshold ($\tau = 0.003$), so ReLU assigns zero weight and discards the payload.
-- **Blocked-attacker waste (MB per peer per round).** Downloaded FP32 bytes from Byzantine neighbors that receive zero trust weight and are discarded after download.
-- **Wasted share (%).** Percentage of all downloaded FP32 bytes (false-positive waste plus blocked-attacker waste) that receive zero trust weight.
-- **Total wasted (GB over 25 rounds).** Total gigabytes of zero-weight FP32 payloads downloaded across all benign peers over the full 25-round training run.
-- **Per-peer round time (seconds).** Measured median A100 compute time per benign peer plus measured `1 Gb/s` cluster TCP transfer time (or estimated wire time at `10 Gb/s` and `100 Mb/s`).
-- **Simultaneous receive buffer (MiB).** Memory required to hold all incoming FP32 neighbor updates at once during batched aggregation (`peer degree x 42.65 MiB`).
-- **Repeat downloads after first block.** Full FP32 payloads downloaded from a Byzantine neighbor in later rounds after that edge was already blocked once.
-- **Consecutive rejection streak.** Longest run of back-to-back rounds in which a directed peer edge receives zero trust weight.
+### Wasted bandwidth share
+
+The share of downloaded neighbor bytes that a benign peer throws away after scoring.
+
+$$\text{Wasted share} = \frac{\text{false-positive bytes} + \text{blocked-attacker bytes}}{\text{total received bytes}}$$
+
+Split all downloaded updates into useful bytes (positive trust weight) and wasted bytes (zero weight, from benign false positives or blocked attackers). Lower means less network waste; higher means more bandwidth spent on discarded models.
+
+### Per-peer round time
+
+The wall-clock time one benign peer spends on compute plus network transfer in a single round.
+
+$$\text{Round time} = t_{\text{train}} + t_{\text{val}} + t_{\text{agg}} + t_{\text{comm}}$$
+
+Add median GPU compute time (`train`, `val`, `agg`) to network transfer time (`comm`). Lower means faster training rounds; higher means communication or compute is slowing the round down.
+
+### Simultaneous receive buffer
+
+The memory a peer needs to hold all incoming neighbor models in memory at the same time before averaging.
+
+$$\text{Receive buffer} = \text{peer degree} \times \text{single model size}$$
+
+Multiply a peer's neighbor count by the size of one FP32 model. Lower means less memory pressure per peer; higher means memory grows linearly with graph degree and model size.
+
+### Repeat downloads and rejection streaks
+
+How often a peer keeps downloading from an attacker it already blocked, and how many rounds in a row an edge gets rejected.
+
+- **Repeat downloads after first block.** Count every full download from a Byzantine neighbor after that edge was blocked once. Lower means less repeated waste.
+- **Consecutive rejection streak.** The longest run of back-to-back rounds where an edge gets zero weight. Long streaks separate chronic attackers from brief benign false positives.
 
 ---
 
@@ -46,27 +66,22 @@ We combine two direct hardware measurements and two reference network tiers for 
 
 | System gap | What Phase 1 TrustGraph-DFL does | Measured cost on 50k ResNet-18 |
 |---|---|---|
-| 1. Bandwidth wasted on discarded updates | Downloads every neighbor's full `44.73 MB` FP32 update before scoring and zeroing weights | `42.5%` to `67.6%` of received bytes discarded (`127.2` to `181.3 MB` per peer per round; `46.8` to `63.6 GB` over 25 rounds) |
-| 2. Transfer cost of uncompressed FP32 updates | Transfers full FP32 vectors even for accepted neighbors | Measured `2.28 s` (`1.01 s` useful + `1.27 s` wasted) over `1 Gb/s` cluster TCP vs. `0.66 s` A100 compute (`77.5%` of round time; `97.0%` est. at `100 Mb/s`) |
-| 3. Receive-side memory growth with degree | Holds all `d` incoming FP32 neighbor models in memory during batched aggregation | `85.3 MiB` (`2.0x`) on Ring to `341.2 MiB` (`8.0x`) and up to `469.2 MiB` (`11.0x`) on Random |
-| 4. Repeated downloads from blocked attackers | Re-downloads full payloads from the same attacker edges every round while benign edges see false positives | Attacker edges blocked `15.6` to `25.0` of 25 rounds (`24.9` to `40.8 GB` repeat waste); `97.8%` to `100%` of benign edges hit at least one false positive |
+| 1. Bandwidth wasted on discarded updates | Downloads every full FP32 model before scoring and throwing away zero-weight updates | `42.5%` to `67.6%` discarded (`127.2` to `181.3 MB`/peer/round; `46.8` to `63.6 GB` over 25 rounds) |
+| 2. Transfer cost of uncompressed FP32 | Sends full uncompressed FP32 models even for accepted neighbors | `2.28 s` measured on `1 Gb/s` TCP vs. `0.66 s` A100 compute (`77.5%` communication; `97.0%` est. at `100 Mb/s`) |
+| 3. Receive memory grows with degree | Stores all $d$ incoming neighbor models in memory at once | `85.3 MiB` (`2.0x`) on Ring to `341.2 MiB` (`8.0x`) and up to `469.2 MiB` (`11.0x`) on Random |
+| 4. Repeated downloads from blocked attackers | Keeps no edge history, so peers re-download from the same attackers every round | Attackers blocked `15.6` to `25.0` of 25 rounds (`24.9` to `40.8 GB` repeat waste); `97.8%` to `100%` of benign edges hit at least one false positive |
 
 ---
 
 ## 1. Communication waste and round-time bottleneck (Figure 5)
 
-Figure 5 links byte volume directly to wall-clock round time. Panel (a) breaks down how many FP32 megabytes each benign peer downloads per round across the four Random ER ($p=0.3$) regimes. Panel (b) takes the `Model Poison` bar from Panel (a) (`268.4 MB` per peer per round) and converts its useful and wasted byte segments into transfer time alongside measured A100 compute across three network speeds.
+Figure 5 connects wasted bytes to wall-clock round time. Panel (a) breaks down received FP32 traffic per peer into useful traffic (blue), false-positive waste (pink), and blocked-attacker waste (dark red). Panel (b) turns the `Model Poison` bar (`268.4 MB`) into round time across three network speeds.
 
 ![Fig. 5 Batched FP32 Communication Waste and Round-Time Bottleneck](../figures/fig5-bandwidth-and-round-time-50k.png)
 
 ### 1.1 Bandwidth wasted on discarded updates (Gap 1, Figure 5a)
 
-TrustGraph-DFL scores a neighbor only after downloading its full `44.73 MB` FP32 update. Whenever cosine similarity falls at or below $\tau = 0.003$, ReLU assigns zero weight and discards the downloaded payload. Reading Figure 5a from left to right shows how much of each bar is blue (useful), pink (false-positive waste), and dark red (blocked-attacker waste).
-
-1. **No Attack (0% Byzantine).** Benign peers average `6.7` neighbors and receive `299.7 MB` per round, but `127.2 MB` (`42.5%`) is pink false-positive waste (`63.60 GB` discarded over 25 rounds).
-2. **Label Flip (30% Byzantine, $E_b=2$).** Benign peers average `6.0` neighbors and receive `268.4 MB` per round. Only `134.6 MB` (blue) is useful, while `57.9 MB` (pink) and `75.9 MB` (red) are discarded (`49.9%` wasted, `46.83 GB` over 25 rounds).
-3. **Model Poison (30% Byzantine, $\lambda=10$).** Out of `268.4 MB` received per round, `119.1 MB` (blue) is useful and `149.3 MB` (`64.4 MB` pink plus `84.8 MB` red, `55.6%`) is wasted (`52.24 GB` over 25 rounds).
-4. **Random Noise (30% Byzantine, $\sigma=0.5$).** TrustGraph-DFL blocks every noise attacker, so `121.4 MB` (red) plus `59.9 MB` (pink) goes to waste. Peers discard `181.3 MB` of `268.4 MB` per round (`67.6%` wasted, `63.47 GB` over 25 rounds).
+TrustGraph-DFL downloads every neighbor's full `44.73 MB` model before checking whether its cosine score passes $\tau = 0.003$. Whenever a score is too low, the peer gives it zero weight and throws those bytes away. Across the four settings on Random ER ($p=0.3$), peers discard `42.5%` to `67.6%` of all received bytes.
 
 | Regime on Random ER ($p=0.3$) | Mean / max degree | Received (MB/peer/round) | Useful (MB/peer/round) | False-positive waste (MB/peer/round) | Blocked-attacker waste (MB/peer/round) | Wasted share (%) | Total wasted (GB, 25 rounds) |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -75,7 +90,7 @@ TrustGraph-DFL scores a neighbor only after downloading its full `44.73 MB` FP32
 | Model poison (30%, $\lambda=10$) | 6.0 / 8 | 268.4 | 119.1 | 64.4 | 84.8 | 55.62 | 52.24 |
 | Random noise (30%, $\sigma=0.5$) | 6.0 / 8 | 268.4 | 87.0 | 59.9 | 121.4 | 67.57 | 63.47 |
 
-The same pattern holds across topologies and attacker fractions. Under 30% label flipping, wasted receive traffic is `35.29%` on Ring, `35.71%` on Small-World, and `49.86%` on Random. Across 10% to 50% label-flipping attackers on Random, waste stays between `42.98%` and `49.86%`. In the Section 5.5 ablations (`euclidean` and `no_relu`), wasted traffic drops to `0.0%` only because every attacker update receives positive weight and degrades accuracy.
+The same waste shows up across topologies (`35.3%` to `49.9%`) and attacker shares (`43.0%` to `49.9%`). In the `euclidean` and `no_relu` ablations, waste drops to `0.0%` only because every attacker is accepted.
 
 | Sweep slice (label flip, $E_b=2$) | Mean / max degree | Received (MB/peer/round) | Useful (MB/peer/round) | False-positive waste (MB/peer/round) | Blocked-attacker waste (MB/peer/round) | Wasted share (%) | Total wasted (GB, 25 rounds) |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -88,10 +103,7 @@ The same pattern holds across topologies and attacker fractions. Under 30% label
 
 ### 1.2 Converting FP32 bytes to round time (Gap 2, Figure 5b)
 
-Figure 5b turns the `Model Poison` bar from Figure 5a (`119.1 MB` useful plus `149.3 MB` wasted, totaling `268.4 MB` per benign peer per round) into wall-clock seconds by pairing our measured A100 compute with real inter-node TCP transfers on the cluster.
-
-1. **Gray bar (measured A100 compute, `0.660 s`).** On our `octave` A100-PCIE-40GB GPU during the 30% model-poisoning run, one benign peer takes a median of `0.602 s` for local SGD (range `0.587` to `1.223 s`, 25 rounds), `0.055 s` for the validation gradient (range `0.053` to `3.323 s`, peaking on round 1 cuDNN initialization), and `0.0032 s` for cosine scoring and aggregation (range `0.0029` to `0.134 s`). Across all 14 runs, total median compute stays between `0.647 s` and `0.668 s`.
-2. **Blue and red bars at `1 Gb/s` (measured inter-node TCP on `ja4` to `ja3`).** We timed real TCP socket transfers across `enp68s0f0` (`1000 Mb/s` Ethernet, MTU `1500`) for all four ResNet-18 payload sizes below. TCP framing caps real goodput at `941.2 Mb/s` (`94.1%` of nominal `1 Gb/s`), making real transfers `6.2%` slower than an idealized `1000 Mb/s` wire bound.
+On `octave` A100, one peer's local compute takes a median of `0.660 s` per round under model poisoning (`0.602 s` training, `0.055 s` validation gradient, `0.0032 s` aggregation; `0.647 s` to `0.668 s` across all 14 runs). On our cluster's `1 Gb/s` Ethernet (`enp68s0f0`, `ja4` to `ja3`), real TCP framing caps goodput at `941.2 Mb/s` one-way and `935.1 Mb/s` full-duplex.
 
 | Measured TCP workload (`ja4` to `ja3`, `enp68s0f0` 1 Gb/s) | Payload (MB) | Repeats | Median (s) | Min to max (s) | Goodput (Mb/s) |
 |---|---:|---:|---:|---:|---:|
@@ -101,9 +113,7 @@ Figure 5b turns the `Model Poison` bar from Figure 5a (`119.1 MB` useful plus `1
 | Full 6-neighbor round burst (one-way) | 268.36 | 10 | 2.2807 | 2.2805 to 2.2807 | 941.3 |
 | Simultaneous full-duplex exchange (`ja3` and `ja4`) | 268.36 | 5 | 2.2959 | 2.2940 to 2.2991 | 935.1 |
 
-Simultaneous bidirectional transfers on `ja3` and `ja4` (`44.73 MB` at `0.3829 s` / `934.6 Mb/s` and `268.36 MB` at `2.2959 s` / `935.1 Mb/s`) confirm full-duplex contention adds a small overhead over one-way transfers (`2.296 s` vs. `2.281 s`). We keep `octave` A100 as our sole GPU compute platform because `ja3` and `ja4` run NVIDIA driver `525.116.04` (CUDA `12.0`), which is incompatible with our `PyTorch 2.15.0+cu132` stack (running the GPU phase on `ja3` and `ja4` fell back to CPU and timed out at 5 minutes, not OOM).
-
-Combining the measured A100 compute (`0.660 s`) with our measured `1 Gb/s` cluster TCP timings (`1.012 s` useful plus `1.269 s` wasted) and the two analytical reference tiers (`10 Gb/s` datacenter and `100 Mb/s` WAN via `bytes x 8 / link_bps`) gives Figure 5b.
+We kept `ja3` and `ja4` CPU-only because their NVIDIA driver (`525.116.04`, CUDA `12.0`) does not support our `PyTorch 2.15.0+cu132` runtime (a GPU test fell back to CPU and hit the 5-minute timeout, not OOM). Pairing A100 compute with measured `1 Gb/s` TCP and the two reference link tiers gives Figure 5b.
 
 | Link bandwidth (Model Poison, `268.4 MB` from Fig. 5a) | Source | Measured A100 compute (s) | Useful transfer, `119.1 MB` (s) | Wasted transfer, `149.3 MB` (s) | Total round time (s) | Communication share (%) |
 |---|---|---:|---:|---:|---:|---:|
@@ -111,29 +121,25 @@ Combining the measured A100 compute (`0.660 s`) with our measured `1 Gb/s` clust
 | `1 Gb/s` Ethernet (`enp68s0f0`) | Measured (`ja4` to `ja3`) | 0.660 | 1.012 | 1.269 | 2.941 | 77.5 |
 | `100 Mb/s` WAN / edge | Reference estimate | 0.660 | 9.528 | 11.941 | 22.129 | 97.0 |
 
-Reading Figure 5b from left to right highlights two findings. At the `10 Gb/s` datacenter reference rate, compute dominates (`0.660 s` of `0.875 s`, `24.5%` communication). On our cluster's measured `1 Gb/s` Ethernet (`941.2 Mb/s` real goodput), transfer time reaches `2.281 s` (`77.5%` of the `2.941 s` round), which is `3.5x` slower than A100 compute. At the `100 Mb/s` WAN reference rate, transfer takes `21.469 s` (`97.0%` of the round). Eliminating the red wasted bar alone is not enough, because the measured useful transfer alone (`1.012 s` on cluster `1 Gb/s`, and `9.528 s` estimated at `100 Mb/s`) still exceeds all local A100 compute (`0.660 s`) by `1.53x`. Scaling the other topologies by our measured `941.2 Mb/s` cluster goodput under 30% label flipping puts communication at `53.2%` of round time on Ring (`0.76 s` transfer vs. `0.67 s` compute) and `69.3%` on Small-World (`1.49 s` transfer vs. `0.66 s` compute).
+Two points stand out. First, on cluster `1 Gb/s` Ethernet, transfer time (`2.281 s`) takes `77.5%` of the round (`3.5x` slower than GPU compute), and `53.2%` on Ring or `69.3%` on Small-World. Second, dropping wasted updates alone is not enough: even the useful transfer (`1.012 s` at `1 Gb/s`) still takes longer than all A100 compute (`0.660 s`).
 
-### 1.3 Single-vector lower bound and multi-GPU distributed check
+### 1.3 Single-vector lower bound and multi-GPU check
 
-The byte totals in Figure 5 bill one FP32 model vector (`44.73 MB`) per neighbor transfer, which is a conservative lower bound that matches receiver-anchored scoring (`rxdelta`, where the receiver forms $\theta_j^{t+1/2} - \theta_i^t$ locally). Under strict `sender` scoring ($\Delta_j^t = \theta_j^{t+1/2} - \theta_j^t$), a decentralized peer does not know neighbor $j$'s pre-round weights $\theta_j^t$, so `TcpPeerTransport` must send both $\theta_j^{t+1/2}$ and $\Delta_j^t$ (`89.45 MB` per neighbor), doubling wire volume over Figure 5.
+Figure 5 counts one FP32 model (`44.73 MB`) per neighbor, which is a conservative lower bound matching `rxdelta`. In strict `sender` mode, a receiver does not know its neighbor's old weights $\theta_j^t$, so `TcpPeerTransport` must send both the new model and the update (`89.45 MB` per neighbor, twice Figure 5).
 
-We also verified our multi-process runtime (`PeerNode` and `TcpPeerTransport`, `8` independent peer processes across all `8x A100-PCIE-40GB` GPUs on `octave`, `5` rounds, `25%` model poisoning, `er_p = 0.3`, seed `42`, `0` `NaN` runs). All `8` peers completed in `12.76 s` (`79.39%` per-peer and `84.26%` consensus accuracy after 5 rounds, `40.0%` wasted transfers), recording `2.05 GiB` peak allocated GPU memory per peer (`3.35 GiB` reserved) and median per-peer timings of `0.621 s` local train, `0.046 s` validation gradient, `0.0051 s` pinned D2H staging, `0.339 s` loopback TCP (`89.45 MB` per neighbor), `0.0373 s` H2D copy, and `0.0023 s` aggregation.
+We verified this multi-process runtime across all `8x A100` GPUs on `octave` (`8` separate peer processes, `5` rounds, `25%` model poisoning, `er_p = 0.3`, seed `42`, `0` `NaN` runs). All `8` peers finished in `12.76 s` (`79.39%` per-peer and `84.26%` consensus accuracy, `40.0%` wasted transfers), using `2.05 GiB` peak VRAM per peer (`3.35 GiB` reserved) with medians of `0.621 s` train, `0.046 s` validation gradient, `0.0051 s` D2H, `0.339 s` loopback TCP (`89.45 MB` per neighbor), `0.0373 s` H2D, and `0.0023 s` aggregation.
 
 ---
 
 ## 2. Receive-buffer memory and repeated transfers (Figure 6)
 
-Figure 6 measures the remaining two bottlenecks of batched, stateless TrustGraph-DFL. Panel (a) shows linear receive-buffer memory scaling across graph topologies, and Panel (b) compares multi-round rejection streaks across directed peer edges.
+Figure 6 shows the other two costs of batched, stateless TrustGraph-DFL: memory that grows with neighbor count (Panel a) and repeated downloads from already-blocked attackers (Panel b).
 
 ![Fig. 6 Receive-Buffer Memory Growth and Repeated-Transfer Behavior](../figures/fig6-memory-and-rejection-streaks-50k.png)
 
 ### 2.1 Receive-side memory scaling with peer degree (Gap 3, Figure 6a)
 
-Batched TrustGraph-DFL holds every neighbor's `42.65 MiB` FP32 update in memory simultaneously before computing weights and averaging, so receive-buffer memory grows as $O(d)$ with peer degree $d$. Reading Figure 6a from left to right against the dashed `42.7 MiB` single-update reference line shows this linear growth under 30% label flipping.
-
-1. **Ring (`deg = 2`).** Every peer has degree 2, requiring `85.3 MiB` (`2.0x` a single update) for both mean and max buffers.
-2. **Small-World (`deg = 4` nominal).** Benign peers average `3.9` neighbors (`167.6 MiB` mean buffer), while the highest-degree benign peer has 7 neighbors (`298.6 MiB`, `7.0x`).
-3. **Random (ER $p = 0.3$).** On the 30% Byzantine runs, benign peers average `6.0` neighbors (`255.9 MiB` mean) and reach degree 8 (`341.2 MiB`, `8.0x`). On the `none`, 10%, 20%, 40%, and 50% Byzantine Random runs, maximum benign degree reaches 11 (`469.2 MiB`, `11.0x`).
+Batched TrustGraph-DFL keeps all $d$ incoming FP32 neighbor models in memory at once before averaging, so receive memory grows linearly with peer degree $d$.
 
 | Topology and slice | Mean benign degree | Max benign degree | Single update (MiB) | Mean receive buffer (MiB) | Max receive buffer (MiB) | Max / single ratio |
 |---|---:|---:|---:|---:|---:|---:|
@@ -142,15 +148,11 @@ Batched TrustGraph-DFL holds every neighbor's `42.65 MiB` FP32 update in memory 
 | Random (30% label flip, model poison, noise) | 6.0 | 8 | 42.7 | 255.9 | 341.2 | 8.0x |
 | Random (no attack, 10%, 20%, 40%, 50% Byzantine) | 6.2 to 6.8 | 11 | 42.7 | 263.0 to 290.1 | 469.2 | 11.0x |
 
-ResNet-18 fits inside a `40 GiB` A100 GPU (`2.05 GiB` peak allocated GPU memory per peer in our 8-GPU distributed run, and `6.89` to `7.89 GiB` in our single-GPU simulator that stages all 20 peer shards and models on one GPU). Even so, the measured `8x` to `11x` multiplier exposes the scaling gap. Holding `d` full payloads simultaneously grows with both model size and graph degree, whereas a streaming receiver needs only constant buffer space independent of `d`.
+ResNet-18 fits comfortably on a `40 GiB` A100 (`2.05 GiB` per peer in our 8-GPU distributed run, `6.89` to `7.89 GiB` in our single-GPU 20-peer simulator). Even so, holding `8x` to `11x` a single model grows rapidly on denser graphs or larger models, while streaming one neighbor at a time uses constant memory.
 
 ### 2.2 Repeated downloads from blocked attackers vs. benign false positives (Gap 4, Figure 6b)
 
-TrustGraph-DFL keeps no history per neighbor across rounds. Even after blocking an attacker in round $t$, the receiver downloads another full `44.73 MB` FP32 update from that same attacker in round $t+1$. Reading Figure 6b from left to right compares three shares of directed peer edges over 25 rounds on Random ER ($p=0.3$): attacker edges with `>=3` consecutive blocks (red), benign edges with `>=1` false positive (blue), and benign edges with `>=3` consecutive false positives (teal).
-
-1. **Label Flip ($E_b=2$).** Attacker edges are blocked in `15.6` of 25 rounds on average, and `74%` (`73.7%`) hit at least 3 consecutive blocks (`556` repeat downloads wasting `24.87 GB`). Meanwhile, `98%` (`97.8%`) of benign edges hit at least one false positive, and `35%` (`34.8%`) hit a 3-round false-positive streak.
-2. **Model Poison ($\lambda=10$).** Attacker edges are blocked in `17.5` of 25 rounds, and `95%` (`94.7%`) hit at least 3 consecutive blocks (`626` repeat downloads wasting `28.00 GB`). Every benign edge (`100%`) hits at least one false positive, and `52%` (`52.2%`) hit a 3-round streak.
-3. **Random Noise ($\sigma=0.5$).** Every attacker edge (`100%`) is blocked in all `25.0` rounds (`912` repeat downloads wasting `40.79 GB`). Every benign edge (`100%`) hits at least one false positive, and `43%` (`43.5%`) hit a 3-round streak.
+TrustGraph-DFL forgets past rounds. Even after blocking an attacker in round $t$, a peer downloads another full `44.73 MB` update from that same attacker in round $t+1$.
 
 | Attack on Random (30% Byzantine, 25 rounds) | Attacker mean blocked rounds | Attacker mean max streak | Attacker edges with >=3 streak (%) | Attacker repeat downloads (GB wasted) | Benign edges with >=1 false positive (%) | Benign isolated single false positives | Benign edges with >=3 streak (%) | Benign edges with >=5 streak (%) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -159,17 +161,17 @@ TrustGraph-DFL keeps no history per neighbor across rounds. Even after blocking 
 | Random noise ($\sigma=0.5$) | 25.0 / 25 | 25.0 | 100.0 | 912 (40.79 GB) | 100.0 | 282 | 43.5 | 21.7 |
 | No attack (0% Byzantine) | 0.0 / 25 | 0.0 | 0.0 | 0 (0.00 GB) | 100.0 | 666 | 50.0 | 27.6 |
 
-The contrast between the blue and red bars in Figure 6b defines the design constraint for Phase 2. Doing nothing lets chronic attackers force `556` to `912` repeat downloads (`24.9` to `40.8 GB`), while permanently banning a peer after a single false positive would cut `97.8%` to `100.0%` of benign edges (`210` to `666` isolated single-round false positives per run).
+Figure 6b sets a clear design rule for Phase 2. Doing nothing lets chronic attackers force `556` to `912` repeat downloads (`24.9` to `40.8 GB`). Permanently banning a neighbor after one rejection is just as bad, because `97.8%` to `100%` of benign edges hit at least one false positive.
 
 ---
 
 ## 3. Framing for Phase 2
 
-These Phase 1 measurements confirm all four system gaps on ResNet-18 before scaling to larger models. In Phase 2, we will build PeerSieve to reduce each measured gap while preserving Byzantine resilience.
+Phase 2 (**PeerSieve**) will fix each of the four measured gaps directly while keeping Byzantine resilience:
 
-1. **Pre-transfer sketch screening for Gap 1.** Because `42.5%` to `67.6%` of received FP32 bytes receive zero trust weight (Figure 5a), Phase 2 will screen compact CountSketch summaries against the receiver's validation descent direction before requesting full payloads.
-2. **Blockwise INT4 compression with error feedback for Gap 2.** Because even useful FP32 updates take a measured `1.012 s` over cluster `1 Gb/s` Ethernet (`941.2 Mb/s` goodput) and an estimated `9.528 s` at `100 Mb/s`, exceeding `0.660 s` of A100 compute (Figure 5b), Phase 2 will compress accepted payloads with blockwise 4-bit quantization and error feedback to shrink transfer time.
-3. **Audited streaming aggregation for Gap 3.** Because batched receive buffers grow up to `8x` to `11x` a single update with peer degree (Figure 6a), Phase 2 will verify and accumulate one neighbor payload at a time in constant receive buffer space, preventing rejected payloads from modifying the running aggregate.
-4. **Per-edge probation with recovery for Gap 4.** Because attacker edges trigger `556` to `912` repeat downloads (`24.9` to `40.8 GB`) while `97.8%` to `100%` of benign edges experience transient false positives (Figure 6b), Phase 2 will place repeatedly failing edges on temporary probation rather than permanent bans and allow recovery after a passing sketch check.
+1. **Pre-transfer sketch screening (Gap 1).** Send a tiny CountSketch summary first and pull full updates only from neighbors that pass the check.
+2. **Blockwise INT4 compression with error feedback (Gap 2).** Compress accepted updates to 4-bit blocks so even useful transfers finish faster than GPU compute, while carrying quantization error into the next round to protect accuracy.
+3. **Audited streaming aggregation (Gap 3).** Check and accumulate one neighbor at a time in a single reusable buffer so receive memory stays constant and bad updates never touch the running average.
+4. **Per-edge probation with recovery (Gap 4).** Put repeatedly failing edges on temporary backoff instead of permanent bans, and let benign edges recover once they pass a sketch check.
 
 For exact reproduction and summary export commands, see [experiments/phase1/REPRODUCE.md](../../experiments/phase1/REPRODUCE.md).
