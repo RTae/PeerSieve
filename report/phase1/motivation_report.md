@@ -1,6 +1,6 @@
-# TrustGraph-DFL system cost and Phase 2 motivation
+# Peersieve motivation
 
-This report measures the network and round-time costs of running TrustGraph-DFL on CIFAR-10 with ResNet-18. Accuracy and defense results are in [reproduce_report.md](reproduce_report.md). Here we measure two practical communication bottlenecks directly in real multi-node V100 distributed training over `1 Gb/s` Ethernet, with no simulated timings or link-speed extrapolations, so Phase 2 can solve them directly.
+This report measures the network and round-time costs of running Peersieve on CIFAR-10 with ResNet-18. Accuracy and defense results are in [reproduce_report.md](reproduce_report.md). Here we measure two practical communication bottlenecks directly in real multi-node V100 distributed training over `1 Gb/s` Ethernet, with no simulated timings or link-speed extrapolations.
 
 ---
 
@@ -65,7 +65,7 @@ Figure 5 splits the real FP32 megabytes received per benign peer per round on `j
 
 ![Fig. 5 Real Multi-Node V100 Received vs. Wasted FP32 Wire Traffic](../figures/fig5-v100-bandwidth-waste.png)
 
-In the `4`-peer runs (`2` peers on `ja3`, `2` peers on `ja4`, complete graph degree `3`), benign peers reach `90.47%` to `91.17%` per-peer accuracy (`90.87%` to `92.13%` consensus) while throwing away **`34.3%` to `52.4%`** of everything they download (`8.05` to `10.56 GB` of wasted wire traffic across just `25` rounds in `sender` mode, and `3.98 GB` in `rxdelta` mode). In the `2`-peer runs (`1` dedicated V100 per peer, degree `1`), benign peers discard `26.0%` under no attack and **`100.0%`** under model poisoning because every attacker update is rejected (`0.0%` Byzantine acceptance) only after crossing the wire.
+In the `4`-peer runs (`2` peers on `ja3`, `2` peers on `ja4`, connected in a complete graph where each peer connects to all `4 - 1 = 3` other peers, so degree `3`), benign peers reach `90.47%` to `91.17%` per-peer accuracy (`90.87%` to `92.13%` consensus) while throwing away **`34.3%` to `52.4%`** of everything they download (`8.05` to `10.56 GB` of wasted wire traffic across just `25` rounds in `sender` mode, and `3.98 GB` in `rxdelta` mode). In the `2`-peer runs (`1` dedicated V100 per peer, where each peer connects to the `1` peer on the other server, so degree `1`), benign peers discard `26.0%` under no attack and **`100.0%`** under model poisoning because every attacker update is rejected (`0.0%` Byzantine acceptance) only after crossing the wire.
 
 | Real V100 Ethernet run (`ja3` + `ja4`, 25 rounds) | Peers / degree | Wire / neighbor (MB) | Received (MB/peer/round) | Useful (MB/peer/round) | False-positive waste (MB/peer/round) | Blocked-attacker waste (MB/peer/round) | Wasted share (%) | Total wasted (GB, 25 rounds) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
