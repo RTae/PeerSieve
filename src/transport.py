@@ -1,5 +1,3 @@
-"""Pluggable peer-to-peer transports for local simulation and multi-process TCP DFL."""
-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -40,24 +38,52 @@ class PeerTransport(ABC):
         neighbors: list[int],
         payload: PeerPayload,
     ) -> tuple[dict[int, PeerPayload], TransportStats]:
-        """Send payload to neighbors and return received neighbor payloads with transport stats."""
+        """Send payload to neighbors and receive each neighbor's payload for this round.
+
+        Args:
+            peer_id: Sending peer ID.
+            neighbors: List of adjacent peer IDs to exchange with.
+            payload: Outgoing PeerPayload for peer_id.
+
+        Returns:
+            Tuple of (map from neighbor ID to PeerPayload, TransportStats for this round).
+        """
 
     def barrier(self) -> None:
-        """Optional synchronization barrier across peers."""
+        """Optional synchronization barrier across peers.
+
+        Returns:
+            None.
+        """
 
     def close(self) -> None:
-        """Release any sockets or staging buffers held by the transport."""
+        """Release any sockets or staging buffers held by the transport.
+
+        Returns:
+            None.
+        """
 
 
 class LocalTransport(PeerTransport):
     """In-process transport for fast single-GPU multi-peer sweeps with exact byte accounting."""
 
     def __init__(self) -> None:
-        """Create an empty in-process payload table for synchronous rounds."""
+        """Create an empty in-process payload table for synchronous rounds.
+
+        Returns:
+            None.
+        """
         self._round_payloads: dict[int, PeerPayload] = {}
 
     def stage_round(self, payloads: dict[int, PeerPayload]) -> None:
-        """Publish all peers' outgoing payloads for the current synchronous round."""
+        """Publish all peers' outgoing payloads for the current synchronous round.
+
+        Args:
+            payloads: Map from peer ID to outgoing PeerPayload.
+
+        Returns:
+            None.
+        """
         self._round_payloads = payloads
 
     def exchange(
@@ -66,7 +92,16 @@ class LocalTransport(PeerTransport):
         neighbors: list[int],
         payload: PeerPayload,
     ) -> tuple[dict[int, PeerPayload], TransportStats]:
-        """Look up neighbor payloads staged for this round and count logical byte volume."""
+        """Look up neighbor payloads staged for this round and count logical byte volume.
+
+        Args:
+            peer_id: Local peer ID.
+            neighbors: Adjacent neighbor IDs to fetch.
+            payload: Outgoing PeerPayload for peer_id.
+
+        Returns:
+            Tuple of (received neighbor payloads dict, TransportStats with byte counts).
+        """
         received = {j: self._round_payloads[j] for j in neighbors}
         out_bytes = payload.payload_bytes() * len(neighbors)
         in_bytes = sum(p.payload_bytes() for p in received.values())
@@ -74,7 +109,15 @@ class LocalTransport(PeerTransport):
 
 
 def recv_exact(conn: socket.socket, view: memoryview) -> None:
-    """Read len(view) bytes from conn directly into view without intermediate copies."""
+    """Read len(view) bytes from conn directly into view without intermediate copies.
+
+    Args:
+        conn: Connected stream socket to read from.
+        view: Writable memoryview receiving the exact byte count.
+
+    Returns:
+        None.
+    """
     received = 0
     total = len(view)
     while received < total:
@@ -85,7 +128,14 @@ def recv_exact(conn: socket.socket, view: memoryview) -> None:
 
 
 def probe_interface_info(iface: str | None = None) -> dict[str, str]:
-    """Return IPv4 address, link speed, and MTU for a Linux network interface (or loopback)."""
+    """Query IPv4 address, link speed, and MTU for a Linux network interface or loopback.
+
+    Args:
+        iface: Linux interface name (e.g., 'enp68s0f0'), or None/'lo' for loopback.
+
+    Returns:
+        Dictionary with hostname, interface, ip, link_speed_mbps, and mtu strings.
+    """
     info = {
         "hostname": socket.gethostname(),
         "interface": iface or "lo",
@@ -114,7 +164,14 @@ def probe_interface_info(iface: str | None = None) -> dict[str, str]:
 
 
 def probe_route_info(peer_host: str) -> dict[str, object]:
-    """Query route interface and Linux sysfs link speed toward peer_host when available."""
+    """Query the active route interface, link speed, and MTU toward peer_host.
+
+    Args:
+        peer_host: Target hostname or IPv4 address.
+
+    Returns:
+        Dictionary with hostname, peer_host, and any resolved IP/interface/speed/MTU fields.
+    """
     info: dict[str, object] = {"hostname": socket.gethostname(), "peer_host": peer_host}
     try:
         peer_ip = socket.gethostbyname(peer_host)
@@ -140,14 +197,29 @@ def probe_route_info(peer_host: str) -> dict[str, object]:
 
 
 def send_json_frame(conn: socket.socket, obj: dict[str, object]) -> None:
-    """Send a length-prefixed UTF-8 JSON message over a TCP socket."""
+    """Send a length-prefixed UTF-8 JSON object over a connected socket.
+
+    Args:
+        conn: Connected stream socket.
+        obj: JSON-serializable dictionary to send.
+
+    Returns:
+        None.
+    """
     raw = json.dumps(obj).encode("utf-8")
     conn.sendall(struct.pack("!Q", len(raw)))
     conn.sendall(raw)
 
 
 def recv_json_frame(conn: socket.socket) -> dict[str, object]:
-    """Receive a length-prefixed UTF-8 JSON message from a TCP socket."""
+    """Receive a length-prefixed UTF-8 JSON object from a connected socket.
+
+    Args:
+        conn: Connected stream socket.
+
+    Returns:
+        Decoded dictionary parsed from JSON.
+    """
     hdr = bytearray(8)
     recv_exact(conn, memoryview(hdr))
     length = struct.unpack("!Q", hdr)[0]
@@ -157,7 +229,15 @@ def recv_json_frame(conn: socket.socket) -> dict[str, object]:
 
 
 def send_tensor_frame(conn: socket.socket, tensor: torch.Tensor) -> None:
-    """Send a 1D FP32 CPU tensor over a TCP socket with an 8-byte byte-length header."""
+    """Send a 1D FP32 tensor over a connected socket with an 8-byte length header.
+
+    Args:
+        conn: Connected stream socket.
+        tensor: Tensor to convert to contiguous CPU FP32 and transmit.
+
+    Returns:
+        None.
+    """
     cpu_flat = tensor.detach().contiguous().float().cpu()
     raw = memoryview(cpu_flat.view(torch.uint8).numpy())
     conn.sendall(struct.pack("!Q", len(raw)))
@@ -165,7 +245,14 @@ def send_tensor_frame(conn: socket.socket, tensor: torch.Tensor) -> None:
 
 
 def recv_tensor_frame(conn: socket.socket) -> torch.Tensor:
-    """Receive a length-prefixed 1D FP32 CPU tensor from a TCP socket."""
+    """Receive a length-prefixed 1D FP32 CPU tensor from a connected socket.
+
+    Args:
+        conn: Connected stream socket.
+
+    Returns:
+        1D FP32 CPU tensor reconstructed from incoming wire bytes.
+    """
     hdr = bytearray(8)
     recv_exact(conn, memoryview(hdr))
     n_bytes = struct.unpack("!Q", hdr)[0]
@@ -175,12 +262,7 @@ def recv_tensor_frame(conn: socket.socket) -> torch.Tensor:
 
 
 class TcpPeerTransport(PeerTransport):
-    """Multi-process, multi-GPU, and multi-node TCP peer transport.
-
-    Opens persistent full-duplex sockets only along actual graph edges (plus a
-    lightweight control link to rank 0 for barriers and metrics collection).
-    Transfers FP32 payloads using pinned CPU buffers and zero-copy memoryviews.
-    """
+    """Multi-process, multi-GPU, and multi-node TCP peer transport."""
 
     def __init__(
         self,
@@ -195,7 +277,23 @@ class TcpPeerTransport(PeerTransport):
         ctrl_recv: dict[int, socket.socket],
         send_both_vectors: bool = True,
     ) -> None:
-        """Bind connected neighbor/control sockets and allocate pinned CPU staging buffers."""
+        """Bind connected neighbor/control sockets and allocate pinned CPU staging buffers.
+
+        Args:
+            rank: Global peer rank.
+            world_size: Total peer count.
+            neighbors: Graph neighbor IDs for this rank.
+            param_count: Scalar parameter count of one model vector.
+            device: Compute device assigned to this peer.
+            send_conns: Outgoing data sockets keyed by neighbor ID.
+            recv_conns: Incoming data sockets keyed by neighbor ID.
+            ctrl_send: Outgoing rank-0 control sockets keyed by peer ID.
+            ctrl_recv: Incoming rank-0 control sockets keyed by peer ID.
+            send_both_vectors: True to transmit post_model and update; False for post_model only.
+
+        Returns:
+            None.
+        """
         self.rank = rank
         self.world_size = world_size
         self.neighbors = list(neighbors)
@@ -222,7 +320,11 @@ class TcpPeerTransport(PeerTransport):
 
     @property
     def wire_bytes_per_neighbor(self) -> int:
-        """Return the number of bytes sent per neighbor in each round."""
+        """Return the number of bytes sent to each neighbor per round.
+
+        Returns:
+            Wire payload size in bytes for one directed neighbor transfer.
+        """
         return len(self._send_view)
 
     @classmethod
@@ -237,7 +339,21 @@ class TcpPeerTransport(PeerTransport):
         send_both_vectors: bool = True,
         timeout_sec: float = 90.0,
     ) -> TcpPeerTransport:
-        """Establish topology-scoped data sockets and rank-0 control sockets over TCP."""
+        """Establish topology-scoped data sockets and rank-0 control sockets over TCP.
+
+        Args:
+            rank: Global peer rank.
+            world_size: Total number of peers.
+            neighbors: Graph neighbor IDs for this rank.
+            param_count: Scalar parameter count of one model vector.
+            device: Compute device for this peer.
+            peers: Ordered list of peer endpoint dicts containing 'ip' and 'port'.
+            send_both_vectors: True to send post_model and update; False for post_model only.
+            timeout_sec: Handshake and socket timeout in seconds.
+
+        Returns:
+            Connected TcpPeerTransport ready for round exchanges and barriers.
+        """
         my_ip = str(peers[rank]["ip"])
         my_port = int(peers[rank]["port"])
 
@@ -257,7 +373,11 @@ class TcpPeerTransport(PeerTransport):
         srv.listen(max(total_expected * 2, 8))
 
         def _accept_loop() -> None:
-            """Accept all expected incoming neighbor data sockets and control sockets."""
+            """Accept all expected incoming neighbor data sockets and control sockets.
+
+            Returns:
+                None.
+            """
             try:
                 for _ in range(total_expected):
                     conn, _ = srv.accept()
@@ -279,7 +399,15 @@ class TcpPeerTransport(PeerTransport):
         acc_thread.start()
 
         def _dial(dst: int, kind: int) -> socket.socket:
-            """Connect to peer dst with retries and send the 5-byte (kind, rank) header."""
+            """Connect to peer dst with retries and send the 5-byte (kind, rank) header.
+
+            Args:
+                dst: Target peer rank.
+                kind: Channel type (0 for neighbor data, 1 for rank-0 control).
+
+            Returns:
+                Connected TCP socket to peer dst.
+            """
             dst_ip = str(peers[dst]["ip"])
             dst_port = int(peers[dst]["port"])
             hdr = struct.pack("!BI", kind, rank)
@@ -345,7 +473,17 @@ class TcpPeerTransport(PeerTransport):
         device: torch.device,
         send_both_vectors: bool = True,
     ) -> list[TcpPeerTransport]:
-        """Build an offline group of TcpPeerTransports backed by Unix socketpairs for tests."""
+        """Build an offline group of TcpPeerTransports backed by Unix socketpairs for tests.
+
+        Args:
+            graph_neighbors: Map from peer rank to list of neighbor ranks.
+            param_count: Scalar parameter count of one model vector.
+            device: Compute device for the test peers.
+            send_both_vectors: True to send post_model and update; False for post_model only.
+
+        Returns:
+            List of connected TcpPeerTransport instances, indexed by rank.
+        """
         world_size = len(graph_neighbors)
         send_maps: list[dict[int, socket.socket]] = [{} for _ in range(world_size)]
         recv_maps: list[dict[int, socket.socket]] = [{} for _ in range(world_size)]
@@ -382,7 +520,11 @@ class TcpPeerTransport(PeerTransport):
         ]
 
     def barrier(self) -> None:
-        """Synchronize all ranks over the rank-0 control sockets."""
+        """Synchronize all peer ranks over the rank-0 control sockets.
+
+        Returns:
+            None.
+        """
         buf = bytearray(1)
         if self.rank == 0:
             for src in range(1, self.world_size):
@@ -394,7 +536,14 @@ class TcpPeerTransport(PeerTransport):
             recv_exact(self.ctrl_recv[0], memoryview(buf))
 
     def gather_json(self, local_obj: dict[str, object]) -> list[dict[str, object]] | None:
-        """Gather a JSON dict from every rank onto rank 0."""
+        """Gather one JSON dictionary from every rank onto rank 0.
+
+        Args:
+            local_obj: JSON-serializable dictionary produced by this rank.
+
+        Returns:
+            Ordered list of dictionaries from all ranks on rank 0, or None on other ranks.
+        """
         if self.rank == 0:
             gathered = [local_obj]
             for src in range(1, self.world_size):
@@ -404,7 +553,14 @@ class TcpPeerTransport(PeerTransport):
         return None
 
     def gather_tensors(self, local_tensor: torch.Tensor) -> list[torch.Tensor] | None:
-        """Gather one 1D FP32 tensor from every rank onto rank 0 (CPU)."""
+        """Gather one 1D FP32 tensor from every rank onto rank 0 on CPU.
+
+        Args:
+            local_tensor: Local 1D parameter tensor to send.
+
+        Returns:
+            Ordered list of CPU FP32 tensors from all ranks on rank 0, or None on other ranks.
+        """
         if self.rank == 0:
             out = [local_tensor.detach().float().cpu()]
             for src in range(1, self.world_size):
@@ -419,7 +575,16 @@ class TcpPeerTransport(PeerTransport):
         neighbors: list[int],
         payload: PeerPayload,
     ) -> tuple[dict[int, PeerPayload], TransportStats]:
-        """Stage payload to pinned host memory, exchange concurrently with neighbors, and copy to GPU."""
+        """Stage payload to pinned host memory, exchange concurrently with neighbors, and copy to GPU.
+
+        Args:
+            peer_id: Local peer rank.
+            neighbors: Graph neighbor IDs to exchange payloads with.
+            payload: Outgoing PeerPayload on device.
+
+        Returns:
+            Tuple of (map from neighbor ID to received PeerPayload on device, TransportStats with timings).
+        """
         sync_device(self.device)
         t_d2h0 = time.perf_counter()
         if self.send_both_vectors:
@@ -435,14 +600,29 @@ class TcpPeerTransport(PeerTransport):
         errors: list[BaseException] = []
 
         def _do_send(conn: socket.socket) -> None:
-            """Send the staged host buffer over one neighbor socket."""
+            """Send the staged host buffer over one neighbor socket.
+
+            Args:
+                conn: Outgoing neighbor socket.
+
+            Returns:
+                None.
+            """
             try:
                 conn.sendall(self._send_view)
             except BaseException as exc:
                 errors.append(exc)
 
         def _do_recv(conn: socket.socket, view: memoryview) -> None:
-            """Receive one neighbor's full wire payload directly into its host buffer."""
+            """Receive one neighbor's full wire payload directly into its host buffer.
+
+            Args:
+                conn: Incoming neighbor socket.
+                view: Writable memoryview of the destination host buffer.
+
+            Returns:
+                None.
+            """
             try:
                 recv_exact(conn, view)
             except BaseException as exc:
@@ -483,7 +663,11 @@ class TcpPeerTransport(PeerTransport):
         )
 
     def close(self) -> None:
-        """Close all open neighbor data sockets and rank-0 control sockets."""
+        """Close all open neighbor data sockets and rank-0 control sockets.
+
+        Returns:
+            None.
+        """
         for sock_map in (self.send_conns, self.recv_conns, self.ctrl_send, self.ctrl_recv):
             for s in sock_map.values():
                 try:
@@ -493,7 +677,15 @@ class TcpPeerTransport(PeerTransport):
 
 
 def _serve_transfer_workloads(conn: socket.socket, workloads: list[tuple[str, int, int, int]]) -> None:
-    """Receive each benchmark payload from the client and send a 1-byte completion ack."""
+    """Receive each benchmark payload from the client and send a 1-byte completion ack.
+
+    Args:
+        conn: Accepted client socket.
+        workloads: List of (name, byte_count, warmups, repeats) tuples.
+
+    Returns:
+        None.
+    """
     max_bytes = max(n_bytes for _, n_bytes, _, _ in workloads)
     view = memoryview(bytearray(max_bytes))
     for _, n_bytes, n_warm, n_rep in workloads:
@@ -509,7 +701,16 @@ def _time_transfer_workloads(
     host: str,
     workloads: list[tuple[str, int, int, int]],
 ) -> dict[str, dict[str, object]]:
-    """Send each benchmark payload over sock, wait for server ack, and summarize timings."""
+    """Send each benchmark payload over sock, wait for server ack, and summarize timings.
+
+    Args:
+        sock: Connected client socket to the benchmark server.
+        host: Target server host string used in log output.
+        workloads: List of (name, byte_count, warmups, repeats) tuples.
+
+    Returns:
+        Dictionary keyed by workload name containing median/min/max seconds and goodput in Mb/s.
+    """
     max_bytes = max(n_bytes for _, n_bytes, _, _ in workloads)
     view = memoryview(bytearray(max_bytes))
     go_buf = bytearray(1)
@@ -563,7 +764,24 @@ def run_transfer_benchmark(
     out_path: str | Path | None = None,
     connected_sock: socket.socket | None = None,
 ) -> dict[str, object] | None:
-    """Measure point-to-point TCP transfer durations for ResNet-18 FP32 payload sizes."""
+    """Measure point-to-point TCP transfer durations for ResNet-18 FP32 payload sizes.
+
+    Args:
+        role: Benchmark role ('auto', 'server', or 'client').
+        host: Server hostname or IPv4 address for the client to connect to.
+        port: TCP listening port on the server.
+        payload_bytes: Single-update payload size in bytes.
+        single_repeats: Measured repeat count for single-update transfers.
+        burst_repeats: Measured repeat count for multi-neighbor and useful/wasted bursts.
+        warmups: Unmeasured warmup iterations before timing.
+        useful_bytes: Model-poison useful-share payload size in bytes.
+        wasted_bytes: Model-poison wasted-share payload size in bytes.
+        out_path: Optional JSON output path written on the client.
+        connected_sock: Optional pre-connected socket (used by offline socketpair tests).
+
+    Returns:
+        Benchmark report dictionary on the client, or None on the server.
+    """
     if role == "auto":
         proc_id = int(os.environ.get("SLURM_PROCID", "0"))
         role = "server" if proc_id == 0 else "client"

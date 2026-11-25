@@ -1,5 +1,3 @@
-"""Synchronous single-process DFL runner built on PeerNode, LocalTransport, and MetricsTracker."""
-
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -85,7 +83,11 @@ class ExperimentConfig:
     verbose: bool = True
 
     def aggregator_config(self) -> AggregatorConfig:
-        """Build and validate the AggregatorConfig from this experiment configuration."""
+        """Build and validate the AggregatorConfig from this experiment configuration.
+
+        Returns:
+            Validated AggregatorConfig instance.
+        """
         cfg = AggregatorConfig(
             name=self.aggregator,
             alpha=self.alpha,
@@ -102,7 +104,11 @@ class ExperimentConfig:
         return cfg
 
     def attack_config(self) -> AttackConfig:
-        """Build and validate the AttackConfig from this experiment configuration."""
+        """Build and validate the AttackConfig from this experiment configuration.
+
+        Returns:
+            Validated AttackConfig instance.
+        """
         cfg = AttackConfig(
             name=self.attack,
             poison_lambda=self.poison_lambda,
@@ -113,7 +119,14 @@ class ExperimentConfig:
 
 
 def resolve_device(requested: str) -> torch.device:
-    """Resolve 'auto' to CUDA, MPS, or CPU, or return the explicitly requested torch device."""
+    """Resolve 'auto' to CUDA, MPS, or CPU, or return the explicitly requested device.
+
+    Args:
+        requested: Device string ('auto', 'cpu', 'cuda', or 'mps').
+
+    Returns:
+        Resolved torch.device object.
+    """
     if requested == "auto":
         if torch.cuda.is_available():
             return torch.device("cuda")
@@ -124,7 +137,14 @@ def resolve_device(requested: str) -> torch.device:
 
 
 def seed_everything(seed: int) -> None:
-    """Seed Python, NumPy, and PyTorch random number generators for reproducibility."""
+    """Seed Python, NumPy, and PyTorch random number generators.
+
+    Args:
+        seed: Integer random seed.
+
+    Returns:
+        None.
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -133,7 +153,14 @@ def seed_everything(seed: int) -> None:
 
 
 def prepare_dataset(cfg: ExperimentConfig) -> PartitionedDataset:
-    """Load CIFAR-10 or synthetic tensors and split them across peers via balanced Dirichlet."""
+    """Load CIFAR-10 or synthetic tensors and split them across peers via balanced Dirichlet.
+
+    Args:
+        cfg: Experiment configuration specifying dataset, node count, shard size, and split mode.
+
+    Returns:
+        PartitionedDataset ready for peer training and evaluation.
+    """
     if cfg.dataset == "cifar10":
         x_tr, y_tr, x_te, y_te = load_cifar10_tensors(cfg.data_dir, download=cfg.download_data)
     elif cfg.dataset == "synthetic":
@@ -161,7 +188,15 @@ def prepare_dataset(cfg: ExperimentConfig) -> PartitionedDataset:
 
 
 def learning_rate_for_round(cfg: ExperimentConfig, round_idx: int) -> float:
-    """Return the learning rate for round_idx under constant or cosine decay schedule."""
+    """Return the SGD learning rate for round_idx under constant or cosine decay.
+
+    Args:
+        cfg: Experiment configuration specifying base lr, lr_schedule, and total rounds.
+        round_idx: Zero-based round index.
+
+    Returns:
+        Learning rate float for the current round.
+    """
     if cfg.lr_schedule == "constant":
         return cfg.lr
     if cfg.lr_schedule == "cosine":
@@ -172,7 +207,16 @@ def learning_rate_for_round(cfg: ExperimentConfig, round_idx: int) -> float:
 
 
 def should_eval(round_idx: int, total_rounds: int, eval_every: int) -> bool:
-    """Return True if test evaluation should run on round_idx (always runs on first and last round)."""
+    """Check whether test evaluation should run on round_idx.
+
+    Args:
+        round_idx: Zero-based round index.
+        total_rounds: Total number of rounds in the run.
+        eval_every: Evaluation stride in rounds (<= 0 evaluates only the final round).
+
+    Returns:
+        True if evaluation should run on this round, False otherwise.
+    """
     if eval_every <= 0:
         return round_idx == total_rounds - 1
     return (round_idx == 0) or ((round_idx + 1) % eval_every == 0) or (round_idx == total_rounds - 1)
@@ -186,7 +230,19 @@ def _evaluate_benign_peers(
     y_test: torch.Tensor,
     eval_batch_size: int,
 ) -> dict[str, float]:
-    """Evaluate all benign peer models and their consensus average on the held-out test set."""
+    """Evaluate all benign peer models and their consensus parameter average on the test set.
+
+    Args:
+        peers: List of all PeerNode instances.
+        benign_ids: List of benign peer IDs to evaluate.
+        work_model: Reusable PyTorch model used to evaluate the consensus parameter average.
+        x_test: Held-out test images on device.
+        y_test: Held-out test labels on device.
+        eval_batch_size: Evaluation mini-batch size.
+
+    Returns:
+        Dictionary of per-peer mean/std/min/max accuracy, mean loss, and consensus accuracy/loss.
+    """
     accs: list[float] = []
     losses: list[float] = []
     for i in benign_ids:
@@ -212,7 +268,15 @@ def run_experiment(
     cfg: ExperimentConfig,
     preloaded_data: PartitionedDataset | None = None,
 ) -> dict[str, object]:
-    """Run one complete synchronous DFL experiment over PeerNode and LocalTransport."""
+    """Run one complete synchronous DFL experiment over PeerNode and LocalTransport.
+
+    Args:
+        cfg: Full experiment configuration.
+        preloaded_data: Optional pre-partitioned dataset reused across suite runs.
+
+    Returns:
+        Dictionary with 'summary' (summary.json dict) and 'history' (list of per-round records).
+    """
     agg_cfg = cfg.aggregator_config()
     atk_cfg = cfg.attack_config()
     seed_everything(cfg.seed)

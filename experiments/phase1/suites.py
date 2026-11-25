@@ -1,5 +1,3 @@
-"""Named Phase 1 TrustGraph-DFL experiment suites aligned with TrustGraph-DFL.pdf."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -16,7 +14,15 @@ TRUSTGRAPH_SIGN_VARIANTS: tuple[MethodSpec, ...] = (
 
 
 def _default_resnet18_config(base: ExperimentConfig, **overrides: object) -> ExperimentConfig:
-    """Return shared full-50k CIFAR-10 ResNet-18 configuration."""
+    """Build the shared full-50k CIFAR-10 ResNet-18 baseline configuration.
+
+    Args:
+        base: Base ExperimentConfig providing execution defaults such as seed and device.
+        **overrides: Keyword field overrides applied on top of the 50k ResNet-18 defaults.
+
+    Returns:
+        Updated ExperimentConfig for a 50k ResNet-18 run.
+    """
     defaults: dict[str, object] = {
         "model_name": "resnet18_pretrained",
         "samples_per_node": 2500,
@@ -36,7 +42,14 @@ def _default_resnet18_config(base: ExperimentConfig, **overrides: object) -> Exp
 
 
 def _default_trustgraph_overrides(**overrides: object) -> dict[str, object]:
-    """Return default 50k TrustGraph-DFL aggregation settings."""
+    """Return default 50k TrustGraph-DFL aggregation parameter overrides.
+
+    Args:
+        **overrides: Optional TrustGraph field overrides merged into the defaults.
+
+    Returns:
+        Dictionary of keyword overrides for ExperimentConfig.
+    """
     cfg: dict[str, object] = {
         "aggregator": "trustgraph",
         "val_grad_sign": "descent_neg",
@@ -51,7 +64,14 @@ def _default_trustgraph_overrides(**overrides: object) -> dict[str, object]:
 
 
 def _build_smoke(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Fast 4-run TrustGraph-DFL sanity suite (2 attacks x 2 gradient signs)."""
+    """Build the 4-run TrustGraph-DFL sanity suite (2 attacks x 2 gradient signs).
+
+    Args:
+        base: Base ExperimentConfig carrying seed, rounds, dataset, and device.
+
+    Returns:
+        List of 4 (run_name, ExperimentConfig) pairs.
+    """
     smoke_base = replace(
         base,
         topology="random",
@@ -66,7 +86,14 @@ def _build_smoke(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
 
 
 def _build_paper_cnn_10k(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Literal Section 5 audit (31 configs: 10k CIFAR-10, 2-conv CNN, 200 rounds)."""
+    """Build the 31-config literal Section 5 audit suite on 10k CIFAR-10 and 2-conv CNN.
+
+    Args:
+        base: Base ExperimentConfig carrying seed, rounds, and device.
+
+    Returns:
+        List of 31 (run_name, ExperimentConfig) pairs.
+    """
     runs: list[tuple[str, ExperimentConfig]] = []
 
     # Fig. 3a main attacks (8 runs): random ER(0.3), 30% Byzantine, 4 attacks x 2 gradient signs.
@@ -117,7 +144,14 @@ def _build_paper_cnn_10k(base: ExperimentConfig) -> list[tuple[str, ExperimentCo
 
 
 def _build_fig3a_attacks(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Build 4 runs covering no-attack and 30% Byzantine attacks on 50k ResNet-18."""
+    """Build 4 runs covering no-attack and 30% Byzantine attacks on 50k ResNet-18.
+
+    Args:
+        base: Base ExperimentConfig carrying seed and device.
+
+    Returns:
+        List of 4 (run_name, ExperimentConfig) pairs.
+    """
     base_50k = _default_resnet18_config(base)
     tg_defaults = _default_trustgraph_overrides()
     return [
@@ -130,7 +164,14 @@ def _build_fig3a_attacks(base: ExperimentConfig) -> list[tuple[str, ExperimentCo
 
 
 def _build_table1_topologies(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Build 3 runs covering Ring, Random, and Small-World under 30% label_flip_all on 50k ResNet-18."""
+    """Build 3 runs covering Ring, Random, and Small-World under 30% label_flip_all on 50k ResNet-18.
+
+    Args:
+        base: Base ExperimentConfig carrying seed and device.
+
+    Returns:
+        List of 3 (run_name, ExperimentConfig) pairs.
+    """
     base_50k = _default_resnet18_config(base)
     tg_defaults = _default_trustgraph_overrides()
     return [
@@ -143,7 +184,14 @@ def _build_table1_topologies(base: ExperimentConfig) -> list[tuple[str, Experime
 
 
 def _build_fig3b_byz_sweep(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Build 5 runs sweeping 10% to 50% Byzantine peers under label_flip_all on 50k ResNet-18."""
+    """Build 5 runs sweeping 10% to 50% Byzantine peers under label_flip_all on 50k ResNet-18.
+
+    Args:
+        base: Base ExperimentConfig carrying seed and device.
+
+    Returns:
+        List of 5 (run_name, ExperimentConfig) pairs.
+    """
     base_50k = _default_resnet18_config(base)
     tg_defaults = _default_trustgraph_overrides()
     return [
@@ -156,7 +204,14 @@ def _build_fig3b_byz_sweep(base: ExperimentConfig) -> list[tuple[str, Experiment
 
 
 def _build_sec5_5_ablations(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Build 5 Section 5.5 ablation runs under 30% model poisoning on 50k ResNet-18."""
+    """Build 5 Section 5.5 ablation runs under 30% model poisoning on 50k ResNet-18.
+
+    Args:
+        base: Base ExperimentConfig carrying seed and device.
+
+    Returns:
+        List of 5 (run_name, ExperimentConfig) pairs.
+    """
     base_50k = _default_resnet18_config(base)
     tg_mp = replace(base_50k, attack="model_poison", **_default_trustgraph_overrides())
     return [
@@ -169,7 +224,14 @@ def _build_sec5_5_ablations(base: ExperimentConfig) -> list[tuple[str, Experimen
 
 
 def _build_paper_resnet18_50k(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Build 14 deduplicated 50k ResNet-18 runs covering Fig. 3a, Table 1, Fig. 3b, and Section 5.5."""
+    """Build 14 deduplicated 50k ResNet-18 runs covering Fig. 3a, Table 1, Fig. 3b, and Section 5.5.
+
+    Args:
+        base: Base ExperimentConfig carrying seed and device.
+
+    Returns:
+        List of 14 (run_name, ExperimentConfig) pairs.
+    """
     runs: list[tuple[str, ExperimentConfig]] = []
     runs.extend(_build_fig3a_attacks(base))
     runs.extend(r for r in _build_table1_topologies(base) if r[1].topology != "random")
@@ -179,7 +241,16 @@ def _build_paper_resnet18_50k(base: ExperimentConfig) -> list[tuple[str, Experim
 
 
 def _four_attack_grid(prefix: str, tag: str, cfg: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Expand a base config across no-attack, label-flip, model-poison, and random-noise runs."""
+    """Expand a base config across no-attack, label-flip, model-poison, and random-noise runs.
+
+    Args:
+        prefix: Suite subdirectory prefix for run names.
+        tag: Variant tag prepended to each attack name.
+        cfg: Base ExperimentConfig to clone per attack.
+
+    Returns:
+        List of 4 (run_name, ExperimentConfig) pairs.
+    """
     return [
         (f"{prefix}/{tag}__none", replace(cfg, attack="none")),
         (f"{prefix}/{tag}__label_flip_all_byz30", replace(cfg, attack="label_flip_all", byz_local_epochs=2)),
@@ -189,7 +260,14 @@ def _four_attack_grid(prefix: str, tag: str, cfg: ExperimentConfig) -> list[tupl
 
 
 def _build_fig3b_fpr_rxdelta(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Build 8 runs evaluating receiver-anchored deltas (theta_j^{t+1/2} - theta_i^t) on 50k ResNet-18."""
+    """Build 8 runs evaluating receiver-anchored deltas (theta_j^{t+1/2} - theta_i^t) on 50k ResNet-18.
+
+    Args:
+        base: Base ExperimentConfig carrying seed and device.
+
+    Returns:
+        List of 8 (run_name, ExperimentConfig) pairs.
+    """
     cfg = _default_resnet18_config(base, **_default_trustgraph_overrides(trustgraph_delta_mode="receiver"))
     return [
         ("fig3b_fpr_rxdelta/none__iidval", replace(cfg, attack="none", val_split="iid")),
@@ -204,7 +282,14 @@ def _build_fig3b_fpr_rxdelta(base: ExperimentConfig) -> list[tuple[str, Experime
 
 
 def _build_fig3b_fpr_rxdelta_tau(base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Build 8 runs sweeping tau in {0.02, 0.035} under receiver-anchored deltas."""
+    """Build 8 runs sweeping tau in {0.02, 0.035} under receiver-anchored deltas.
+
+    Args:
+        base: Base ExperimentConfig carrying seed and device.
+
+    Returns:
+        List of 8 (run_name, ExperimentConfig) pairs.
+    """
     base_rx = _default_resnet18_config(base, **_default_trustgraph_overrides(trustgraph_delta_mode="receiver"))
     runs: list[tuple[str, ExperimentConfig]] = []
     for tau, tag in ((0.02, "t020"), (0.035, "t035")):
@@ -226,7 +311,15 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
 
 
 def build_suite_runs(suite: str, base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Return the ordered list of (run_name, config) entries for a named Phase 1 suite."""
+    """Return the ordered list of (run_name, config) entries for a named Phase 1 suite.
+
+    Args:
+        suite: Suite key registered in SUITES.
+        base: Base ExperimentConfig carrying shared execution settings.
+
+    Returns:
+        Ordered list of (run_name, ExperimentConfig) tuples.
+    """
     if suite not in SUITES:
         raise ValueError(f"Unknown suite {suite!r}; expected one of {sorted(SUITES)}.")
     return SUITES[suite](base)

@@ -27,7 +27,11 @@ from src.transport import TcpPeerTransport, probe_interface_info
 
 
 def _resolve_distributed_rank() -> tuple[int, int, int]:
-    """Read (rank, world_size, local_rank) from Slurm or torchrun environment variables."""
+    """Read distributed process rank metadata from torchrun or Slurm environment variables.
+
+    Returns:
+        Tuple of (rank, world_size, local_rank) integers.
+    """
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
@@ -40,7 +44,15 @@ def _resolve_distributed_rank() -> tuple[int, int, int]:
 
 
 def _resolve_rank_device(requested: str, local_rank: int) -> torch.device:
-    """Select the torch device for this rank, binding CUDA ranks by local_rank."""
+    """Select the compute device for this rank and bind CUDA ranks by local_rank.
+
+    Args:
+        requested: Device string ('auto', 'cpu', 'cuda', or 'mps').
+        local_rank: Node-local rank used to pick a visible CUDA GPU.
+
+    Returns:
+        Resolved torch.device for this peer process.
+    """
     base = resolve_device(requested)
     if base.type == "cuda":
         n_gpu = max(1, torch.cuda.device_count())
@@ -59,7 +71,20 @@ def _register_and_discover_peers(
     device: torch.device,
     timeout_sec: float = 90.0,
 ) -> list[dict[str, object]]:
-    """Publish this peer's TCP endpoint into a shared directory and wait for all ranks."""
+    """Publish this peer's TCP endpoint into a shared directory and wait for all ranks.
+
+    Args:
+        rank: Global peer rank in [0, world_size - 1].
+        world_size: Total number of participating peers.
+        coord_dir: Shared filesystem directory used for peer endpoint files.
+        iface: Optional Linux network interface name (defaults to loopback).
+        base_port: Base TCP port; rank listens on base_port + rank.
+        device: Compute device assigned to this peer.
+        timeout_sec: Maximum seconds to wait for all peers to register.
+
+    Returns:
+        Ordered list of peer endpoint dictionaries for ranks 0..world_size-1.
+    """
     coord_dir.mkdir(parents=True, exist_ok=True)
     net_info = probe_interface_info(iface)
     gpu_name = torch.cuda.get_device_name(device) if device.type == "cuda" else str(device)
@@ -102,9 +127,20 @@ def run_distributed_peer(
 ) -> dict[str, object] | None:
     """Execute one decentralized FL peer process (one rank = one PeerNode).
 
-    Rank 0 gathers per-round metrics, computes consensus accuracy on eval rounds,
-    writes config.json / history.jsonl / summary.json, and returns the summary dict.
-    Non-zero ranks return None.
+    Args:
+        cfg: Base experiment configuration (n_nodes is overridden with world_size).
+        rank: Global peer rank in [0, world_size - 1].
+        world_size: Total number of peer processes.
+        local_rank: Node-local rank used for GPU assignment.
+        transport: Optional pre-built TcpPeerTransport (used by offline socketpair tests).
+        preloaded_data: Optional pre-partitioned dataset shared across threads in tests.
+        init_vec: Optional shared initial parameter vector to bypass per-rank model init RNG.
+        iface: Optional Linux network interface name for TCP sockets.
+        base_port: Base TCP port for peer listeners.
+        coord_dir: Optional coordination directory for endpoint discovery.
+
+    Returns:
+        Dictionary with 'summary' and 'history' on rank 0, or None on non-zero ranks.
     """
     run_cfg = replace(cfg, n_nodes=world_size)
     agg_cfg = run_cfg.aggregator_config()
@@ -383,7 +419,16 @@ def run_distributed_experiment(
     iface: str | None = None,
     base_port: int = 29600,
 ) -> dict[str, object] | None:
-    """Entry point for srun / torchrun distributed DFL execution."""
+    """Entry point for srun or torchrun distributed DFL execution.
+
+    Args:
+        cfg: Base experiment configuration.
+        iface: Optional Linux network interface name for TCP transport.
+        base_port: Base TCP port for peer listeners.
+
+    Returns:
+        Dictionary with 'summary' and 'history' on rank 0, or None on other ranks.
+    """
     rank, world_size, local_rank = _resolve_distributed_rank()
     return run_distributed_peer(
         cfg=cfg,

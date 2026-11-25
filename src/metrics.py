@@ -1,5 +1,3 @@
-"""Round-level and system-cost metrics tracking for TrustGraph-DFL."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,7 +27,14 @@ class RoundAggregationStats:
 
 
 def compute_rejection_streaks(seq: list[bool]) -> tuple[int, int, int, int]:
-    """Return (total_rejected, max_consec_rejected, repeat_after_first, isolated_single_rejections)."""
+    """Compute rejection totals, streaks, repeats, and isolated rejections for one edge.
+
+    Args:
+        seq: Per-round boolean sequence where True means the edge was rejected.
+
+    Returns:
+        Tuple of (total_rejected, max_consecutive_rejected, repeat_after_first, isolated_single_rejections).
+    """
     total = sum(1 for x in seq if x)
     max_streak = 0
     cur = 0
@@ -50,7 +55,14 @@ def compute_rejection_streaks(seq: list[bool]) -> tuple[int, int, int, int]:
 
 
 def summarize_timings(vals: list[float]) -> dict[str, float | int]:
-    """Return median, min, max, and repeat count for a list of timing samples in seconds."""
+    """Summarize a sequence of timing samples in seconds.
+
+    Args:
+        vals: List of wall-clock durations in seconds.
+
+    Returns:
+        Dictionary with keys 'median', 'min', 'max', and 'repeats'.
+    """
     if not vals:
         return {"median": 0.0, "min": 0.0, "max": 0.0, "repeats": 0}
     return {
@@ -72,7 +84,18 @@ class MetricsTracker:
         param_count: int,
         rounds: int,
     ) -> None:
-        """Initialize per-edge rejection history, timing lists, and cumulative counters."""
+        """Initialize per-edge rejection histories, timing lists, and cumulative counters.
+
+        Args:
+            graph: Peer communication graph.
+            benign_ids: Ordered list of benign peer IDs.
+            byzantine_ids: Set of Byzantine peer IDs.
+            param_count: Number of FP32 parameters in one model vector.
+            rounds: Total number of communication rounds in the run.
+
+        Returns:
+            None.
+        """
         self.graph = graph
         self.benign_ids = benign_ids
         self.byzantine_ids = byzantine_ids
@@ -97,7 +120,16 @@ class MetricsTracker:
         self.history: list[dict[str, object]] = []
 
     def record_edge_outcome(self, receiver_id: int, sender_id: int, rejected: bool) -> None:
-        """Append one round's accept/reject decision for a directed benign-receiver edge."""
+        """Append one round's accept/reject decision for a directed benign-receiver edge.
+
+        Args:
+            receiver_id: Benign peer ID that scored the update.
+            sender_id: Neighbor peer ID that sent the update.
+            rejected: True if the receiver assigned zero trust weight to sender_id.
+
+        Returns:
+            None.
+        """
         key = (receiver_id, sender_id)
         if key in self.edge_rejected:
             self.edge_rejected[key].append(rejected)
@@ -111,7 +143,20 @@ class MetricsTracker:
         h2d_sec_per_peer: float = 0.0,
         wire_bytes_recv_per_peer: float = 0.0,
     ) -> RoundAggregationStats:
-        """Record per-edge outcomes from benign peer reports and build RoundAggregationStats."""
+        """Record per-edge outcomes from benign peer reports and compute round statistics.
+
+        Args:
+            benign_reports: List of per-benign-peer dicts containing rank, self_fallback,
+                byz_weight_share, and per-edge zero_frac/score entries.
+            agg_sec_per_peer: Mean aggregation time per benign peer in seconds.
+            d2h_sec_per_peer: Mean device-to-host staging time in seconds.
+            net_sec_per_peer: Mean network transfer time in seconds.
+            h2d_sec_per_peer: Mean host-to-device copy time in seconds.
+            wire_bytes_recv_per_peer: Mean wire bytes received per benign peer.
+
+        Returns:
+            RoundAggregationStats summarizing trust scores, rejections, and timings for the round.
+        """
         benign_zero = 0.0
         benign_pairs = 0
         byz_accept = 0.0
@@ -168,7 +213,19 @@ class MetricsTracker:
         eval_metrics: dict[str, float] | None = None,
         round_wall_sec: float = 0.0,
     ) -> dict[str, object]:
-        """Store one round's metrics and timings, append to history, and return the JSON record."""
+        """Store one round's metrics and timings, append to history, and return the JSON record.
+
+        Args:
+            round_idx: Zero-based round index.
+            train_sec_per_peer: Mean local SGD training time per benign peer in seconds.
+            val_grad_sec_per_peer: Mean validation gradient time per benign peer in seconds.
+            agg_stats: Aggregated trust and transport counters for this round.
+            eval_metrics: Optional dictionary of test accuracy and loss metrics on eval rounds.
+            round_wall_sec: Total wall-clock seconds spent in this round.
+
+        Returns:
+            Dictionary formatted for one line of history.jsonl.
+        """
         self.train_sec_list.append(train_sec_per_peer)
         self.val_sec_list.append(val_grad_sec_per_peer)
         self.agg_sec_list.append(agg_stats.agg_sec_per_peer)
@@ -214,7 +271,15 @@ class MetricsTracker:
         peak_gpu_alloc_mib: float | None = None,
         peak_gpu_reserved_mib: float | None = None,
     ) -> dict[str, object]:
-        """Compute bandwidth, receive-memory, link-time, and rejection-streak summaries."""
+        """Compute bandwidth, receive-memory, link-time, and rejection-streak summaries.
+
+        Args:
+            peak_gpu_alloc_mib: Peak allocated CUDA memory in MiB, or None on CPU.
+            peak_gpu_reserved_mib: Peak reserved CUDA memory in MiB, or None on CPU.
+
+        Returns:
+            Dictionary of system-cost metrics embedded under 'system_metrics' in summary.json.
+        """
         payload_bytes = self.param_count * 4
         payload_mb = payload_bytes / 1e6
         payload_mib = payload_bytes / float(1024 ** 2)
@@ -337,7 +402,20 @@ class MetricsTracker:
         peak_gpu_alloc_mib: float | None = None,
         peak_gpu_reserved_mib: float | None = None,
     ) -> dict[str, object]:
-        """Assemble the final run summary dictionary matching the summary.json schema."""
+        """Assemble the final run summary dictionary matching the summary.json schema.
+
+        Args:
+            config_dict: Serialized ExperimentConfig dictionary.
+            resolved_device: String name of the compute device used.
+            topo_info: Graph connectivity and degree summary from topology_summary().
+            total_wall_sec: Total elapsed wall time for the run in seconds.
+            had_nan: Whether any benign peer encountered non-finite weights.
+            peak_gpu_alloc_mib: Peak allocated CUDA memory in MiB, or None.
+            peak_gpu_reserved_mib: Peak reserved CUDA memory in MiB, or None.
+
+        Returns:
+            Complete summary dictionary written to summary.json.
+        """
         eval_records = [rec for rec in self.history if "benign_test_acc_mean" in rec]
         final_eval = eval_records[-1]
         best_eval = max(eval_records, key=lambda rec: float(rec["benign_test_acc_mean"]))
