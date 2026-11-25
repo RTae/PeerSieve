@@ -759,6 +759,127 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
     fs.save(fig, out_dir, "fig6-memory-and-rejection-streaks-50k")
 
 
+def plot_v100_distributed_ethernet(data: dict[str, object], out_dir: Path) -> None:
+    """Plot real multi-node V100 training compute vs. 1 Gb/s Ethernet transfer times (Figure 6).
+
+    Args:
+        data: Full parsed phase1_v100_distributed_2node.json dataset.
+        out_dir: Output directory for PNG and PDF figures.
+
+    Returns:
+        None.
+    """
+    runs_by_label = {str(r["label"]): r for r in data["runs"]}
+    hw = data.get("hardware", {})
+    gpu_name = str(hw.get("gpu", "Tesla V100-PCIE-16GB"))
+    iface = str(hw.get("interface", "enp68s0f0"))
+    speed = hw.get("link_speed_mbps", 1000)
+    mtu = hw.get("mtu", 1500)
+    nodes = "+".join(str(n) for n in data.get("nodes", ["ja3", "ja4"]))
+
+    def _extract_bars(specs: list[tuple[str, str]]) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[float], list[float]]:
+        """Extract compute, useful transfer, wasted transfer, comm share, and waste % arrays.
+
+        Args:
+            specs: Ordered list of (run_label, tick_label) tuples.
+
+        Returns:
+            Tuple of (compute_arr, useful_tx_arr, wasted_tx_arr, comm_shares, waste_pcts).
+        """
+        comps, tx_use, tx_was, shares, wastes = [], [], [], [], []
+        for key, _ in specs:
+            r = runs_by_label[key]
+            sm = r["system_metrics"]
+            mt = sm["measured_transport_sec"]
+            c = (
+                float(sm["train_sec_per_peer"]["median"])
+                + float(sm["val_grad_sec_per_peer"]["median"])
+                + float(sm["agg_sec_per_peer"]["median"])
+            )
+            tx = (
+                float(mt["d2h_sec_per_peer"]["median"])
+                + float(mt["net_sec_per_peer"]["median"])
+                + float(mt["h2d_sec_per_peer"]["median"])
+            )
+            wp = float(sm["wasted_transfer_pct"])
+            u = tx * (1.0 - wp / 100.0)
+            w = tx * (wp / 100.0)
+            tot = c + tx
+            sh = 100.0 * tx / max(tot, 1e-9)
+            comps.append(c)
+            tx_use.append(u)
+            tx_was.append(w)
+            shares.append(sh)
+            wastes.append(wp)
+            print(
+                f"  {key:24s}: compute={c:.3f}s | tx={tx:.3f}s (net={float(mt['net_sec_per_peer']['median']):.3f}s, "
+                f"use={u:.3f}s, waste={w:.3f}s) | total={tot:.3f}s ({sh:.1f}% comm, {wp:.1f}% wasted)"
+            )
+        return np.array(comps), np.array(tx_use), np.array(tx_was), shares, wastes
+
+    fig, (ax_2p, ax_4p) = plt.subplots(1, 2, figsize=(16.4, 6.6), gridspec_kw={"width_ratios": [1.0, 1.45]})
+    fs.light_grid(ax_2p, "y")
+    fs.light_grid(ax_4p, "y")
+
+    specs_2p = [
+        ("2p_none_sender", "No Attack\n(sender, 89.5 MB)"),
+        ("2p_model_poison_sender", "Model Poison\n(sender, 89.5 MB)"),
+        ("2p_model_poison_rxdelta", "Model Poison\n(rxdelta, 44.7 MB)"),
+    ]
+    print("\n=== Fig. 6(a) Real 2-Peer V100 Distributed Training (1 Dedicated V100 + NIC / Peer) ===")
+    c2, u2, w2, sh2, _ = _extract_bars(specs_2p)
+    x2 = np.arange(len(specs_2p), dtype=float)
+    bw2 = 0.50
+    ax_2p.bar(x2, c2, width=bw2, color=fs.PALETTE["gray"], edgecolor="black", linewidth=1.6, label="Measured V100 Compute", zorder=3)
+    ax_2p.bar(x2, u2, bottom=c2, width=bw2, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label="Useful 1 Gb/s Transfer", zorder=3)
+    ax_2p.bar(x2, w2, bottom=c2 + u2, width=bw2, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label="Wasted 1 Gb/s Transfer", zorder=3)
+    t2 = c2 + u2 + w2
+    for xi, tot, sh in zip(x2, t2, sh2):
+        ax_2p.text(xi, tot + 0.05, f"{tot:.2f}s\n({sh:.1f}% comm)", ha="center", va="bottom", fontsize=11.0, fontweight="bold", color=fs.INK)
+    ax_2p.set_xticks(x2)
+    ax_2p.set_xticklabels([lbl for _, lbl in specs_2p], fontsize=12.0)
+    ax_2p.set_ylabel("Measured Per-Peer Round Time (seconds)")
+    ax_2p.set_title("(a) Dedicated 1 Peer / V100 (Degree 1)", pad=10, fontweight="bold")
+    ax_2p.set_ylim(0, max(t2) * 1.46)
+    ax_2p.legend(loc="upper right", ncol=1, fontsize=10.5)
+
+    specs_4p = [
+        ("4p_none_sender", "No Attack\n(sender)"),
+        ("4p_label_flip_sender", "Label Flip\n(sender)"),
+        ("4p_model_poison_sender", "Model Poison\n(sender)"),
+        ("4p_random_noise_sender", "Random Noise\n(sender)"),
+        ("4p_model_poison_rxdelta", "Model Poison\n(rxdelta)"),
+    ]
+    print("\n=== Fig. 6(b) Real 4-Peer V100 Distributed Training (2 Peers / V100, Degree 3) ===")
+    c4, u4, w4, sh4, _ = _extract_bars(specs_4p)
+    x4 = np.arange(len(specs_4p), dtype=float)
+    bw4 = 0.54
+    ax_4p.bar(x4, c4, width=bw4, color=fs.PALETTE["gray"], edgecolor="black", linewidth=1.6, label="Measured V100 Compute", zorder=3)
+    ax_4p.bar(x4, u4, bottom=c4, width=bw4, color=fs.PALETTE["blue_main"], edgecolor="black", linewidth=1.6, label="Useful 1 Gb/s Transfer", zorder=3)
+    ax_4p.bar(x4, w4, bottom=c4 + u4, width=bw4, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.6, label="Wasted 1 Gb/s Transfer", zorder=3)
+    t4 = c4 + u4 + w4
+    for xi, tot, sh in zip(x4, t4, sh4):
+        ax_4p.text(xi, tot + 0.14, f"{tot:.2f}s\n({sh:.1f}% comm)", ha="center", va="bottom", fontsize=10.5, fontweight="bold", color=fs.INK)
+    ax_4p.set_xticks(x4)
+    ax_4p.set_xticklabels([lbl for _, lbl in specs_4p], fontsize=12.0)
+    ax_4p.set_ylabel("Measured Per-Peer Round Time (seconds)")
+    ax_4p.set_title("(b) 4 Peers Across 2 V100 Nodes (Degree 3)", pad=10, fontweight="bold")
+    ax_4p.set_ylim(0, max(t4) * 1.44)
+    ax_4p.legend(loc="upper center", ncol=3, fontsize=10.5, columnspacing=1.2, handletextpad=0.5)
+
+    top = fs.header(
+        fig,
+        "Real Multi-Node V100 Distributed Training Over 1 Gb/s Ethernet",
+        f"2x {gpu_name} ({nodes}, {iface} {speed} Mb/s MTU {mtu}, ResNet-18, 2,500 images/peer, 25 rounds, seed 42)",
+    )
+    bot = fs.footnote(
+        fig,
+        "Left: 1 dedicated V100 and NIC per peer (degree 1) spends 29-46% of each round on Ethernet. Right: 4 peers (degree 3) spend 60% in sender (3.13 s) and 43% in rxdelta (1.57 s).",
+    )
+    fig.subplots_adjust(left=0.065, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.6, wspace=0.20)
+    fs.save(fig, out_dir, "fig6-v100-distributed-ethernet")
+
+
 def main() -> None:
     """Load committed Phase 1 JSON datasets and generate all PNG and PDF figures.
 
@@ -769,6 +890,7 @@ def main() -> None:
     p.add_argument("--data-50k", default="report/data/phase1_paper_match_50k_3seed.json")
     p.add_argument("--data-rxdelta", default="report/data/phase1_fpr_rxdelta.json")
     p.add_argument("--data-system", default="report/data/phase1_system_metrics_50k.json")
+    p.add_argument("--data-v100", default="report/data/phase1_v100_distributed_2node.json")
     p.add_argument("--out-dir", default="report/figures")
     args = p.parse_args()
 
@@ -788,6 +910,11 @@ def main() -> None:
         data_system = json.loads(system_data_path.read_text(encoding="utf-8"))
         plot_bandwidth_and_round_time(data_system, out_dir)
         plot_receive_memory_and_rejection_streaks(data_system, out_dir)
+
+    v100_data_path = Path(args.data_v100)
+    if v100_data_path.exists():
+        data_v100 = json.loads(v100_data_path.read_text(encoding="utf-8"))
+        plot_v100_distributed_ethernet(data_v100, out_dir)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1795 @@
+{
+  "description": "Phase 1 real multi-node V100 distributed TrustGraph-DFL measurements over 1 Gb/s Ethernet (ja3 + ja4)",
+  "commit": "8d3f61f0c49070b0212e117d135d92f7103557b5",
+  "slurm_jobs": [
+    "327714",
+    "327725",
+    "327726"
+  ],
+  "partition": "open",
+  "account": "a100",
+  "nodes": [
+    "ja3",
+    "ja4"
+  ],
+  "hardware": {
+    "gpu": "Tesla V100-PCIE-16GB",
+    "gpus_per_node": 1,
+    "pci_bus_id": "00000000:01:00.0",
+    "pcie_link": "Gen3 x16",
+    "driver_version": "525.116.04",
+    "python": "3.12.13",
+    "torch": "2.7.1+cu118",
+    "cuda_runtime": "11.8",
+    "torchvision": "0.22.1+cu118",
+    "interface": "enp68s0f0",
+    "link_speed_mbps": 1000,
+    "mtu": 1500
+  },
+  "total_runs": 8,
+  "nan_runs": 0,
+  "runs": [
+    {
+      "label": "2p_none_sender",
+      "slurm_job_id": "327714",
+      "rel_path": "2p/distributed/cifar10_random_none_byz0_trustgraph_descent_neg/seed_42/summary.json",
+      "config": {
+        "dataset": "cifar10",
+        "data_dir": "data",
+        "download_data": false,
+        "n_nodes": 2,
+        "samples_per_node": 2500,
+        "alpha_dir": 0.5,
+        "val_frac": 0.1,
+        "val_split": "iid",
+        "model_name": "resnet18_pretrained",
+        "rounds": 25,
+        "local_epochs": 1,
+        "lr": 0.005,
+        "lr_schedule": "cosine",
+        "momentum": 0.9,
+        "weight_decay": 0.0001,
+        "batch_size": 64,
+        "augment": true,
+        "grad_clip_norm": 10.0,
+        "val_grad_weight_decay": false,
+        "byz_local_epochs": 0,
+        "topology": "random",
+        "er_p": 1.0,
+        "ws_k": 4,
+        "ws_p": 0.3,
+        "byzantine_frac": 0.0,
+        "attack": "none",
+        "poison_lambda": 10.0,
+        "noise_sigma": 0.5,
+        "aggregator": "trustgraph",
+        "alpha": 0.5,
+        "val_grad_sign": "descent_neg",
+        "trustgraph_use_relu": true,
+        "trustgraph_metric": "cosine",
+        "trustgraph_score_threshold": 0.003,
+        "trustgraph_clip_norm": true,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_delta_mode": "sender",
+        "seed": 42,
+        "device": "cuda",
+        "eval_every": 5,
+        "eval_batch_size": 512,
+        "output_dir": "outputs/phase1_v100_2node/2p/distributed/cifar10_random_none_byz0_trustgraph_descent_neg/seed_42",
+        "verbose": true
+      },
+      "resolved_device": "cuda:0",
+      "param_count": 11181642,
+      "topology": {
+        "n_nodes": 2,
+        "n_edges": 1,
+        "n_byzantine": 0,
+        "byzantine_ids": [],
+        "degree_min": 1,
+        "degree_max": 1,
+        "degree_mean": 1.0,
+        "graph_connected": true,
+        "benign_subgraph_connected": true,
+        "benign_node_benign_deg_mean": 1.0,
+        "benign_node_byz_deg_mean": 0.0
+      },
+      "total_wall_sec": 71.31493211595807,
+      "had_nan": false,
+      "final_benign_test_acc_mean": 0.8972,
+      "final_benign_test_acc_std": 0.005600000000000049,
+      "final_consensus_test_acc": 0.904,
+      "best_benign_test_acc_mean": 0.8972,
+      "best_round": 24,
+      "fpr_cumulative": 0.26,
+      "fpr_final_round": 0.5,
+      "byz_accept_cumulative": 0.0,
+      "mean_benign_score": 0.07518672359167143,
+      "mean_byz_score": null,
+      "system_metrics": {
+        "payload_fp32_mb": 44.727,
+        "payload_fp32_mib": 42.655,
+        "mean_benign_degree": 1.0,
+        "max_benign_degree": 1,
+        "total_transfers": 50,
+        "total_rejected_transfers": 13,
+        "honest_rejected_transfers": 13,
+        "byz_rejected_transfers": 0,
+        "wasted_transfer_pct": 26.0,
+        "rx_mb_per_peer_round": 44.73,
+        "useful_mb_per_peer_round": 33.1,
+        "wasted_mb_per_peer_round": 11.63,
+        "wasted_byz_mb_per_peer_round": 0.0,
+        "wasted_honest_mb_per_peer_round": 11.63,
+        "total_rx_gb_all_benign": 2.236,
+        "total_wasted_gb_all_benign": 0.581,
+        "batched_recv_buf_mean_mib": 42.65,
+        "batched_recv_buf_max_mib": 42.65,
+        "peak_gpu_alloc_mib": 1754.17,
+        "peak_gpu_reserved_mib": 2844.0,
+        "train_sec_per_peer": {
+          "median": 0.847897,
+          "min": 0.846265,
+          "max": 0.908234,
+          "repeats": 25
+        },
+        "val_grad_sec_per_peer": {
+          "median": 0.09108,
+          "min": 0.090785,
+          "max": 14.883548,
+          "repeats": 25
+        },
+        "agg_sec_per_peer": {
+          "median": 0.001799,
+          "min": 0.000701,
+          "max": 0.011958,
+          "repeats": 25
+        },
+        "round_time_by_link": {
+          "10gbps": {
+            "comm_sec": 0.0358,
+            "wasted_comm_sec": 0.0093,
+            "total_round_sec": 0.9766,
+            "comm_share_pct": 3.66
+          },
+          "1gbps": {
+            "comm_sec": 0.3578,
+            "wasted_comm_sec": 0.093,
+            "total_round_sec": 1.2986,
+            "comm_share_pct": 27.55
+          },
+          "100mbps": {
+            "comm_sec": 3.5781,
+            "wasted_comm_sec": 0.9303,
+            "total_round_sec": 4.5189,
+            "comm_share_pct": 79.18
+          }
+        },
+        "byz_repeat_rejections": {
+          "n_byz_edges": 0,
+          "mean_rejected_rounds": 0.0,
+          "min_rejected_rounds": 0,
+          "max_rejected_rounds": 0,
+          "mean_max_consec_streak": 0.0,
+          "repeat_transfers_after_first_rej": 0,
+          "repeat_wasted_gb_after_first_rej": 0.0,
+          "frac_edges_with_streak_ge3_pct": 0.0
+        },
+        "honest_rejection_streaks": {
+          "n_honest_edges": 2,
+          "mean_rejected_rounds": 6.5,
+          "mean_max_consec_streak": 1.5,
+          "isolated_single_rejections": 9,
+          "frac_edges_with_ge1_rej_pct": 100.0,
+          "frac_edges_with_streak_ge3_pct": 0.0,
+          "frac_edges_with_streak_ge5_pct": 0.0
+        },
+        "measured_transport_sec": {
+          "d2h_sec_per_peer": {
+            "median": 0.007278,
+            "min": 0.007195,
+            "max": 0.007736,
+            "repeats": 25
+          },
+          "net_sec_per_peer": {
+            "median": 0.766299,
+            "min": 0.765058,
+            "max": 0.865093,
+            "repeats": 25
+          },
+          "h2d_sec_per_peer": {
+            "median": 0.008125,
+            "min": 0.007812,
+            "max": 0.008207,
+            "repeats": 25
+          }
+        }
+      },
+      "execution_mode": "distributed",
+      "world_size": 2,
+      "send_both_vectors": true,
+      "wire_bytes_per_neighbor": 89453136,
+      "peers": [
+        {
+          "rank": 0,
+          "port": 29600,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 1,
+          "port": 29601,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        }
+      ]
+    },
+    {
+      "label": "2p_model_poison_sender",
+      "slurm_job_id": "327726",
+      "rel_path": "2p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz50_trustgraph_descent_neg/seed_42/summary.json",
+      "config": {
+        "dataset": "cifar10",
+        "data_dir": "data",
+        "download_data": false,
+        "n_nodes": 2,
+        "samples_per_node": 2500,
+        "alpha_dir": 0.5,
+        "val_frac": 0.1,
+        "val_split": "iid",
+        "model_name": "resnet18_pretrained",
+        "rounds": 25,
+        "local_epochs": 1,
+        "lr": 0.005,
+        "lr_schedule": "cosine",
+        "momentum": 0.9,
+        "weight_decay": 0.0001,
+        "batch_size": 64,
+        "augment": true,
+        "grad_clip_norm": 10.0,
+        "val_grad_weight_decay": false,
+        "byz_local_epochs": 0,
+        "topology": "random",
+        "er_p": 1.0,
+        "ws_k": 4,
+        "ws_p": 0.3,
+        "byzantine_frac": 0.5,
+        "attack": "model_poison",
+        "poison_lambda": 10.0,
+        "noise_sigma": 0.5,
+        "aggregator": "trustgraph",
+        "alpha": 0.5,
+        "val_grad_sign": "descent_neg",
+        "trustgraph_use_relu": true,
+        "trustgraph_metric": "cosine",
+        "trustgraph_score_threshold": 0.003,
+        "trustgraph_clip_norm": true,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_delta_mode": "sender",
+        "seed": 42,
+        "device": "cuda",
+        "eval_every": 5,
+        "eval_batch_size": 512,
+        "output_dir": "outputs/phase1_v100_2node/2p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz50_trustgraph_descent_neg/seed_42",
+        "verbose": true
+      },
+      "resolved_device": "cuda:0",
+      "param_count": 11181642,
+      "topology": {
+        "n_nodes": 2,
+        "n_edges": 1,
+        "n_byzantine": 1,
+        "byzantine_ids": [
+          1
+        ],
+        "degree_min": 1,
+        "degree_max": 1,
+        "degree_mean": 1.0,
+        "graph_connected": true,
+        "benign_subgraph_connected": true,
+        "benign_node_benign_deg_mean": 0.0,
+        "benign_node_byz_deg_mean": 1.0
+      },
+      "total_wall_sec": 56.07764973200392,
+      "had_nan": false,
+      "final_benign_test_acc_mean": 0.8189,
+      "final_benign_test_acc_std": 0.0,
+      "final_consensus_test_acc": 0.8189,
+      "best_benign_test_acc_mean": 0.8213,
+      "best_round": 19,
+      "fpr_cumulative": 0.0,
+      "fpr_final_round": 0.0,
+      "byz_accept_cumulative": 0.0,
+      "mean_benign_score": null,
+      "mean_byz_score": -0.15666579725417826,
+      "system_metrics": {
+        "payload_fp32_mb": 44.727,
+        "payload_fp32_mib": 42.655,
+        "mean_benign_degree": 1.0,
+        "max_benign_degree": 1,
+        "total_transfers": 25,
+        "total_rejected_transfers": 25,
+        "honest_rejected_transfers": 0,
+        "byz_rejected_transfers": 25,
+        "wasted_transfer_pct": 100.0,
+        "rx_mb_per_peer_round": 44.73,
+        "useful_mb_per_peer_round": 0.0,
+        "wasted_mb_per_peer_round": 44.73,
+        "wasted_byz_mb_per_peer_round": 44.73,
+        "wasted_honest_mb_per_peer_round": 0.0,
+        "total_rx_gb_all_benign": 1.118,
+        "total_wasted_gb_all_benign": 1.118,
+        "batched_recv_buf_mean_mib": 42.65,
+        "batched_recv_buf_max_mib": 42.65,
+        "peak_gpu_alloc_mib": 1754.17,
+        "peak_gpu_reserved_mib": 2332.0,
+        "train_sec_per_peer": {
+          "median": 0.843389,
+          "min": 0.839558,
+          "max": 0.864355,
+          "repeats": 25
+        },
+        "val_grad_sec_per_peer": {
+          "median": 0.090913,
+          "min": 0.090517,
+          "max": 1.142513,
+          "repeats": 25
+        },
+        "agg_sec_per_peer": {
+          "median": 0.000679,
+          "min": 0.000639,
+          "max": 0.001008,
+          "repeats": 25
+        },
+        "round_time_by_link": {
+          "10gbps": {
+            "comm_sec": 0.0358,
+            "wasted_comm_sec": 0.0358,
+            "total_round_sec": 0.9708,
+            "comm_share_pct": 3.69
+          },
+          "1gbps": {
+            "comm_sec": 0.3578,
+            "wasted_comm_sec": 0.3578,
+            "total_round_sec": 1.2928,
+            "comm_share_pct": 27.68
+          },
+          "100mbps": {
+            "comm_sec": 3.5781,
+            "wasted_comm_sec": 3.5781,
+            "total_round_sec": 4.5131,
+            "comm_share_pct": 79.28
+          }
+        },
+        "byz_repeat_rejections": {
+          "n_byz_edges": 1,
+          "mean_rejected_rounds": 25.0,
+          "min_rejected_rounds": 25,
+          "max_rejected_rounds": 25,
+          "mean_max_consec_streak": 25.0,
+          "repeat_transfers_after_first_rej": 24,
+          "repeat_wasted_gb_after_first_rej": 1.073,
+          "frac_edges_with_streak_ge3_pct": 100.0
+        },
+        "honest_rejection_streaks": {
+          "n_honest_edges": 0,
+          "mean_rejected_rounds": 0.0,
+          "mean_max_consec_streak": 0.0,
+          "isolated_single_rejections": 0,
+          "frac_edges_with_ge1_rej_pct": 0.0,
+          "frac_edges_with_streak_ge3_pct": 0.0,
+          "frac_edges_with_streak_ge5_pct": 0.0
+        },
+        "measured_transport_sec": {
+          "d2h_sec_per_peer": {
+            "median": 0.006854,
+            "min": 0.006793,
+            "max": 0.006926,
+            "repeats": 25
+          },
+          "net_sec_per_peer": {
+            "median": 0.766073,
+            "min": 0.765044,
+            "max": 0.9206,
+            "repeats": 25
+          },
+          "h2d_sec_per_peer": {
+            "median": 0.007061,
+            "min": 0.007016,
+            "max": 0.007107,
+            "repeats": 25
+          }
+        }
+      },
+      "execution_mode": "distributed",
+      "world_size": 2,
+      "send_both_vectors": true,
+      "wire_bytes_per_neighbor": 89453136,
+      "peers": [
+        {
+          "rank": 0,
+          "port": 29800,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 1,
+          "port": 29801,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        }
+      ]
+    },
+    {
+      "label": "2p_model_poison_rxdelta",
+      "slurm_job_id": "327714",
+      "rel_path": "2p/distributed/cifar10_random_model_poison_byz50_trustgraph_descent_neg/seed_42/summary.json",
+      "config": {
+        "dataset": "cifar10",
+        "data_dir": "data",
+        "download_data": false,
+        "n_nodes": 2,
+        "samples_per_node": 2500,
+        "alpha_dir": 0.5,
+        "val_frac": 0.1,
+        "val_split": "iid",
+        "model_name": "resnet18_pretrained",
+        "rounds": 25,
+        "local_epochs": 1,
+        "lr": 0.005,
+        "lr_schedule": "cosine",
+        "momentum": 0.9,
+        "weight_decay": 0.0001,
+        "batch_size": 64,
+        "augment": true,
+        "grad_clip_norm": 10.0,
+        "val_grad_weight_decay": false,
+        "byz_local_epochs": 0,
+        "topology": "random",
+        "er_p": 1.0,
+        "ws_k": 4,
+        "ws_p": 0.3,
+        "byzantine_frac": 0.5,
+        "attack": "model_poison",
+        "poison_lambda": 10.0,
+        "noise_sigma": 0.5,
+        "aggregator": "trustgraph",
+        "alpha": 0.5,
+        "val_grad_sign": "descent_neg",
+        "trustgraph_use_relu": true,
+        "trustgraph_metric": "cosine",
+        "trustgraph_score_threshold": 0.003,
+        "trustgraph_clip_norm": true,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_delta_mode": "receiver",
+        "seed": 42,
+        "device": "cuda",
+        "eval_every": 5,
+        "eval_batch_size": 512,
+        "output_dir": "outputs/phase1_v100_2node/2p/distributed/cifar10_random_model_poison_byz50_trustgraph_descent_neg/seed_42",
+        "verbose": true
+      },
+      "resolved_device": "cuda:0",
+      "param_count": 11181642,
+      "topology": {
+        "n_nodes": 2,
+        "n_edges": 1,
+        "n_byzantine": 1,
+        "byzantine_ids": [
+          1
+        ],
+        "degree_min": 1,
+        "degree_max": 1,
+        "degree_mean": 1.0,
+        "graph_connected": true,
+        "benign_subgraph_connected": true,
+        "benign_node_benign_deg_mean": 0.0,
+        "benign_node_byz_deg_mean": 1.0
+      },
+      "total_wall_sec": 46.60927198594436,
+      "had_nan": false,
+      "final_benign_test_acc_mean": 0.8158,
+      "final_benign_test_acc_std": 0.0,
+      "final_consensus_test_acc": 0.8158,
+      "best_benign_test_acc_mean": 0.8165,
+      "best_round": 19,
+      "fpr_cumulative": 0.0,
+      "fpr_final_round": 0.0,
+      "byz_accept_cumulative": 0.0,
+      "mean_benign_score": null,
+      "mean_byz_score": -0.15685770190061207,
+      "system_metrics": {
+        "payload_fp32_mb": 44.727,
+        "payload_fp32_mib": 42.655,
+        "mean_benign_degree": 1.0,
+        "max_benign_degree": 1,
+        "total_transfers": 25,
+        "total_rejected_transfers": 25,
+        "honest_rejected_transfers": 0,
+        "byz_rejected_transfers": 25,
+        "wasted_transfer_pct": 100.0,
+        "rx_mb_per_peer_round": 44.73,
+        "useful_mb_per_peer_round": 0.0,
+        "wasted_mb_per_peer_round": 44.73,
+        "wasted_byz_mb_per_peer_round": 44.73,
+        "wasted_honest_mb_per_peer_round": 0.0,
+        "total_rx_gb_all_benign": 1.118,
+        "total_wasted_gb_all_benign": 1.118,
+        "batched_recv_buf_mean_mib": 42.65,
+        "batched_recv_buf_max_mib": 42.65,
+        "peak_gpu_alloc_mib": 1711.52,
+        "peak_gpu_reserved_mib": 2332.0,
+        "train_sec_per_peer": {
+          "median": 0.848194,
+          "min": 0.84368,
+          "max": 0.867299,
+          "repeats": 25
+        },
+        "val_grad_sec_per_peer": {
+          "median": 0.091149,
+          "min": 0.090818,
+          "max": 1.1944,
+          "repeats": 25
+        },
+        "agg_sec_per_peer": {
+          "median": 0.000931,
+          "min": 0.000803,
+          "max": 0.001186,
+          "repeats": 25
+        },
+        "round_time_by_link": {
+          "10gbps": {
+            "comm_sec": 0.0358,
+            "wasted_comm_sec": 0.0358,
+            "total_round_sec": 0.9761,
+            "comm_share_pct": 3.67
+          },
+          "1gbps": {
+            "comm_sec": 0.3578,
+            "wasted_comm_sec": 0.3578,
+            "total_round_sec": 1.2981,
+            "comm_share_pct": 27.56
+          },
+          "100mbps": {
+            "comm_sec": 3.5781,
+            "wasted_comm_sec": 3.5781,
+            "total_round_sec": 4.5184,
+            "comm_share_pct": 79.19
+          }
+        },
+        "byz_repeat_rejections": {
+          "n_byz_edges": 1,
+          "mean_rejected_rounds": 25.0,
+          "min_rejected_rounds": 25,
+          "max_rejected_rounds": 25,
+          "mean_max_consec_streak": 25.0,
+          "repeat_transfers_after_first_rej": 24,
+          "repeat_wasted_gb_after_first_rej": 1.073,
+          "frac_edges_with_streak_ge3_pct": 100.0
+        },
+        "honest_rejection_streaks": {
+          "n_honest_edges": 0,
+          "mean_rejected_rounds": 0.0,
+          "mean_max_consec_streak": 0.0,
+          "isolated_single_rejections": 0,
+          "frac_edges_with_ge1_rej_pct": 0.0,
+          "frac_edges_with_streak_ge3_pct": 0.0,
+          "frac_edges_with_streak_ge5_pct": 0.0
+        },
+        "measured_transport_sec": {
+          "d2h_sec_per_peer": {
+            "median": 0.0034,
+            "min": 0.003382,
+            "max": 0.004229,
+            "repeats": 25
+          },
+          "net_sec_per_peer": {
+            "median": 0.384757,
+            "min": 0.383672,
+            "max": 0.40533,
+            "repeats": 25
+          },
+          "h2d_sec_per_peer": {
+            "median": 0.004301,
+            "min": 0.003611,
+            "max": 0.004473,
+            "repeats": 25
+          }
+        }
+      },
+      "execution_mode": "distributed",
+      "world_size": 2,
+      "send_both_vectors": false,
+      "wire_bytes_per_neighbor": 44726568,
+      "peers": [
+        {
+          "rank": 0,
+          "port": 29640,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 1,
+          "port": 29641,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        }
+      ]
+    },
+    {
+      "label": "4p_none_sender",
+      "slurm_job_id": "327725",
+      "rel_path": "4p/r1_none_sender/distributed/cifar10_random_none_byz0_trustgraph_descent_neg/seed_42/summary.json",
+      "config": {
+        "dataset": "cifar10",
+        "data_dir": "data",
+        "download_data": false,
+        "n_nodes": 4,
+        "samples_per_node": 2500,
+        "alpha_dir": 0.5,
+        "val_frac": 0.1,
+        "val_split": "iid",
+        "model_name": "resnet18_pretrained",
+        "rounds": 25,
+        "local_epochs": 1,
+        "lr": 0.005,
+        "lr_schedule": "cosine",
+        "momentum": 0.9,
+        "weight_decay": 0.0001,
+        "batch_size": 64,
+        "augment": true,
+        "grad_clip_norm": 10.0,
+        "val_grad_weight_decay": false,
+        "byz_local_epochs": 0,
+        "topology": "random",
+        "er_p": 1.0,
+        "ws_k": 4,
+        "ws_p": 0.3,
+        "byzantine_frac": 0.0,
+        "attack": "none",
+        "poison_lambda": 10.0,
+        "noise_sigma": 0.5,
+        "aggregator": "trustgraph",
+        "alpha": 0.5,
+        "val_grad_sign": "descent_neg",
+        "trustgraph_use_relu": true,
+        "trustgraph_metric": "cosine",
+        "trustgraph_score_threshold": 0.003,
+        "trustgraph_clip_norm": true,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_delta_mode": "sender",
+        "seed": 42,
+        "device": "cuda",
+        "eval_every": 5,
+        "eval_batch_size": 512,
+        "output_dir": "outputs/phase1_v100_2node/4p/r1_none_sender/distributed/cifar10_random_none_byz0_trustgraph_descent_neg/seed_42",
+        "verbose": true
+      },
+      "resolved_device": "cuda:0",
+      "param_count": 11181642,
+      "topology": {
+        "n_nodes": 4,
+        "n_edges": 6,
+        "n_byzantine": 0,
+        "byzantine_ids": [],
+        "degree_min": 3,
+        "degree_max": 3,
+        "degree_mean": 3.0,
+        "graph_connected": true,
+        "benign_subgraph_connected": true,
+        "benign_node_benign_deg_mean": 3.0,
+        "benign_node_byz_deg_mean": 0.0
+      },
+      "total_wall_sec": 148.16793732205406,
+      "had_nan": false,
+      "final_benign_test_acc_mean": 0.9117,
+      "final_benign_test_acc_std": 0.00495933463279098,
+      "final_consensus_test_acc": 0.9213,
+      "best_benign_test_acc_mean": 0.9117,
+      "best_round": 24,
+      "fpr_cumulative": 0.3433333333333333,
+      "fpr_final_round": 0.5,
+      "byz_accept_cumulative": 0.0,
+      "mean_benign_score": 0.03600026428576337,
+      "mean_byz_score": null,
+      "system_metrics": {
+        "payload_fp32_mb": 44.727,
+        "payload_fp32_mib": 42.655,
+        "mean_benign_degree": 3.0,
+        "max_benign_degree": 3,
+        "total_transfers": 300,
+        "total_rejected_transfers": 103,
+        "honest_rejected_transfers": 103,
+        "byz_rejected_transfers": 0,
+        "wasted_transfer_pct": 34.33,
+        "rx_mb_per_peer_round": 134.18,
+        "useful_mb_per_peer_round": 88.11,
+        "wasted_mb_per_peer_round": 46.07,
+        "wasted_byz_mb_per_peer_round": 0.0,
+        "wasted_honest_mb_per_peer_round": 46.07,
+        "total_rx_gb_all_benign": 13.418,
+        "total_wasted_gb_all_benign": 4.607,
+        "batched_recv_buf_mean_mib": 127.96,
+        "batched_recv_buf_max_mib": 127.96,
+        "peak_gpu_alloc_mib": 1923.69,
+        "peak_gpu_reserved_mib": 2976.0,
+        "train_sec_per_peer": {
+          "median": 1.891317,
+          "min": 1.220499,
+          "max": 1.910399,
+          "repeats": 25
+        },
+        "val_grad_sec_per_peer": {
+          "median": 0.201338,
+          "min": 0.115183,
+          "max": 1.290414,
+          "repeats": 25
+        },
+        "agg_sec_per_peer": {
+          "median": 0.006104,
+          "min": 0.004057,
+          "max": 0.019958,
+          "repeats": 25
+        },
+        "round_time_by_link": {
+          "10gbps": {
+            "comm_sec": 0.1073,
+            "wasted_comm_sec": 0.0369,
+            "total_round_sec": 2.2061,
+            "comm_share_pct": 4.87
+          },
+          "1gbps": {
+            "comm_sec": 1.0734,
+            "wasted_comm_sec": 0.3685,
+            "total_round_sec": 3.1722,
+            "comm_share_pct": 33.84
+          },
+          "100mbps": {
+            "comm_sec": 10.7344,
+            "wasted_comm_sec": 3.6855,
+            "total_round_sec": 12.8331,
+            "comm_share_pct": 83.65
+          }
+        },
+        "byz_repeat_rejections": {
+          "n_byz_edges": 0,
+          "mean_rejected_rounds": 0.0,
+          "min_rejected_rounds": 0,
+          "max_rejected_rounds": 0,
+          "mean_max_consec_streak": 0.0,
+          "repeat_transfers_after_first_rej": 0,
+          "repeat_wasted_gb_after_first_rej": 0.0,
+          "frac_edges_with_streak_ge3_pct": 0.0
+        },
+        "honest_rejection_streaks": {
+          "n_honest_edges": 12,
+          "mean_rejected_rounds": 8.58,
+          "mean_max_consec_streak": 3.0,
+          "isolated_single_rejections": 72,
+          "frac_edges_with_ge1_rej_pct": 100.0,
+          "frac_edges_with_streak_ge3_pct": 33.33,
+          "frac_edges_with_streak_ge5_pct": 25.0
+        },
+        "measured_transport_sec": {
+          "d2h_sec_per_peer": {
+            "median": 0.010065,
+            "min": 0.006881,
+            "max": 0.013949,
+            "repeats": 25
+          },
+          "net_sec_per_peer": {
+            "median": 3.081637,
+            "min": 3.055376,
+            "max": 3.084962,
+            "repeats": 25
+          },
+          "h2d_sec_per_peer": {
+            "median": 0.040379,
+            "min": 0.023461,
+            "max": 0.04164,
+            "repeats": 25
+          }
+        }
+      },
+      "execution_mode": "distributed",
+      "world_size": 4,
+      "send_both_vectors": true,
+      "wire_bytes_per_neighbor": 89453136,
+      "peers": [
+        {
+          "rank": 0,
+          "port": 29700,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 1,
+          "port": 29701,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 2,
+          "port": 29702,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 3,
+          "port": 29703,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        }
+      ]
+    },
+    {
+      "label": "4p_label_flip_sender",
+      "slurm_job_id": "327726",
+      "rel_path": "4p/r4_label_flip_sender/distributed/cifar10_random_label_flip_all_byz25_trustgraph_descent_neg/seed_42/summary.json",
+      "config": {
+        "dataset": "cifar10",
+        "data_dir": "data",
+        "download_data": false,
+        "n_nodes": 4,
+        "samples_per_node": 2500,
+        "alpha_dir": 0.5,
+        "val_frac": 0.1,
+        "val_split": "iid",
+        "model_name": "resnet18_pretrained",
+        "rounds": 25,
+        "local_epochs": 1,
+        "lr": 0.005,
+        "lr_schedule": "cosine",
+        "momentum": 0.9,
+        "weight_decay": 0.0001,
+        "batch_size": 64,
+        "augment": true,
+        "grad_clip_norm": 10.0,
+        "val_grad_weight_decay": false,
+        "byz_local_epochs": 2,
+        "topology": "random",
+        "er_p": 1.0,
+        "ws_k": 4,
+        "ws_p": 0.3,
+        "byzantine_frac": 0.25,
+        "attack": "label_flip_all",
+        "poison_lambda": 10.0,
+        "noise_sigma": 0.5,
+        "aggregator": "trustgraph",
+        "alpha": 0.5,
+        "val_grad_sign": "descent_neg",
+        "trustgraph_use_relu": true,
+        "trustgraph_metric": "cosine",
+        "trustgraph_score_threshold": 0.003,
+        "trustgraph_clip_norm": true,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_delta_mode": "sender",
+        "seed": 42,
+        "device": "cuda",
+        "eval_every": 5,
+        "eval_batch_size": 512,
+        "output_dir": "outputs/phase1_v100_2node/4p/r4_label_flip_sender/distributed/cifar10_random_label_flip_all_byz25_trustgraph_descent_neg/seed_42",
+        "verbose": true
+      },
+      "resolved_device": "cuda:0",
+      "param_count": 11181642,
+      "topology": {
+        "n_nodes": 4,
+        "n_edges": 6,
+        "n_byzantine": 1,
+        "byzantine_ids": [
+          3
+        ],
+        "degree_min": 3,
+        "degree_max": 3,
+        "degree_mean": 3.0,
+        "graph_connected": true,
+        "benign_subgraph_connected": true,
+        "benign_node_benign_deg_mean": 2.0,
+        "benign_node_byz_deg_mean": 1.0
+      },
+      "total_wall_sec": 164.38486500096042,
+      "had_nan": false,
+      "final_benign_test_acc_mean": 0.9059,
+      "final_benign_test_acc_std": 0.00282960539062723,
+      "final_consensus_test_acc": 0.9152,
+      "best_benign_test_acc_mean": 0.9059,
+      "best_round": 24,
+      "fpr_cumulative": 0.2866666666666667,
+      "fpr_final_round": 0.5,
+      "byz_accept_cumulative": 0.37333333333333335,
+      "mean_benign_score": 0.04887573628265935,
+      "mean_byz_score": -0.013779255321255401,
+      "system_metrics": {
+        "payload_fp32_mb": 44.727,
+        "payload_fp32_mib": 42.655,
+        "mean_benign_degree": 3.0,
+        "max_benign_degree": 3,
+        "total_transfers": 225,
+        "total_rejected_transfers": 90,
+        "honest_rejected_transfers": 43,
+        "byz_rejected_transfers": 47,
+        "wasted_transfer_pct": 40.0,
+        "rx_mb_per_peer_round": 134.18,
+        "useful_mb_per_peer_round": 80.51,
+        "wasted_mb_per_peer_round": 53.67,
+        "wasted_byz_mb_per_peer_round": 28.03,
+        "wasted_honest_mb_per_peer_round": 25.64,
+        "total_rx_gb_all_benign": 10.063,
+        "total_wasted_gb_all_benign": 4.025,
+        "batched_recv_buf_mean_mib": 127.96,
+        "batched_recv_buf_max_mib": 127.96,
+        "peak_gpu_alloc_mib": 1923.94,
+        "peak_gpu_reserved_mib": 2976.0,
+        "train_sec_per_peer": {
+          "median": 1.884719,
+          "min": 1.133327,
+          "max": 1.898047,
+          "repeats": 25
+        },
+        "val_grad_sec_per_peer": {
+          "median": 0.196449,
+          "min": 0.090749,
+          "max": 1.296422,
+          "repeats": 25
+        },
+        "agg_sec_per_peer": {
+          "median": 0.005816,
+          "min": 0.003798,
+          "max": 0.014887,
+          "repeats": 25
+        },
+        "round_time_by_link": {
+          "10gbps": {
+            "comm_sec": 0.1073,
+            "wasted_comm_sec": 0.0429,
+            "total_round_sec": 2.1943,
+            "comm_share_pct": 4.89
+          },
+          "1gbps": {
+            "comm_sec": 1.0734,
+            "wasted_comm_sec": 0.4294,
+            "total_round_sec": 3.1604,
+            "comm_share_pct": 33.97
+          },
+          "100mbps": {
+            "comm_sec": 10.7344,
+            "wasted_comm_sec": 4.2938,
+            "total_round_sec": 12.8214,
+            "comm_share_pct": 83.72
+          }
+        },
+        "byz_repeat_rejections": {
+          "n_byz_edges": 3,
+          "mean_rejected_rounds": 15.67,
+          "min_rejected_rounds": 13,
+          "max_rejected_rounds": 20,
+          "mean_max_consec_streak": 6.33,
+          "repeat_transfers_after_first_rej": 44,
+          "repeat_wasted_gb_after_first_rej": 1.968,
+          "frac_edges_with_streak_ge3_pct": 100.0
+        },
+        "honest_rejection_streaks": {
+          "n_honest_edges": 6,
+          "mean_rejected_rounds": 7.17,
+          "mean_max_consec_streak": 1.5,
+          "isolated_single_rejections": 39,
+          "frac_edges_with_ge1_rej_pct": 100.0,
+          "frac_edges_with_streak_ge3_pct": 16.67,
+          "frac_edges_with_streak_ge5_pct": 0.0
+        },
+        "measured_transport_sec": {
+          "d2h_sec_per_peer": {
+            "median": 0.009069,
+            "min": 0.00685,
+            "max": 0.011803,
+            "repeats": 25
+          },
+          "net_sec_per_peer": {
+            "median": 3.082999,
+            "min": 3.041932,
+            "max": 3.085577,
+            "repeats": 25
+          },
+          "h2d_sec_per_peer": {
+            "median": 0.040762,
+            "min": 0.028134,
+            "max": 0.041808,
+            "repeats": 25
+          }
+        }
+      },
+      "execution_mode": "distributed",
+      "world_size": 4,
+      "send_both_vectors": true,
+      "wire_bytes_per_neighbor": 89453136,
+      "peers": [
+        {
+          "rank": 0,
+          "port": 29760,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 1,
+          "port": 29761,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 2,
+          "port": 29762,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 3,
+          "port": 29763,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        }
+      ]
+    },
+    {
+      "label": "4p_model_poison_sender",
+      "slurm_job_id": "327725",
+      "rel_path": "4p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz25_trustgraph_descent_neg/seed_42/summary.json",
+      "config": {
+        "dataset": "cifar10",
+        "data_dir": "data",
+        "download_data": false,
+        "n_nodes": 4,
+        "samples_per_node": 2500,
+        "alpha_dir": 0.5,
+        "val_frac": 0.1,
+        "val_split": "iid",
+        "model_name": "resnet18_pretrained",
+        "rounds": 25,
+        "local_epochs": 1,
+        "lr": 0.005,
+        "lr_schedule": "cosine",
+        "momentum": 0.9,
+        "weight_decay": 0.0001,
+        "batch_size": 64,
+        "augment": true,
+        "grad_clip_norm": 10.0,
+        "val_grad_weight_decay": false,
+        "byz_local_epochs": 0,
+        "topology": "random",
+        "er_p": 1.0,
+        "ws_k": 4,
+        "ws_p": 0.3,
+        "byzantine_frac": 0.25,
+        "attack": "model_poison",
+        "poison_lambda": 10.0,
+        "noise_sigma": 0.5,
+        "aggregator": "trustgraph",
+        "alpha": 0.5,
+        "val_grad_sign": "descent_neg",
+        "trustgraph_use_relu": true,
+        "trustgraph_metric": "cosine",
+        "trustgraph_score_threshold": 0.003,
+        "trustgraph_clip_norm": true,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_delta_mode": "sender",
+        "seed": 42,
+        "device": "cuda",
+        "eval_every": 5,
+        "eval_batch_size": 512,
+        "output_dir": "outputs/phase1_v100_2node/4p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz25_trustgraph_descent_neg/seed_42",
+        "verbose": true
+      },
+      "resolved_device": "cuda:0",
+      "param_count": 11181642,
+      "topology": {
+        "n_nodes": 4,
+        "n_edges": 6,
+        "n_byzantine": 1,
+        "byzantine_ids": [
+          3
+        ],
+        "degree_min": 3,
+        "degree_max": 3,
+        "degree_mean": 3.0,
+        "graph_connected": true,
+        "benign_subgraph_connected": true,
+        "benign_node_benign_deg_mean": 2.0,
+        "benign_node_byz_deg_mean": 1.0
+      },
+      "total_wall_sec": 147.80729007103946,
+      "had_nan": false,
+      "final_benign_test_acc_mean": 0.9055666666666666,
+      "final_benign_test_acc_std": 0.0074082536553645465,
+      "final_consensus_test_acc": 0.9096,
+      "best_benign_test_acc_mean": 0.9055666666666666,
+      "best_round": 24,
+      "fpr_cumulative": 0.24666666666666667,
+      "fpr_final_round": 0.5,
+      "byz_accept_cumulative": 0.013333333333333334,
+      "mean_benign_score": 0.05481296388616469,
+      "mean_byz_score": -0.08091938924021749,
+      "system_metrics": {
+        "payload_fp32_mb": 44.727,
+        "payload_fp32_mib": 42.655,
+        "mean_benign_degree": 3.0,
+        "max_benign_degree": 3,
+        "total_transfers": 225,
+        "total_rejected_transfers": 111,
+        "honest_rejected_transfers": 37,
+        "byz_rejected_transfers": 74,
+        "wasted_transfer_pct": 49.33,
+        "rx_mb_per_peer_round": 134.18,
+        "useful_mb_per_peer_round": 67.98,
+        "wasted_mb_per_peer_round": 66.2,
+        "wasted_byz_mb_per_peer_round": 44.13,
+        "wasted_honest_mb_per_peer_round": 22.07,
+        "total_rx_gb_all_benign": 10.063,
+        "total_wasted_gb_all_benign": 4.965,
+        "batched_recv_buf_mean_mib": 127.96,
+        "batched_recv_buf_max_mib": 127.96,
+        "peak_gpu_alloc_mib": 1923.69,
+        "peak_gpu_reserved_mib": 2976.0,
+        "train_sec_per_peer": {
+          "median": 1.854477,
+          "min": 1.133192,
+          "max": 1.870668,
+          "repeats": 25
+        },
+        "val_grad_sec_per_peer": {
+          "median": 0.197721,
+          "min": 0.090728,
+          "max": 1.291256,
+          "repeats": 25
+        },
+        "agg_sec_per_peer": {
+          "median": 0.005324,
+          "min": 0.002822,
+          "max": 0.013031,
+          "repeats": 25
+        },
+        "round_time_by_link": {
+          "10gbps": {
+            "comm_sec": 0.1073,
+            "wasted_comm_sec": 0.053,
+            "total_round_sec": 2.1649,
+            "comm_share_pct": 4.96
+          },
+          "1gbps": {
+            "comm_sec": 1.0734,
+            "wasted_comm_sec": 0.5296,
+            "total_round_sec": 3.131,
+            "comm_share_pct": 34.28
+          },
+          "100mbps": {
+            "comm_sec": 10.7344,
+            "wasted_comm_sec": 5.2956,
+            "total_round_sec": 12.7919,
+            "comm_share_pct": 83.92
+          }
+        },
+        "byz_repeat_rejections": {
+          "n_byz_edges": 3,
+          "mean_rejected_rounds": 24.67,
+          "min_rejected_rounds": 24,
+          "max_rejected_rounds": 25,
+          "mean_max_consec_streak": 21.67,
+          "repeat_transfers_after_first_rej": 71,
+          "repeat_wasted_gb_after_first_rej": 3.176,
+          "frac_edges_with_streak_ge3_pct": 100.0
+        },
+        "honest_rejection_streaks": {
+          "n_honest_edges": 6,
+          "mean_rejected_rounds": 6.17,
+          "mean_max_consec_streak": 1.17,
+          "isolated_single_rejections": 35,
+          "frac_edges_with_ge1_rej_pct": 100.0,
+          "frac_edges_with_streak_ge3_pct": 0.0,
+          "frac_edges_with_streak_ge5_pct": 0.0
+        },
+        "measured_transport_sec": {
+          "d2h_sec_per_peer": {
+            "median": 0.007308,
+            "min": 0.006805,
+            "max": 0.011493,
+            "repeats": 25
+          },
+          "net_sec_per_peer": {
+            "median": 3.082156,
+            "min": 3.047544,
+            "max": 3.09097,
+            "repeats": 25
+          },
+          "h2d_sec_per_peer": {
+            "median": 0.040621,
+            "min": 0.021534,
+            "max": 0.04199,
+            "repeats": 25
+          }
+        }
+      },
+      "execution_mode": "distributed",
+      "world_size": 4,
+      "send_both_vectors": true,
+      "wire_bytes_per_neighbor": 89453136,
+      "peers": [
+        {
+          "rank": 0,
+          "port": 29720,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 1,
+          "port": 29721,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 2,
+          "port": 29722,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 3,
+          "port": 29723,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        }
+      ]
+    },
+    {
+      "label": "4p_random_noise_sender",
+      "slurm_job_id": "327726",
+      "rel_path": "4p/r5_random_noise_sender/distributed/cifar10_random_random_noise_byz25_trustgraph_descent_neg/seed_42/summary.json",
+      "config": {
+        "dataset": "cifar10",
+        "data_dir": "data",
+        "download_data": false,
+        "n_nodes": 4,
+        "samples_per_node": 2500,
+        "alpha_dir": 0.5,
+        "val_frac": 0.1,
+        "val_split": "iid",
+        "model_name": "resnet18_pretrained",
+        "rounds": 25,
+        "local_epochs": 1,
+        "lr": 0.005,
+        "lr_schedule": "cosine",
+        "momentum": 0.9,
+        "weight_decay": 0.0001,
+        "batch_size": 64,
+        "augment": true,
+        "grad_clip_norm": 10.0,
+        "val_grad_weight_decay": false,
+        "byz_local_epochs": 0,
+        "topology": "random",
+        "er_p": 1.0,
+        "ws_k": 4,
+        "ws_p": 0.3,
+        "byzantine_frac": 0.25,
+        "attack": "random_noise",
+        "poison_lambda": 10.0,
+        "noise_sigma": 0.5,
+        "aggregator": "trustgraph",
+        "alpha": 0.5,
+        "val_grad_sign": "descent_neg",
+        "trustgraph_use_relu": true,
+        "trustgraph_metric": "cosine",
+        "trustgraph_score_threshold": 0.003,
+        "trustgraph_clip_norm": true,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_delta_mode": "sender",
+        "seed": 42,
+        "device": "cuda",
+        "eval_every": 5,
+        "eval_batch_size": 512,
+        "output_dir": "outputs/phase1_v100_2node/4p/r5_random_noise_sender/distributed/cifar10_random_random_noise_byz25_trustgraph_descent_neg/seed_42",
+        "verbose": true
+      },
+      "resolved_device": "cuda:0",
+      "param_count": 11181642,
+      "topology": {
+        "n_nodes": 4,
+        "n_edges": 6,
+        "n_byzantine": 1,
+        "byzantine_ids": [
+          3
+        ],
+        "degree_min": 3,
+        "degree_max": 3,
+        "degree_mean": 3.0,
+        "graph_connected": true,
+        "benign_subgraph_connected": true,
+        "benign_node_benign_deg_mean": 2.0,
+        "benign_node_byz_deg_mean": 1.0
+      },
+      "total_wall_sec": 147.96772070601583,
+      "had_nan": false,
+      "final_benign_test_acc_mean": 0.9047333333333333,
+      "final_benign_test_acc_std": 0.006671498249185775,
+      "final_consensus_test_acc": 0.9123,
+      "best_benign_test_acc_mean": 0.9047333333333333,
+      "best_round": 24,
+      "fpr_cumulative": 0.2866666666666667,
+      "fpr_final_round": 0.5,
+      "byz_accept_cumulative": 0.0,
+      "mean_benign_score": 0.05052118652977042,
+      "mean_byz_score": -3.3708224833523486e-05,
+      "system_metrics": {
+        "payload_fp32_mb": 44.727,
+        "payload_fp32_mib": 42.655,
+        "mean_benign_degree": 3.0,
+        "max_benign_degree": 3,
+        "total_transfers": 225,
+        "total_rejected_transfers": 118,
+        "honest_rejected_transfers": 43,
+        "byz_rejected_transfers": 75,
+        "wasted_transfer_pct": 52.44,
+        "rx_mb_per_peer_round": 134.18,
+        "useful_mb_per_peer_round": 63.81,
+        "wasted_mb_per_peer_round": 70.37,
+        "wasted_byz_mb_per_peer_round": 44.73,
+        "wasted_honest_mb_per_peer_round": 25.64,
+        "total_rx_gb_all_benign": 10.063,
+        "total_wasted_gb_all_benign": 5.278,
+        "batched_recv_buf_mean_mib": 127.96,
+        "batched_recv_buf_max_mib": 127.96,
+        "peak_gpu_alloc_mib": 1923.79,
+        "peak_gpu_reserved_mib": 2976.0,
+        "train_sec_per_peer": {
+          "median": 1.860427,
+          "min": 1.142805,
+          "max": 1.874724,
+          "repeats": 25
+        },
+        "val_grad_sec_per_peer": {
+          "median": 0.1971,
+          "min": 0.090906,
+          "max": 1.277022,
+          "repeats": 25
+        },
+        "agg_sec_per_peer": {
+          "median": 0.00547,
+          "min": 0.002938,
+          "max": 0.014031,
+          "repeats": 25
+        },
+        "round_time_by_link": {
+          "10gbps": {
+            "comm_sec": 0.1073,
+            "wasted_comm_sec": 0.0563,
+            "total_round_sec": 2.1703,
+            "comm_share_pct": 4.95
+          },
+          "1gbps": {
+            "comm_sec": 1.0734,
+            "wasted_comm_sec": 0.563,
+            "total_round_sec": 3.1364,
+            "comm_share_pct": 34.22
+          },
+          "100mbps": {
+            "comm_sec": 10.7344,
+            "wasted_comm_sec": 5.6296,
+            "total_round_sec": 12.7974,
+            "comm_share_pct": 83.88
+          }
+        },
+        "byz_repeat_rejections": {
+          "n_byz_edges": 3,
+          "mean_rejected_rounds": 25.0,
+          "min_rejected_rounds": 25,
+          "max_rejected_rounds": 25,
+          "mean_max_consec_streak": 25.0,
+          "repeat_transfers_after_first_rej": 72,
+          "repeat_wasted_gb_after_first_rej": 3.22,
+          "frac_edges_with_streak_ge3_pct": 100.0
+        },
+        "honest_rejection_streaks": {
+          "n_honest_edges": 6,
+          "mean_rejected_rounds": 7.17,
+          "mean_max_consec_streak": 1.67,
+          "isolated_single_rejections": 36,
+          "frac_edges_with_ge1_rej_pct": 100.0,
+          "frac_edges_with_streak_ge3_pct": 16.67,
+          "frac_edges_with_streak_ge5_pct": 0.0
+        },
+        "measured_transport_sec": {
+          "d2h_sec_per_peer": {
+            "median": 0.010952,
+            "min": 0.00688,
+            "max": 0.012891,
+            "repeats": 25
+          },
+          "net_sec_per_peer": {
+            "median": 3.082213,
+            "min": 3.070444,
+            "max": 3.085815,
+            "repeats": 25
+          },
+          "h2d_sec_per_peer": {
+            "median": 0.040266,
+            "min": 0.027797,
+            "max": 0.041916,
+            "repeats": 25
+          }
+        }
+      },
+      "execution_mode": "distributed",
+      "world_size": 4,
+      "send_both_vectors": true,
+      "wire_bytes_per_neighbor": 89453136,
+      "peers": [
+        {
+          "rank": 0,
+          "port": 29780,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 1,
+          "port": 29781,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 2,
+          "port": 29782,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 3,
+          "port": 29783,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        }
+      ]
+    },
+    {
+      "label": "4p_model_poison_rxdelta",
+      "slurm_job_id": "327725",
+      "rel_path": "4p/r3_model_poison_rxdelta/distributed/cifar10_random_model_poison_byz25_trustgraph_descent_neg/seed_42/summary.json",
+      "config": {
+        "dataset": "cifar10",
+        "data_dir": "data",
+        "download_data": false,
+        "n_nodes": 4,
+        "samples_per_node": 2500,
+        "alpha_dir": 0.5,
+        "val_frac": 0.1,
+        "val_split": "iid",
+        "model_name": "resnet18_pretrained",
+        "rounds": 25,
+        "local_epochs": 1,
+        "lr": 0.005,
+        "lr_schedule": "cosine",
+        "momentum": 0.9,
+        "weight_decay": 0.0001,
+        "batch_size": 64,
+        "augment": true,
+        "grad_clip_norm": 10.0,
+        "val_grad_weight_decay": false,
+        "byz_local_epochs": 0,
+        "topology": "random",
+        "er_p": 1.0,
+        "ws_k": 4,
+        "ws_p": 0.3,
+        "byzantine_frac": 0.25,
+        "attack": "model_poison",
+        "poison_lambda": 10.0,
+        "noise_sigma": 0.5,
+        "aggregator": "trustgraph",
+        "alpha": 0.5,
+        "val_grad_sign": "descent_neg",
+        "trustgraph_use_relu": true,
+        "trustgraph_metric": "cosine",
+        "trustgraph_score_threshold": 0.003,
+        "trustgraph_clip_norm": true,
+        "trustgraph_clip_mode": "model",
+        "trustgraph_clip_factor": 2.0,
+        "trustgraph_delta_mode": "receiver",
+        "seed": 42,
+        "device": "cuda",
+        "eval_every": 5,
+        "eval_batch_size": 512,
+        "output_dir": "outputs/phase1_v100_2node/4p/r3_model_poison_rxdelta/distributed/cifar10_random_model_poison_byz25_trustgraph_descent_neg/seed_42",
+        "verbose": true
+      },
+      "resolved_device": "cuda:0",
+      "param_count": 11181642,
+      "topology": {
+        "n_nodes": 4,
+        "n_edges": 6,
+        "n_byzantine": 1,
+        "byzantine_ids": [
+          3
+        ],
+        "degree_min": 3,
+        "degree_max": 3,
+        "degree_mean": 3.0,
+        "graph_connected": true,
+        "benign_subgraph_connected": true,
+        "benign_node_benign_deg_mean": 2.0,
+        "benign_node_byz_deg_mean": 1.0
+      },
+      "total_wall_sec": 108.7890128250001,
+      "had_nan": false,
+      "final_benign_test_acc_mean": 0.9052000000000001,
+      "final_benign_test_acc_std": 0.0046611872593435195,
+      "final_consensus_test_acc": 0.9087,
+      "best_benign_test_acc_mean": 0.9052000000000001,
+      "best_round": 24,
+      "fpr_cumulative": 0.11333333333333333,
+      "fpr_final_round": 0.3333333333333333,
+      "byz_accept_cumulative": 0.04,
+      "mean_benign_score": 0.10848831915920598,
+      "mean_byz_score": -0.06384715164583253,
+      "system_metrics": {
+        "payload_fp32_mb": 44.727,
+        "payload_fp32_mib": 42.655,
+        "mean_benign_degree": 3.0,
+        "max_benign_degree": 3,
+        "total_transfers": 225,
+        "total_rejected_transfers": 89,
+        "honest_rejected_transfers": 17,
+        "byz_rejected_transfers": 72,
+        "wasted_transfer_pct": 39.56,
+        "rx_mb_per_peer_round": 134.18,
+        "useful_mb_per_peer_round": 81.1,
+        "wasted_mb_per_peer_round": 53.08,
+        "wasted_byz_mb_per_peer_round": 42.94,
+        "wasted_honest_mb_per_peer_round": 10.14,
+        "total_rx_gb_all_benign": 10.063,
+        "total_wasted_gb_all_benign": 3.981,
+        "batched_recv_buf_mean_mib": 127.96,
+        "batched_recv_buf_max_mib": 127.96,
+        "peak_gpu_alloc_mib": 1796.83,
+        "peak_gpu_reserved_mib": 2888.0,
+        "train_sec_per_peer": {
+          "median": 1.856483,
+          "min": 1.125899,
+          "max": 1.872687,
+          "repeats": 25
+        },
+        "val_grad_sec_per_peer": {
+          "median": 0.198157,
+          "min": 0.090857,
+          "max": 1.262713,
+          "repeats": 25
+        },
+        "agg_sec_per_peer": {
+          "median": 0.007247,
+          "min": 0.004166,
+          "max": 0.013529,
+          "repeats": 25
+        },
+        "round_time_by_link": {
+          "10gbps": {
+            "comm_sec": 0.1073,
+            "wasted_comm_sec": 0.0425,
+            "total_round_sec": 2.1692,
+            "comm_share_pct": 4.95
+          },
+          "1gbps": {
+            "comm_sec": 1.0734,
+            "wasted_comm_sec": 0.4246,
+            "total_round_sec": 3.1353,
+            "comm_share_pct": 34.24
+          },
+          "100mbps": {
+            "comm_sec": 10.7344,
+            "wasted_comm_sec": 4.246,
+            "total_round_sec": 12.7963,
+            "comm_share_pct": 83.89
+          }
+        },
+        "byz_repeat_rejections": {
+          "n_byz_edges": 3,
+          "mean_rejected_rounds": 24.0,
+          "min_rejected_rounds": 23,
+          "max_rejected_rounds": 25,
+          "mean_max_consec_streak": 19.33,
+          "repeat_transfers_after_first_rej": 69,
+          "repeat_wasted_gb_after_first_rej": 3.086,
+          "frac_edges_with_streak_ge3_pct": 100.0
+        },
+        "honest_rejection_streaks": {
+          "n_honest_edges": 6,
+          "mean_rejected_rounds": 2.83,
+          "mean_max_consec_streak": 0.5,
+          "isolated_single_rejections": 17,
+          "frac_edges_with_ge1_rej_pct": 50.0,
+          "frac_edges_with_streak_ge3_pct": 0.0,
+          "frac_edges_with_streak_ge5_pct": 0.0
+        },
+        "measured_transport_sec": {
+          "d2h_sec_per_peer": {
+            "median": 0.005271,
+            "min": 0.003334,
+            "max": 0.005784,
+            "repeats": 25
+          },
+          "net_sec_per_peer": {
+            "median": 1.541228,
+            "min": 1.522074,
+            "max": 1.543714,
+            "repeats": 25
+          },
+          "h2d_sec_per_peer": {
+            "median": 0.019828,
+            "min": 0.012562,
+            "max": 0.021491,
+            "repeats": 25
+          }
+        }
+      },
+      "execution_mode": "distributed",
+      "world_size": 4,
+      "send_both_vectors": false,
+      "wire_bytes_per_neighbor": 44726568,
+      "peers": [
+        {
+          "rank": 0,
+          "port": 29740,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 1,
+          "port": 29741,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja3",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.13",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 2,
+          "port": 29742,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        },
+        {
+          "rank": 3,
+          "port": 29743,
+          "device": "cuda:0",
+          "gpu_name": "Tesla V100-PCIE-16GB",
+          "hostname": "ja4",
+          "interface": "enp68s0f0",
+          "ip": "172.23.15.14",
+          "link_speed_mbps": "1000",
+          "mtu": "1500"
+        }
+      ]
+    }
+  ]
+}
