@@ -1,5 +1,3 @@
-"""Summarize Phase 1 experiment outputs into Markdown tables."""
-
 from __future__ import annotations
 
 import argparse
@@ -36,7 +34,14 @@ class SummaryRow:
 
 
 def method_label(cfg: dict[str, object]) -> str:
-    """Format a canonical display label distinguishing aggregator variants."""
+    """Format a canonical display label distinguishing aggregator and training variants.
+
+    Args:
+        cfg: Serialized ExperimentConfig dictionary from summary.json.
+
+    Returns:
+        Compact method string encoding scoring sign, clipping, threshold, and key overrides.
+    """
     agg = str(cfg["aggregator"])
     val_split = str(cfg.get("val_split", "local"))
     extra: list[str] = []
@@ -83,7 +88,14 @@ def method_label(cfg: dict[str, object]) -> str:
 
 
 def _has_nan_result(summary: dict[str, object]) -> bool:
-    """Return True if a run summary recorded NaN weights or a NaN benign cosine score."""
+    """Check whether a run summary recorded NaN weights or a NaN benign cosine score.
+
+    Args:
+        summary: Parsed summary.json dictionary.
+
+    Returns:
+        True if the run had NaN values, False otherwise.
+    """
     if bool(summary.get("had_nan", False)):
         return True
     ben = summary.get("mean_benign_score")
@@ -91,7 +103,14 @@ def _has_nan_result(summary: dict[str, object]) -> bool:
 
 
 def summarize_directory(root: str | Path) -> list[SummaryRow]:
-    """Load and aggregate all summary.json files under root, deduplicating identical (config, seed)."""
+    """Load and aggregate all summary.json files under root, deduplicating (config, seed).
+
+    Args:
+        root: Directory tree searched recursively for summary.json files.
+
+    Returns:
+        Sorted list of SummaryRow objects aggregated across unique seeds per configuration.
+    """
     files = sorted(Path(root).rglob("summary.json"))
     grouped: dict[tuple[str, float, str, str, int, str], list[dict[str, object]]] = defaultdict(list)
     seen_seed: set[tuple[str, float, str, str, int, str, int]] = set()
@@ -149,7 +168,16 @@ def summarize_directory(root: str | Path) -> list[SummaryRow]:
 
 
 def _format_mean_std(mean: float, std: float, seeds: int) -> str:
-    """Format mean +/- std when multiple seeds exist, otherwise just mean."""
+    """Format mean +/- std when multiple seeds exist, otherwise format mean only.
+
+    Args:
+        mean: Mean metric value.
+        std: Standard deviation across seeds.
+        seeds: Number of seeds averaged.
+
+    Returns:
+        Formatted string with two decimal places.
+    """
     return f"{mean:.2f} ± {std:.2f}" if seeds > 1 else f"{mean:.2f}"
 
 
@@ -188,7 +216,14 @@ class SystemSummaryRow:
 
 
 def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
-    """Aggregate system_metrics across all summary.json files under root."""
+    """Aggregate system_metrics across all summary.json files under root.
+
+    Args:
+        root: Directory tree searched recursively for summary.json files with system_metrics.
+
+    Returns:
+        Sorted list of SystemSummaryRow objects grouped by model, Dirichlet alpha, topology, attack, and method.
+    """
     files = sorted(Path(root).rglob("summary.json"))
     grouped: dict[tuple[str, float, str, str, int, str], list[dict[str, object]]] = defaultdict(list)
     seen_seed: set[tuple[str, float, str, str, int, str, int]] = set()
@@ -219,7 +254,15 @@ def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
         gpu_peaks = [float(sm["peak_gpu_alloc_mib"]) for sm in sms if sm.get("peak_gpu_alloc_mib") is not None]
 
         def _benign_streak(sm: dict[str, object], field: str) -> float:
-            """Read a benign rejection-streak metric supporting both benign and legacy JSON keys."""
+            """Read a benign rejection-streak metric supporting both benign and legacy JSON keys.
+
+            Args:
+                sm: system_metrics dictionary from summary.json.
+                field: Streak metric key inside the rejection-streaks sub-dictionary.
+
+            Returns:
+                Float value of the requested streak metric.
+            """
             block = sm.get("benign_rejection_streaks") or sm["honest_rejection_streaks"]
             return float(block[field])
 
@@ -266,7 +309,15 @@ def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
 
 
 def format_system_markdown_report(rows: list[SystemSummaryRow], title: str = "System Cost Summary") -> str:
-    """Render aggregated SystemSummaryRows as a Markdown table."""
+    """Render aggregated SystemSummaryRow entries as a Markdown table.
+
+    Args:
+        rows: List of SystemSummaryRow objects from summarize_system_directory().
+        title: Section heading placed above the Markdown table.
+
+    Returns:
+        Formatted Markdown string ending with a newline.
+    """
     lines = [
         f"## {title}",
         "",
@@ -292,7 +343,18 @@ def export_system_metrics_json(
     commit: str | None = None,
     transfer_bench_json: str | Path | None = None,
 ) -> dict[str, object]:
-    """Export all summary.json system_metrics and per-round curves to a JSON dataset."""
+    """Export all summary.json system_metrics and per-round curves to one JSON dataset.
+
+    Args:
+        root: Directory tree containing completed run outputs.
+        out_path: Destination JSON file path.
+        job_id: Optional Slurm job ID metadata string.
+        commit: Optional Git commit hash metadata string.
+        transfer_bench_json: Optional measured inter-node TCP benchmark JSON file to embed.
+
+    Returns:
+        Exported JSON payload dictionary that was written to out_path.
+    """
     root_p = Path(root)
     files = sorted(root_p.rglob("summary.json"))
     runs: list[dict[str, object]] = []
@@ -364,7 +426,16 @@ def export_system_metrics_json(
 
 
 def format_markdown_report(rows: list[SummaryRow], root: str | Path, title: str) -> str:
-    """Render aggregated SummaryRows as a GitHub-flavored Markdown report."""
+    """Render aggregated SummaryRow entries as a GitHub-flavored Markdown report.
+
+    Args:
+        rows: List of SummaryRow objects from summarize_directory().
+        root: Source output directory displayed in the report header.
+        title: Top-level Markdown heading for the report.
+
+    Returns:
+        Formatted Markdown report string ending with a newline.
+    """
     multi_context = len({(r.model, r.alpha_dir) for r in rows}) > 1
     if multi_context:
         header = "| Model | Dir | Topology | Attack | Byz% | Method | Seeds | Final Acc (%) | Cons Acc (%) | FPR (%) | Byz Accept (%) | Cos(Ben/Byz) | NaNs |"
@@ -400,7 +471,11 @@ def format_markdown_report(rows: list[SummaryRow], root: str | Path, title: str)
 
 
 def main() -> None:
-    """CLI entry point to print Markdown summaries and optionally export system metrics JSON."""
+    """CLI entry point to print Markdown summaries and optionally export system metrics JSON.
+
+    Returns:
+        None.
+    """
     p = argparse.ArgumentParser(description="Summarize Phase 1 summary.json files.")
     p.add_argument("root", help="Directory containing Phase 1 outputs (searched recursively for summary.json).")
     p.add_argument("--out", default=None, help="Optional Markdown file path to write the table.")

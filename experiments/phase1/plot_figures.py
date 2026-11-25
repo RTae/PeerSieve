@@ -1,11 +1,3 @@
-"""Generate all final TrustGraph-DFL Phase 1 figures from committed JSON data.
-
-Follows the figures4papers house style via ``figstyle.py`` (unedited skill copy)
-and fixed series roles in ``figroles.py``. Prints every plotted number to stdout
-and writes 300 dpi PNGs (with header/footnote) plus header-free cropped PDFs to
-``report/figures/``.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -20,7 +12,14 @@ from experiments.phase1 import figstyle as fs
 
 
 def _parse_variant_key(label: str) -> str | None:
-    """Map a method summary string to its canonical figure variant key, or None."""
+    """Map a method summary string to its canonical figure variant key.
+
+    Args:
+        label: Method label string from phase1_paper_match_50k_3seed.json.
+
+    Returns:
+        Variant key ('tg_stab', 'tg_a03', 'tg_a07', 'tg_euclidean', 'tg_no_relu'), or None.
+    """
     if label.startswith("trustgraph(descent_neg,mclip,t=0.003,val=iid)["):
         return "tg_stab"
     if label.startswith("trustgraph(descent_neg,mclip,t=0.003,a=0.3,val=iid)"):
@@ -35,7 +34,14 @@ def _parse_variant_key(label: str) -> str | None:
 
 
 def _index_summary_rows(rows: list[dict[str, object]]) -> dict[tuple[str, str, int, str], dict[str, object]]:
-    """Index 50k summary rows by (topology, attack, byz_pct, variant_key)."""
+    """Index 50k summary rows by (topology, attack, byz_pct, variant_key).
+
+    Args:
+        rows: List of summary row dictionaries from phase1_paper_match_50k_3seed.json.
+
+    Returns:
+        Lookup dictionary keyed by (topology, attack, byz_pct, variant_key).
+    """
     out: dict[tuple[str, str, int, str], dict[str, object]] = {}
     for r in rows:
         mk = _parse_variant_key(str(r["method"]))
@@ -46,7 +52,15 @@ def _index_summary_rows(rows: list[dict[str, object]]) -> dict[tuple[str, str, i
 
 
 def _select_run_by_suffix(runs: list[dict[str, object]], suffix: str) -> dict[str, object]:
-    """Return the first run record whose run_name ends with suffix."""
+    """Return the first run record whose run_name ends with suffix.
+
+    Args:
+        runs: List of run dictionaries from phase1_fpr_rxdelta.json.
+        suffix: Trailing run_name path suffix to match.
+
+    Returns:
+        Matching run dictionary.
+    """
     for r in runs:
         if str(r["run_name"]).endswith(suffix):
             return r
@@ -54,7 +68,15 @@ def _select_run_by_suffix(runs: list[dict[str, object]], suffix: str) -> dict[st
 
 
 def _select_baseline_row(data: dict[str, object], attack: str) -> dict[str, object]:
-    """Return the 3-seed 30% Byzantine baseline row matching attack from rxdelta JSON data."""
+    """Return the 3-seed 30% Byzantine baseline row matching attack from rxdelta JSON data.
+
+    Args:
+        data: Parsed phase1_fpr_rxdelta.json dictionary.
+        attack: Attack name to match at 30% Byzantine fraction.
+
+    Returns:
+        Matching baseline summary row dictionary.
+    """
     for r in data["baseline_50k_3seed"]["rows"]:
         if str(r["attack"]) == attack and int(r["byz_pct"]) == 30:
             return r
@@ -66,7 +88,16 @@ def plot_attack_accuracy(
     data: dict[str, object],
     out_dir: Path,
 ) -> None:
-    """Plot convergence and final accuracy across all four attack regimes."""
+    """Plot convergence and final accuracy across all four attack regimes (Figure 1).
+
+    Args:
+        rows_idx: Indexed 50k summary rows from _index_summary_rows().
+        data: Full parsed phase1_paper_match_50k_3seed.json dataset.
+        out_dir: Output directory for PNG and PDF figures.
+
+    Returns:
+        None.
+    """
     curves = data["curves"]
     fig, (ax_conv, ax_bar) = plt.subplots(1, 2, figsize=(15.4, 6.4))
     fs.light_grid(ax_conv, "y")
@@ -153,7 +184,15 @@ def plot_topology_and_byzantine_sweep(
     rows_idx: dict[tuple[str, str, int, str], dict[str, object]],
     out_dir: Path,
 ) -> None:
-    """Plot topology accuracy comparison and 10%-50% Byzantine stress sweep."""
+    """Plot topology accuracy comparison and 10%-50% Byzantine stress sweep (Figure 2).
+
+    Args:
+        rows_idx: Indexed 50k summary rows from _index_summary_rows().
+        out_dir: Output directory for PNG and PDF figures.
+
+    Returns:
+        None.
+    """
     fig, (ax_topo, ax_sweep) = plt.subplots(1, 2, figsize=(15.4, 6.4))
     fs.light_grid(ax_topo, "y")
     fs.light_grid(ax_sweep, "y")
@@ -238,7 +277,16 @@ def plot_ablations_and_fpr_dynamics(
     data: dict[str, object],
     out_dir: Path,
 ) -> None:
-    """Plot component ablations under model poisoning and per-round FPR trajectory."""
+    """Plot component ablations under model poisoning and per-round FPR trajectory (Figure 3).
+
+    Args:
+        rows_idx: Indexed 50k summary rows from _index_summary_rows().
+        data: Full parsed phase1_paper_match_50k_3seed.json dataset.
+        out_dir: Output directory for PNG and PDF figures.
+
+    Returns:
+        None.
+    """
     fig, (ax_abl, ax_dyn) = plt.subplots(1, 2, figsize=(14.8, 6.4))
     fs.light_grid(ax_abl, "y")
     fs.light_grid(ax_dyn, "y")
@@ -323,7 +371,15 @@ def plot_ablations_and_fpr_dynamics(
 
 
 def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
-    """Plot sender vs. receiver-anchored (rxdelta) FPR trade-off and per-round trajectory."""
+    """Plot sender vs. receiver-anchored (rxdelta) FPR trade-off and trajectory (Figure 4).
+
+    Args:
+        data: Full parsed phase1_fpr_rxdelta.json dataset.
+        out_dir: Output directory for PNG and PDF figures.
+
+    Returns:
+        None.
+    """
     runs: list[dict[str, object]] = data["runs"]
     base_mp = _select_baseline_row(data, "model_poison")
     base_curve = data["baseline_50k_3seed"]["curves"]["model_poison__tg_strong"]
@@ -382,7 +438,14 @@ def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
     fpr_b_s = np.array(base_curve["fpr_std"], dtype=float)
 
     def _extract_fpr_curve(run: dict[str, object]) -> tuple[np.ndarray, np.ndarray]:
-        """Extract (1-based round indices, per-round FPR %) arrays from a run history."""
+        """Extract (1-based round indices, per-round FPR %) arrays from a run history.
+
+        Args:
+            run: Run dictionary containing a 'history' list of per-round records.
+
+        Returns:
+            Tuple of (rounds_array, fpr_percent_array) as NumPy float arrays.
+        """
         h = run["history"]
         return np.array([float(x["round"]) + 1.0 for x in h]), np.array([100.0 * float(x["fpr_round"]) for x in h])
 
@@ -446,7 +509,18 @@ def _select_run(
     byz_pct: int,
     method_prefix: str = "trustgraph(descent_neg,mclip,t=0.003,val=iid)[",
 ) -> dict[str, object]:
-    """Find the system-metrics run record matching topology, attack, byz_pct, and method."""
+    """Find the system-metrics run record matching topology, attack, byz_pct, and method.
+
+    Args:
+        runs: List of run dictionaries from phase1_system_metrics_50k.json.
+        topology: Graph topology name.
+        attack: Attack name.
+        byz_pct: Byzantine percentage integer (e.g., 30).
+        method_prefix: Leading prefix of the method label string to match.
+
+    Returns:
+        Matching system-metrics run dictionary.
+    """
     for r in runs:
         if (
             str(r["topology"]) == topology
@@ -459,7 +533,15 @@ def _select_run(
 
 
 def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> None:
-    """Plot received vs. wasted FP32 bandwidth across attacks and round time by link speed."""
+    """Plot received vs. wasted FP32 bandwidth across attacks and round time by link speed (Figure 5).
+
+    Args:
+        data: Full parsed phase1_system_metrics_50k.json dataset.
+        out_dir: Output directory for PNG and PDF figures.
+
+    Returns:
+        None.
+    """
     runs: list[dict[str, object]] = data["runs"]
     fig, (ax_bw, ax_time) = plt.subplots(1, 2, figsize=(15.6, 6.5))
     fs.light_grid(ax_bw, "y")
@@ -484,7 +566,7 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
         w_hon.append(wh)
         w_byz.append(wb)
         w_pct.append(wp)
-        print(f"  {atk:16s}: rx={u + wh + wb:6.1f} MB | useful={u:5.1f} | wasted_honest={wh:5.1f} | wasted_byz={wb:5.1f} ({wp:5.1f}% wasted)")
+        print(f"  {atk:16s}: rx={u + wh + wb:6.1f} MB | useful={u:5.1f} | wasted_benign={wh:5.1f} | wasted_byz={wb:5.1f} ({wp:5.1f}% wasted)")
 
     useful_a = np.array(useful)
     w_hon_a = np.array(w_hon)
@@ -580,7 +662,15 @@ def plot_bandwidth_and_round_time(data: dict[str, object], out_dir: Path) -> Non
 
 
 def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: Path) -> None:
-    """Plot batched O(d) receive-buffer memory across topologies and repeated rejection streaks."""
+    """Plot batched O(d) receive-buffer memory across topologies and rejection streaks (Figure 6).
+
+    Args:
+        data: Full parsed phase1_system_metrics_50k.json dataset.
+        out_dir: Output directory for PNG and PDF figures.
+
+    Returns:
+        None.
+    """
     runs: list[dict[str, object]] = data["runs"]
     fig, (ax_mem, ax_str) = plt.subplots(1, 2, figsize=(15.6, 6.5))
     fs.light_grid(ax_mem, "y")
@@ -619,7 +709,7 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
     ax_mem.set_ylim(0, max(max_bufs) * 1.32)
     ax_mem.legend(loc="upper left", ncol=1, fontsize=11.0)
 
-    # Panel (b): Repeated rejections on Byzantine edges vs. honest single-round vs. >=3 consecutive rejections
+    # Panel (b): Repeated rejections on Byzantine edges vs. benign single-round and >=3 streaks
     atks = [("label_flip_all", "Label Flip\n($E_b=2$)"), ("model_poison", "Model Poison\n($\\lambda=10$)"), ("random_noise", "Random Noise\n($\\sigma=0.5$)")]
     xa = np.arange(len(atks), dtype=float)
     w3 = 0.25
@@ -638,7 +728,7 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
         hon_ge3.append(hg3)
         print(
             f"  {atk:16s}: byz_mean_rej={sm['byz_repeat_rejections']['mean_rejected_rounds']:.1f}/25 (streak>=3: {bg3:.1f}%) | "
-            f"hon_ge1={hg1:.1f}% | hon_streak>=3={hg3:.1f}%"
+            f"benign_ge1={hg1:.1f}% | benign_streak>=3={hg3:.1f}%"
         )
 
     s1 = ax_str.bar(xa - w3, byz_ge3, width=w3, color=fs.PALETTE["red_strong"], edgecolor="black", linewidth=1.5, label="Attacker Edges (>=3 Consecutive Blocks)", zorder=3)
@@ -670,7 +760,11 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
 
 
 def main() -> None:
-    """Load committed Phase 1 JSON datasets and generate all PNG and PDF figures."""
+    """Load committed Phase 1 JSON datasets and generate all PNG and PDF figures.
+
+    Returns:
+        None.
+    """
     p = argparse.ArgumentParser(description="Draw all final TrustGraph-DFL figures from committed JSON data.")
     p.add_argument("--data-50k", default="report/data/phase1_paper_match_50k_3seed.json")
     p.add_argument("--data-rxdelta", default="report/data/phase1_fpr_rxdelta.json")
