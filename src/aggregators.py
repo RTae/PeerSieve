@@ -133,7 +133,8 @@ def aggregate_trustgraph(
                     disp = neighbor_posts[j] - self_prev
                     dn = float(torch.linalg.vector_norm(disp).item())
                     scale = min(1.0, cap / dn) if dn > 0.0 else 1.0
-                    nbr_avg.add_(self_prev + scale * disp, alpha=weights[j])
+                    nbr_avg.add_(self_prev, alpha=weights[j])
+                    nbr_avg.add_(disp, alpha=weights[j] * scale)
             new_model = cfg.alpha * self_post + (1.0 - cfg.alpha) * nbr_avg
         else:
             agg_update = torch.zeros_like(self_update)

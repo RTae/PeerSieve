@@ -25,6 +25,7 @@ class RoundAggregationStats:
     d2h_sec_per_peer: float = 0.0
     net_sec_per_peer: float = 0.0
     h2d_sec_per_peer: float = 0.0
+    wire_bytes_recv_per_peer: float = 0.0
 
 
 def compute_rejection_streaks(seq: list[bool]) -> tuple[int, int, int, int]:
@@ -86,6 +87,7 @@ class MetricsTracker:
         self.d2h_sec_list: list[float] = []
         self.net_sec_list: list[float] = []
         self.h2d_sec_list: list[float] = []
+        self.wire_bytes_recv_list: list[float] = []
 
         self.cum_benign_zero = 0.0
         self.cum_benign_pairs = 0
@@ -97,6 +99,63 @@ class MetricsTracker:
         key = (receiver_id, sender_id)
         if key in self.edge_rejected:
             self.edge_rejected[key].append(rejected)
+
+    def summarize_benign_round(
+        self,
+        benign_reports: list[dict[str, object]],
+        agg_sec_per_peer: float,
+        d2h_sec_per_peer: float = 0.0,
+        net_sec_per_peer: float = 0.0,
+        h2d_sec_per_peer: float = 0.0,
+        wire_bytes_recv_per_peer: float = 0.0,
+    ) -> RoundAggregationStats:
+        """Record per-edge outcomes from benign peer reports and build RoundAggregationStats."""
+        benign_zero = 0.0
+        benign_pairs = 0
+        byz_accept = 0.0
+        byz_pairs = 0
+        ben_scores: list[float] = []
+        byz_scores: list[float] = []
+        byz_w_shares: list[float] = []
+        self_fallbacks = 0
+
+        for report in benign_reports:
+            rx_id = int(report["rank"])
+            if bool(report["self_fallback"]):
+                self_fallbacks += 1
+            byz_w_shares.append(float(report["byz_weight_share"]))
+            for edge in report["edges"]:
+                src_id = int(edge["sender_id"])
+                z_frac = float(edge["zero_frac"])
+                score = edge["score"]
+                self.record_edge_outcome(rx_id, src_id, z_frac >= 0.5)
+                if src_id in self.byzantine_ids:
+                    byz_pairs += 1
+                    byz_accept += 1.0 - z_frac
+                    if score is not None:
+                        byz_scores.append(float(score))
+                else:
+                    benign_pairs += 1
+                    benign_zero += z_frac
+                    if score is not None:
+                        ben_scores.append(float(score))
+
+        n_ben = max(len(benign_reports), 1)
+        return RoundAggregationStats(
+            benign_zero=benign_zero,
+            benign_pairs=benign_pairs,
+            byz_accept=byz_accept,
+            byz_pairs=byz_pairs,
+            byz_weight_share=float(np.mean(byz_w_shares)) if byz_w_shares else 0.0,
+            self_fallback_rate=self_fallbacks / n_ben,
+            benign_score_mean=float(np.mean(ben_scores)) if ben_scores else None,
+            byz_score_mean=float(np.mean(byz_scores)) if byz_scores else None,
+            agg_sec_per_peer=agg_sec_per_peer,
+            d2h_sec_per_peer=d2h_sec_per_peer,
+            net_sec_per_peer=net_sec_per_peer,
+            h2d_sec_per_peer=h2d_sec_per_peer,
+            wire_bytes_recv_per_peer=wire_bytes_recv_per_peer,
+        )
 
     def record_round(
         self,
@@ -114,6 +173,7 @@ class MetricsTracker:
             self.d2h_sec_list.append(agg_stats.d2h_sec_per_peer)
             self.net_sec_list.append(agg_stats.net_sec_per_peer)
             self.h2d_sec_list.append(agg_stats.h2d_sec_per_peer)
+            self.wire_bytes_recv_list.append(agg_stats.wire_bytes_recv_per_peer)
 
         self.cum_benign_zero += agg_stats.benign_zero
         self.cum_benign_pairs += agg_stats.benign_pairs
@@ -250,7 +310,13 @@ class MetricsTracker:
             },
         }
         if self.net_sec_list:
+            mean_wire_mb = (
+                round(float(np.mean(self.wire_bytes_recv_list)) / 1e6, 2)
+                if self.wire_bytes_recv_list
+                else 0.0
+            )
             metrics["measured_transport_sec"] = {
+                "wire_mb_per_peer_round": mean_wire_mb,
                 "d2h_sec_per_peer": summarize_timings(self.d2h_sec_list),
                 "net_sec_per_peer": summarize_timings(self.net_sec_list),
                 "h2d_sec_per_peer": summarize_timings(self.h2d_sec_list),

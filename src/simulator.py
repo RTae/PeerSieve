@@ -22,7 +22,7 @@ from src.data import (
     make_synthetic_cifar_tensors,
     partition_dirichlet_balanced,
 )
-from src.metrics import MetricsTracker, RoundAggregationStats
+from src.metrics import MetricsTracker
 from src.models import build_model, evaluate_accuracy, model_to_vector, vector_to_model
 from src.peer import LocalStepResult, PeerNode, PeerPayload, sync_device
 from src.topology import build_topology, select_byzantine_nodes, topology_summary
@@ -329,14 +329,7 @@ def run_experiment(
             }
             transport.stage_round(outgoing)
 
-            benign_zero = 0.0
-            benign_pairs = 0
-            byz_accept = 0.0
-            byz_pairs = 0
-            byz_weight_shares: list[float] = []
-            benign_scores: list[float] = []
-            byz_scores: list[float] = []
-            self_fallbacks = 0
+            benign_reports: list[dict[str, object]] = []
 
             sync_device(device)
             t_agg0 = time.perf_counter()
@@ -345,25 +338,23 @@ def run_experiment(
                 received, _ = transport.exchange(i, peer.neighbors, outgoing[i])
                 res, _ = peer.aggregate_received(steps[i], received, agg_cfg, cfg.attack)
                 assert res is not None
-                if res.self_fallback:
-                    self_fallbacks += 1
                 total_nbr_w = sum(res.neighbor_weights.values())
-                byz_w = 0.0
-                for j in peer.neighbors:
-                    z_frac = res.neighbor_zero_weight_frac[j]
-                    tracker.record_edge_outcome(i, j, z_frac >= 0.5)
-                    if j in byzantine_ids:
-                        byz_pairs += 1
-                        byz_accept += 1.0 - z_frac
-                        byz_w += res.neighbor_weights[j]
-                        if j in res.scores:
-                            byz_scores.append(res.scores[j])
-                    else:
-                        benign_pairs += 1
-                        benign_zero += z_frac
-                        if j in res.scores:
-                            benign_scores.append(res.scores[j])
-                byz_weight_shares.append((byz_w / total_nbr_w) if total_nbr_w > 0.0 else 0.0)
+                byz_w = sum(res.neighbor_weights[j] for j in peer.neighbors if j in byzantine_ids)
+                benign_reports.append(
+                    {
+                        "rank": i,
+                        "self_fallback": res.self_fallback,
+                        "byz_weight_share": (byz_w / total_nbr_w) if total_nbr_w > 0.0 else 0.0,
+                        "edges": [
+                            {
+                                "sender_id": j,
+                                "zero_frac": res.neighbor_zero_weight_frac[j],
+                                "score": res.scores.get(j),
+                            }
+                            for j in peer.neighbors
+                        ],
+                    }
+                )
             sync_device(device)
             agg_sec_per_peer = (time.perf_counter() - t_agg0) / max(len(benign_ids), 1)
 
@@ -380,15 +371,8 @@ def run_experiment(
             if not had_nan and any(not peers[i].has_finite_weights() for i in benign_ids):
                 had_nan = True
 
-            agg_stats = RoundAggregationStats(
-                benign_zero=benign_zero,
-                benign_pairs=benign_pairs,
-                byz_accept=byz_accept,
-                byz_pairs=byz_pairs,
-                byz_weight_share=float(np.mean(byz_weight_shares)) if byz_weight_shares else 0.0,
-                self_fallback_rate=self_fallbacks / max(len(benign_ids), 1),
-                benign_score_mean=float(np.mean(benign_scores)) if benign_scores else None,
-                byz_score_mean=float(np.mean(byz_scores)) if byz_scores else None,
+            agg_stats = tracker.summarize_benign_round(
+                benign_reports=benign_reports,
                 agg_sec_per_peer=agg_sec_per_peer,
             )
 

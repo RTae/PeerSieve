@@ -217,6 +217,10 @@ class TcpPeerTransport(PeerTransport):
             for nbr, buf in self._recv_hosts.items()
         }
 
+    @property
+    def wire_bytes_per_neighbor(self) -> int:
+        return len(self._send_view)
+
     @classmethod
     def connect_tcp(
         cls,
@@ -289,15 +293,30 @@ class TcpPeerTransport(PeerTransport):
                     time.sleep(0.25)
             raise RuntimeError(f"Rank {rank} failed to connect to rank {dst}.")
 
-        send_conns: dict[int, socket.socket] = {nbr: _dial(nbr, kind=0) for nbr in neighbors}
-        ctrl_targets = list(range(1, world_size)) if rank == 0 else [0]
-        ctrl_send: dict[int, socket.socket] = {dst: _dial(dst, kind=1) for dst in ctrl_targets}
+        send_conns: dict[int, socket.socket] = {}
+        ctrl_send: dict[int, socket.socket] = {}
+        try:
+            for nbr in neighbors:
+                send_conns[nbr] = _dial(nbr, kind=0)
+            ctrl_targets = list(range(1, world_size)) if rank == 0 else [0]
+            for dst in ctrl_targets:
+                ctrl_send[dst] = _dial(dst, kind=1)
 
-        acc_thread.join(timeout=timeout_sec + 5.0)
-        if accept_errors:
-            raise accept_errors[0]
-        if set(recv_conns.keys()) != expected_in_data or set(ctrl_recv.keys()) != expected_in_ctrl:
-            raise RuntimeError(f"Rank {rank} incomplete mesh: data={sorted(recv_conns)}, ctrl={sorted(ctrl_recv)}")
+            acc_thread.join(timeout=timeout_sec + 5.0)
+            if accept_errors:
+                raise accept_errors[0]
+            if set(recv_conns.keys()) != expected_in_data or set(ctrl_recv.keys()) != expected_in_ctrl:
+                raise RuntimeError(
+                    f"Rank {rank} incomplete mesh: data={sorted(recv_conns)}, ctrl={sorted(ctrl_recv)}"
+                )
+        except BaseException:
+            for sock_map in (send_conns, recv_conns, ctrl_send, ctrl_recv):
+                for s in sock_map.values():
+                    try:
+                        s.close()
+                    except OSError:
+                        pass
+            raise
 
         return cls(
             rank=rank,

@@ -13,7 +13,7 @@ import torch
 
 from src.attacks import label_flip_mode_for_attack
 from src.data import PartitionedDataset, apply_label_flip
-from src.metrics import MetricsTracker, RoundAggregationStats
+from src.metrics import MetricsTracker
 from src.models import build_model, evaluate_accuracy, model_to_vector, vector_to_model
 from src.peer import PeerNode
 from src.simulator import (
@@ -66,6 +66,8 @@ def _register_and_discover_peers(
     gpu_name = torch.cuda.get_device_name(device) if device.type == "cuda" else str(device)
     my_record: dict[str, object] = {
         "rank": rank,
+        "local_rank": int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID", str(rank)))),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
         "port": base_port + rank,
         "device": str(device),
         "gpu_name": gpu_name,
@@ -267,6 +269,7 @@ def run_distributed_peer(
                 "d2h_sec": tx_stats.d2h_sec,
                 "net_sec": tx_stats.net_sec,
                 "h2d_sec": tx_stats.h2d_sec,
+                "wire_bytes_recv": tx_stats.bytes_recv,
                 "self_fallback": self_fallback,
                 "byz_weight_share": byz_w_share,
                 "edges": edge_report,
@@ -281,46 +284,16 @@ def run_distributed_peer(
                 if any(not bool(m["finite"]) for m in ben_msgs):
                     had_nan = True
 
-                benign_zero = 0.0
-                benign_pairs = 0
-                byz_accept = 0.0
-                byz_pairs = 0
-                ben_scores: list[float] = []
-                byz_scores: list[float] = []
-                for m in ben_msgs:
-                    rx_id = int(m["rank"])
-                    for edge in m["edges"]:
-                        src_id = int(edge["sender_id"])
-                        z_frac = float(edge["zero_frac"])
-                        score = edge["score"]
-                        tracker.record_edge_outcome(rx_id, src_id, z_frac >= 0.5)
-                        if src_id in byzantine_ids:
-                            byz_pairs += 1
-                            byz_accept += 1.0 - z_frac
-                            if score is not None:
-                                byz_scores.append(float(score))
-                        else:
-                            benign_pairs += 1
-                            benign_zero += z_frac
-                            if score is not None:
-                                ben_scores.append(float(score))
-
                 n_ben = max(len(ben_msgs), 1)
                 train_mean = sum(float(m["train_sec"]) for m in ben_msgs) / n_ben
                 val_mean = sum(float(m["val_grad_sec"]) for m in ben_msgs) / n_ben
-                agg_stats = RoundAggregationStats(
-                    benign_zero=benign_zero,
-                    benign_pairs=benign_pairs,
-                    byz_accept=byz_accept,
-                    byz_pairs=byz_pairs,
-                    byz_weight_share=float(np.mean([float(m["byz_weight_share"]) for m in ben_msgs])) if ben_msgs else 0.0,
-                    self_fallback_rate=sum(1 for m in ben_msgs if m["self_fallback"]) / n_ben,
-                    benign_score_mean=float(np.mean(ben_scores)) if ben_scores else None,
-                    byz_score_mean=float(np.mean(byz_scores)) if byz_scores else None,
+                agg_stats = tracker.summarize_benign_round(
+                    benign_reports=ben_msgs,
                     agg_sec_per_peer=sum(float(m["agg_sec"]) for m in ben_msgs) / n_ben,
                     d2h_sec_per_peer=sum(float(m["d2h_sec"]) for m in ben_msgs) / n_ben,
                     net_sec_per_peer=sum(float(m["net_sec"]) for m in ben_msgs) / n_ben,
                     h2d_sec_per_peer=sum(float(m["h2d_sec"]) for m in ben_msgs) / n_ben,
+                    wire_bytes_recv_per_peer=sum(float(m["wire_bytes_recv"]) for m in ben_msgs) / n_ben,
                 )
 
                 eval_metrics: dict[str, float] | None = None
