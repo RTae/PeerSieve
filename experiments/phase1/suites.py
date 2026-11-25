@@ -179,6 +179,7 @@ def _build_paper_resnet18_50k(base: ExperimentConfig) -> list[tuple[str, Experim
 
 
 def _four_attack_grid(prefix: str, tag: str, cfg: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
+    """Expand a base config across no-attack, label-flip, model-poison, and random-noise runs."""
     return [
         (f"{prefix}/{tag}__none", replace(cfg, attack="none")),
         (f"{prefix}/{tag}__label_flip_all_byz30", replace(cfg, attack="label_flip_all", byz_local_epochs=2)),

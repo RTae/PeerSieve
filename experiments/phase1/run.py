@@ -16,6 +16,7 @@ __all__ = ["SUITES", "build_suite_runs", "parse_args", "main"]
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for single, suite, distributed, and transfer benchmark modes."""
     p = argparse.ArgumentParser(description="Run local, sharded suite, distributed, or TCP transfer experiments.")
     p.add_argument(
         "--mode",
@@ -91,6 +92,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
+    """Convert parsed CLI flags into an ExperimentConfig dataclass."""
     return ExperimentConfig(
         dataset=args.dataset,
         data_dir=args.data_dir,
@@ -137,6 +139,7 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
 
 
 def _run_tag(args: argparse.Namespace) -> str:
+    """Build a unique directory tag from dataset, model, topology, attack, and scoring mode."""
     delta_suffix = "_rxdelta" if args.trustgraph_delta_mode == "receiver" else ""
     tag = (
         f"{args.dataset}_{args.model}_{args.topology}_{args.attack}_byz{int(round(args.byzantine_frac * 100))}"
@@ -146,6 +149,7 @@ def _run_tag(args: argparse.Namespace) -> str:
 
 
 def _run_single(args: argparse.Namespace, base_cfg: ExperimentConfig, out_root: Path) -> None:
+    """Run one custom local experiment across all requested random seeds."""
     tag = _run_tag(args)
     for seed in args.seeds:
         out_dir = out_root / "single" / tag / f"seed_{seed}"
@@ -166,6 +170,7 @@ def _run_single(args: argparse.Namespace, base_cfg: ExperimentConfig, out_root: 
 
 
 def _run_suite(args: argparse.Namespace, base_cfg: ExperimentConfig, out_root: Path) -> None:
+    """Run one shard of a named benchmark suite across all requested seeds."""
     if not (0 <= args.shard_index < args.num_shards):
         raise ValueError(f"Invalid shard {args.shard_index}/{args.num_shards}")
 
@@ -237,6 +242,7 @@ def _run_suite(args: argparse.Namespace, base_cfg: ExperimentConfig, out_root: P
 
 
 def _run_distributed(args: argparse.Namespace, base_cfg: ExperimentConfig, out_root: Path) -> None:
+    """Launch this process's peer rank in a multi-process distributed TCP DFL run."""
     tag = _run_tag(args)
     seed = args.seeds[0]
     out_dir = out_root / "distributed" / tag / f"seed_{seed}"
@@ -254,6 +260,7 @@ def _run_distributed(args: argparse.Namespace, base_cfg: ExperimentConfig, out_r
 
 
 def main() -> None:
+    """Dispatch CLI execution to transfer_bench, single, distributed, or suite mode."""
     args = parse_args()
     if args.mode == "transfer_bench":
         run_transfer_benchmark(

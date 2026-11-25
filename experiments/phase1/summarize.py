@@ -14,6 +14,8 @@ import numpy as np
 
 @dataclass
 class SummaryRow:
+    """Multi-seed accuracy, FPR, Byzantine acceptance, and NaN counts for one config."""
+
     model: str
     alpha_dir: float
     topology: str
@@ -81,6 +83,7 @@ def method_label(cfg: dict[str, object]) -> str:
 
 
 def _has_nan_result(summary: dict[str, object]) -> bool:
+    """Return True if a run summary recorded NaN weights or a NaN benign cosine score."""
     if bool(summary.get("had_nan", False)):
         return True
     ben = summary.get("mean_benign_score")
@@ -146,11 +149,14 @@ def summarize_directory(root: str | Path) -> list[SummaryRow]:
 
 
 def _format_mean_std(mean: float, std: float, seeds: int) -> str:
+    """Format mean +/- std when multiple seeds exist, otherwise just mean."""
     return f"{mean:.2f} ± {std:.2f}" if seeds > 1 else f"{mean:.2f}"
 
 
 @dataclass
 class SystemSummaryRow:
+    """Aggregated bandwidth, memory, compute, and rejection-streak metrics for one config."""
+
     model: str
     alpha_dir: float
     topology: str
@@ -213,6 +219,7 @@ def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
         gpu_peaks = [float(sm["peak_gpu_alloc_mib"]) for sm in sms if sm.get("peak_gpu_alloc_mib") is not None]
 
         def _benign_streak(sm: dict[str, object], field: str) -> float:
+            """Read a benign rejection-streak metric supporting both benign and legacy JSON keys."""
             block = sm.get("benign_rejection_streaks") or sm["honest_rejection_streaks"]
             return float(block[field])
 
@@ -393,6 +400,7 @@ def format_markdown_report(rows: list[SummaryRow], root: str | Path, title: str)
 
 
 def main() -> None:
+    """CLI entry point to print Markdown summaries and optionally export system metrics JSON."""
     p = argparse.ArgumentParser(description="Summarize Phase 1 summary.json files.")
     p.add_argument("root", help="Directory containing Phase 1 outputs (searched recursively for summary.json).")
     p.add_argument("--out", default=None, help="Optional Markdown file path to write the table.")

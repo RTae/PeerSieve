@@ -20,6 +20,7 @@ from experiments.phase1 import figstyle as fs
 
 
 def _parse_variant_key(label: str) -> str | None:
+    """Map a method summary string to its canonical figure variant key, or None."""
     if label.startswith("trustgraph(descent_neg,mclip,t=0.003,val=iid)["):
         return "tg_stab"
     if label.startswith("trustgraph(descent_neg,mclip,t=0.003,a=0.3,val=iid)"):
@@ -34,6 +35,7 @@ def _parse_variant_key(label: str) -> str | None:
 
 
 def _index_summary_rows(rows: list[dict[str, object]]) -> dict[tuple[str, str, int, str], dict[str, object]]:
+    """Index 50k summary rows by (topology, attack, byz_pct, variant_key)."""
     out: dict[tuple[str, str, int, str], dict[str, object]] = {}
     for r in rows:
         mk = _parse_variant_key(str(r["method"]))
@@ -44,6 +46,7 @@ def _index_summary_rows(rows: list[dict[str, object]]) -> dict[tuple[str, str, i
 
 
 def _select_run_by_suffix(runs: list[dict[str, object]], suffix: str) -> dict[str, object]:
+    """Return the first run record whose run_name ends with suffix."""
     for r in runs:
         if str(r["run_name"]).endswith(suffix):
             return r
@@ -51,6 +54,7 @@ def _select_run_by_suffix(runs: list[dict[str, object]], suffix: str) -> dict[st
 
 
 def _select_baseline_row(data: dict[str, object], attack: str) -> dict[str, object]:
+    """Return the 3-seed 30% Byzantine baseline row matching attack from rxdelta JSON data."""
     for r in data["baseline_50k_3seed"]["rows"]:
         if str(r["attack"]) == attack and int(r["byz_pct"]) == 30:
             return r
@@ -378,6 +382,7 @@ def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
     fpr_b_s = np.array(base_curve["fpr_std"], dtype=float)
 
     def _extract_fpr_curve(run: dict[str, object]) -> tuple[np.ndarray, np.ndarray]:
+        """Extract (1-based round indices, per-round FPR %) arrays from a run history."""
         h = run["history"]
         return np.array([float(x["round"]) + 1.0 for x in h]), np.array([100.0 * float(x["fpr_round"]) for x in h])
 
@@ -441,6 +446,7 @@ def _select_run(
     byz_pct: int,
     method_prefix: str = "trustgraph(descent_neg,mclip,t=0.003,val=iid)[",
 ) -> dict[str, object]:
+    """Find the system-metrics run record matching topology, attack, byz_pct, and method."""
     for r in runs:
         if (
             str(r["topology"]) == topology
@@ -664,6 +670,7 @@ def plot_receive_memory_and_rejection_streaks(data: dict[str, object], out_dir: 
 
 
 def main() -> None:
+    """Load committed Phase 1 JSON datasets and generate all PNG and PDF figures."""
     p = argparse.ArgumentParser(description="Draw all final TrustGraph-DFL figures from committed JSON data.")
     p.add_argument("--data-50k", default="report/data/phase1_paper_match_50k_3seed.json")
     p.add_argument("--data-rxdelta", default="report/data/phase1_fpr_rxdelta.json")
