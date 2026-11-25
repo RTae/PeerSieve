@@ -110,7 +110,7 @@ Next, we ran `4` peers (`2` peers on `ja3` V100 and `2` peers on `ja4` V100, `1.
 | Random noise (`25%` Byz, `sender`) | 89.45 | 90.47 | 91.23 | 52.44 | 2.063 | 0.051 | 3.082 | 5.196 | 60.3 | 148.0 |
 | Model poison (`25%` Byz, `rxdelta`) | 44.73 | 90.52 | 90.87 | 39.56 | 2.062 | 0.025 | 1.541 | 3.628 | 43.2 | 108.8 |
 
-Three live-hardware findings prove why Phase 2 needs both screening and compression:
+Three live-hardware findings show why PeerSieve needs both screening and compression:
 
 1. **Ethernet dominates even with shared V100 GPUs.** Packing `2` peers onto each V100 slows per-peer compute from `0.94 s` to `2.06` to `2.10 s`, yet real `1 Gb/s` Ethernet TCP still takes `3.082 s` (`59.9%` to `60.3%` of total round time) because `4` cross-node `89.45 MB` streams (`357.8 MB` total in each direction) cross `enp68s0f0` every round (`929 Mb/s` aggregate goodput).
 2. **Shrinking wire bytes cuts real wall time directly.** Switching `model_poison` from `sender` (`89.45 MB`) to `rxdelta` (`44.73 MB`) cuts real Ethernet TCP time cleanly in half (`3.082 s` down to `1.541 s`), dropping round time by `30.1%` (`5.19 s` to `3.63 s`) and 25-round wall time from `147.8 s` to `108.8 s` at the same `90.5%` accuracy.
@@ -125,9 +125,9 @@ Three live-hardware findings prove why Phase 2 needs both screening and compress
 
 ---
 
-## 4. Summary of gaps and how Phase 2 addresses them
+## 4. Summary of gaps and how PeerSieve addresses them
 
-| Gap | Problem in Phase 1 | Measured V100 Ethernet cost | Phase 2 fix |
+| Gap | Problem in TrustGraph-DFL | Measured V100 Ethernet cost | PeerSieve fix |
 |---|---|---|---|
 | 1. Wasted downloads | Downloads full models before scoring | `34.3%` to `52.4%` discarded at 4 peers (`26.0%` to `100.0%` at 2 peers) | Pre-transfer screening |
 | 2. Slow model transfers | Sends uncompressed 32-bit weights even for kept peers | `3.08 s` TCP (`60.3%` of round) in `sender`; `1.54 s` (`43.2%`) in `rxdelta` | 4-bit block compression |
