@@ -1,8 +1,3 @@
-"""Fixed visual roles (colors, markers, dashes, labels) for TrustGraph-DFL Phase 1 figures.
-
-All colors come strictly from ``figstyle.PALETTE`` (figures4papers house style).
-"""
-
 from __future__ import annotations
 
 from experiments.phase1.figstyle import PALETTE

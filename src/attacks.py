@@ -1,5 +1,3 @@
-"""Byzantine attack implementations for Phase 1 TrustGraph-DFL reproduction."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,19 +14,37 @@ class AttackConfig:
     noise_sigma: float = 0.5
 
     def validate(self) -> None:
-        """Check that the attack name is one of the supported attack modes."""
+        """Check that the configured attack name is supported.
+
+        Returns:
+            None.
+        """
         valid = {"none", "label_flip", "label_flip_all", "model_poison", "random_noise"}
         if self.name not in valid:
             raise ValueError(f"Unknown attack {self.name!r}; expected one of {sorted(valid)}.")
 
 
 def is_data_poisoning_attack(attack_name: str) -> bool:
-    """Return True if the attack poisons local training labels instead of model updates."""
+    """Check whether an attack modifies local training labels instead of model updates.
+
+    Args:
+        attack_name: Configured attack name.
+
+    Returns:
+        True for label-flipping attacks, False otherwise.
+    """
     return attack_name in {"label_flip", "label_flip_all"}
 
 
 def label_flip_mode_for_attack(attack_name: str) -> str | None:
-    """Map a label-flipping attack name to its label-remapping mode, or None."""
+    """Map a label-flipping attack name to its label-remapping mode.
+
+    Args:
+        attack_name: Configured attack name.
+
+    Returns:
+        'pair_0_1', 'all_classes', or None if the attack does not flip labels.
+    """
     if attack_name == "label_flip":
         return "pair_0_1"
     if attack_name == "label_flip_all":
@@ -48,11 +64,17 @@ def apply_round_attack(
 ) -> None:
     """Overwrite Byzantine peers' post_models and updates in-place for round-level attacks.
 
-    Model poisoning (Section 3.2) sets Delta_theta_mal = -lambda * mean(Delta_theta_benign)
-    with default lambda = 10. Random noise (Sections 3.2 and 5.1) draws
-    Delta_theta_mal ~ N(0, sigma^2 I) with default sigma = 0.5. Both attacks anchor
-    the broadcast model at mean(theta_benign^t) + Delta_theta_mal so post_model and
-    update remain consistent.
+    Args:
+        attack_cfg: Attack configuration (model_poison or random_noise).
+        byzantine_ids: Set of Byzantine peer IDs to overwrite.
+        benign_ids: List of benign peer IDs used to form the reference mean.
+        prev_models: Pre-SGD model vectors for all peers.
+        post_models: Post-SGD model vectors modified in-place for Byzantine peers.
+        updates: Per-peer update vectors modified in-place for Byzantine peers.
+        generator: CPU random generator for Gaussian noise draws.
+
+    Returns:
+        None.
     """
     if not byzantine_ids or attack_cfg.name in {"none", "label_flip", "label_flip_all"}:
         return

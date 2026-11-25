@@ -1,5 +1,3 @@
-"""Unit and offline integration tests for Phase 1 TrustGraph-DFL reproduction."""
-
 from __future__ import annotations
 
 import json

@@ -1,5 +1,3 @@
-"""Decentralized aggregation rules for Phase 1 TrustGraph-DFL reproduction."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -24,7 +22,11 @@ class AggregatorConfig:
     trustgraph_delta_mode: str = "sender"  # Either sender (theta_j^{t+1/2} - theta_j^t) or receiver (theta_j^{t+1/2} - theta_i^t).
 
     def validate(self) -> None:
-        """Check that all aggregation configuration options are supported."""
+        """Check that all aggregation configuration options are supported.
+
+        Returns:
+            None.
+        """
         if self.name != "trustgraph":
             raise ValueError(f"Unknown aggregator {self.name!r}; expected 'trustgraph'.")
         if self.val_grad_sign not in {"descent_neg", "paper_pos"}:
@@ -54,7 +56,17 @@ def _self_only_result(
     scores: dict[int, float] | None = None,
     self_fallback: bool = True,
 ) -> AggregationResult:
-    """Return an aggregation result that keeps self_post unchanged and zeroes all neighbors."""
+    """Build a fallback result that keeps self_post unchanged and zeroes all neighbors.
+
+    Args:
+        self_post: Local post-training parameter vector of the receiver.
+        neighbor_ids: Ordered list of neighbor peer IDs.
+        scores: Optional map of neighbor ID to trust score.
+        self_fallback: Whether fallback was triggered because all neighbor weights were zero.
+
+    Returns:
+        AggregationResult containing a copy of self_post and zero neighbor weights.
+    """
     return AggregationResult(
         new_model=self_post.clone(),
         neighbor_weights={j: 0.0 for j in neighbor_ids},
@@ -65,7 +77,15 @@ def _self_only_result(
 
 
 def _cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Return cosine similarity between two 1D tensors, or 0.0 if either norm is zero."""
+    """Compute cosine similarity between two 1D tensors.
+
+    Args:
+        a: First 1D parameter or update tensor.
+        b: Second 1D reference tensor.
+
+    Returns:
+        Cosine similarity in [-1, 1], or 0.0 if either vector has zero norm.
+    """
     na = float(torch.linalg.vector_norm(a).item())
     nb = float(torch.linalg.vector_norm(b).item())
     if na == 0.0 or nb == 0.0:
@@ -84,11 +104,20 @@ def aggregate_trustgraph(
     self_prev: torch.Tensor | None = None,
     self_update: torch.Tensor | None = None,
 ) -> AggregationResult:
-    """Compute TrustGraph-DFL consistency-weighted neighborhood aggregation (Eq. 3 to Eq. 5).
+    """Run TrustGraph-DFL consistency-weighted neighborhood aggregation (Eq. 3 to Eq. 5).
 
-    Supports validation gradient sign selection (paper_pos for +nabla F_i and
-    descent_neg for -nabla F_i), optional receiver-norm clipping, and
-    receiver-anchored deltas (theta_j^{t+1/2} - theta_i^t).
+    Args:
+        self_post: Receiver's post-SGD model vector theta_i^{t+1/2}.
+        val_grad: Receiver's pre-update validation gradient nabla F_i(theta_i^t).
+        neighbor_ids: Neighbor peer IDs connected to this receiver.
+        neighbor_posts: Map of neighbor ID to post-SGD model vector theta_j^{t+1/2}.
+        neighbor_updates: Map of neighbor ID to sender update vector Delta_j^t.
+        cfg: TrustGraph aggregation configuration.
+        self_prev: Receiver's pre-SGD model vector theta_i^t (needed for clipping or receiver delta).
+        self_update: Receiver's own update vector Delta_i^t (needed for norm clipping).
+
+    Returns:
+        AggregationResult with the updated model vector, normalized weights, and per-neighbor scores.
     """
     if not neighbor_ids:
         return _self_only_result(self_post, neighbor_ids)

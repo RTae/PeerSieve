@@ -1,5 +1,3 @@
-"""Decentralized communication graph topologies for Phase 1."""
-
 from __future__ import annotations
 
 import networkx as nx
@@ -14,12 +12,18 @@ def build_topology(
     ws_p: float = 0.3,
     seed: int = 42,
 ) -> nx.Graph:
-    """Construct a connected undirected graph on n_nodes peers.
+    """Build a connected undirected communication graph on n_nodes peers.
 
-    Supported topologies from TrustGraph-DFL Section 5.1:
-    - "ring": cycle graph (degree 2)
-    - "random": Erdos-Renyi G(n, p=0.3)
-    - "small_world": Watts-Strogatz (k=4, p=0.3 by default)
+    Args:
+        name: Graph type ('ring', 'random', or 'small_world').
+        n_nodes: Number of peers in the graph.
+        er_p: Edge probability for Erdos-Renyi random graphs.
+        ws_k: Nearest-neighbor degree for Watts-Strogatz small-world graphs.
+        ws_p: Rewiring probability for Watts-Strogatz small-world graphs.
+        seed: Random seed used when sampling connected random or small-world graphs.
+
+    Returns:
+        Connected NetworkX undirected graph with integer nodes 0..n_nodes-1.
     """
     if name == "ring":
         return nx.cycle_graph(n_nodes)
@@ -50,7 +54,16 @@ def select_byzantine_nodes(
     byzantine_frac: float,
     seed: int = 42,
 ) -> set[int]:
-    """Deterministically sample round(byzantine_frac * n_nodes) Byzantine peer IDs."""
+    """Deterministically sample Byzantine peer IDs without replacement.
+
+    Args:
+        n_nodes: Total number of peers.
+        byzantine_frac: Fraction of peers to mark Byzantine in [0, 1].
+        seed: Random seed for reproducible selection.
+
+    Returns:
+        Set of selected Byzantine peer IDs of size round(byzantine_frac * n_nodes).
+    """
     if not (0.0 <= byzantine_frac <= 1.0):
         raise ValueError(f"byzantine_frac must be in [0, 1], got {byzantine_frac}.")
     n_byz = int(round(byzantine_frac * n_nodes))
@@ -62,7 +75,15 @@ def select_byzantine_nodes(
 
 
 def topology_summary(graph: nx.Graph, byzantine_ids: set[int]) -> dict[str, object]:
-    """Compute graph connectivity and benign-neighborhood statistics."""
+    """Compute graph connectivity and benign-neighborhood degree statistics.
+
+    Args:
+        graph: Undirected peer communication graph.
+        byzantine_ids: Set of Byzantine peer IDs.
+
+    Returns:
+        Dictionary of node/edge counts, degree stats, and benign subgraph connectivity.
+    """
     degrees = [d for _, d in graph.degree()]
     benign_ids = [n for n in graph.nodes() if n not in byzantine_ids]
     benign_sub = graph.subgraph(benign_ids)
