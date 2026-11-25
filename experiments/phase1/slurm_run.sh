@@ -2,8 +2,9 @@
 # Phase 1 Slurm runner for TrustGraph-DFL CIFAR-10 experiments.
 # Supports two execution styles:
 #   1. Sharded multi-GPU sweeps (default, e.g. --mode suite --suite paper_resnet18_50k)
-#   2. Real multi-process distributed FL (--mode distributed), launching one peer process
-#      per allocated GPU (or across nodes via srun) over TcpPeerTransport.
+#   2. Multi-process distributed FL (--mode distributed), launching --n-nodes peer
+#      processes (defaulting to the number of allocated GPUs) round-robin across
+#      allocated GPUs over TcpPeerTransport.
 #
 # Examples (after explicit approval):
 #   mkdir -p logs
@@ -72,23 +73,33 @@ fi
 NUM_GPUS="${#GPU_IDS[@]}"
 
 IS_DISTRIBUTED=0
+DIST_WORLD_SIZE=""
+PREV_ARG=""
 for arg in "$@"; do
   if [[ "$arg" == "distributed" || "$arg" == "--mode=distributed" ]]; then
     IS_DISTRIBUTED=1
-    break
   fi
+  if [[ "$PREV_ARG" == "--n-nodes" ]]; then
+    DIST_WORLD_SIZE="$arg"
+  elif [[ "$arg" == --n-nodes=* ]]; then
+    DIST_WORLD_SIZE="${arg#--n-nodes=}"
+  fi
+  PREV_ARG="$arg"
 done
 
 if [[ "$IS_DISTRIBUTED" -eq 1 ]]; then
+  if [[ -z "$DIST_WORLD_SIZE" ]]; then
+    DIST_WORLD_SIZE="$NUM_GPUS"
+  fi
   DIST_RUN_ID="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)_$$}"
   export DIST_RUN_ID
-  echo "--- Launching ${NUM_GPUS} distributed peer processes (run_id=${DIST_RUN_ID}) across GPUs: ${GPU_IDS[*]} ---"
+  echo "--- Launching ${DIST_WORLD_SIZE} distributed peer processes (run_id=${DIST_RUN_ID}) across ${NUM_GPUS} GPUs: ${GPU_IDS[*]} ---"
   PIDS=()
-  for idx in "${!GPU_IDS[@]}"; do
-    gpu="${GPU_IDS[$idx]}"
+  for ((idx = 0; idx < DIST_WORLD_SIZE; idx++)); do
+    gpu="${GPU_IDS[$((idx % NUM_GPUS))]}"
     peer_log="logs/phase1-${SLURM_JOB_ID:-local}-peer${idx}.log"
-    echo "Starting peer rank ${idx}/${NUM_GPUS} on visible GPU ${gpu} -> ${peer_log}"
-    RANK="$idx" WORLD_SIZE="$NUM_GPUS" LOCAL_RANK=0 CUDA_VISIBLE_DEVICES="$gpu" \
+    echo "Starting peer rank ${idx}/${DIST_WORLD_SIZE} on visible GPU ${gpu} -> ${peer_log}"
+    RANK="$idx" WORLD_SIZE="$DIST_WORLD_SIZE" LOCAL_RANK=0 CUDA_VISIBLE_DEVICES="$gpu" \
       "${PY_CMD[@]}" -m experiments.phase1.run --device cuda --no-download "$@" \
       > "$peer_log" 2>&1 &
     PIDS+=("$!")
@@ -106,7 +117,7 @@ if [[ "$IS_DISTRIBUTED" -eq 1 ]]; then
     echo "One or more distributed peers failed. Check logs/phase1-${SLURM_JOB_ID:-local}-peer*.log"
     exit 1
   fi
-  echo "=== All ${NUM_GPUS} distributed peers completed cleanly at $(date -Is) ==="
+  echo "=== All ${DIST_WORLD_SIZE} distributed peers completed cleanly at $(date -Is) ==="
   exit 0
 fi
 

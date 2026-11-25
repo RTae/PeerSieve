@@ -137,9 +137,10 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
 
 
 def _run_tag(args: argparse.Namespace) -> str:
+    delta_suffix = "_rxdelta" if args.trustgraph_delta_mode == "receiver" else ""
     tag = (
-        f"{args.dataset}_{args.topology}_{args.attack}_byz{int(round(args.byzantine_frac * 100))}"
-        f"_{args.aggregator}_{args.val_grad_sign}"
+        f"{args.dataset}_{args.model}_{args.topology}_{args.attack}_byz{int(round(args.byzantine_frac * 100))}"
+        f"_{args.aggregator}_{args.val_grad_sign}{delta_suffix}"
     )
     return tag
 

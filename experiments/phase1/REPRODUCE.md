@@ -36,7 +36,7 @@ uv run python -m experiments.phase1.run --mode suite --suite fig3b_fpr_rxdelta \
   --dataset cifar10 --eval-every 5 --seeds 42 --output-root outputs/fig3b_fpr_rxdelta
 ```
 
-On the cluster, [slurm_run.sh](slurm_run.sh) runs either sharded multi-GPU sweeps (`--mode suite`) or real multi-process distributed DFL (`--mode distributed`, launching one peer process per allocated GPU over persistent TCP sockets), while recording job metadata, GPU topology, and `nvidia-smi` output.
+On the cluster, [slurm_run.sh](slurm_run.sh) runs either sharded multi-GPU sweeps (`--mode suite`) or multi-process distributed DFL (`--mode distributed`, launching `--n-nodes` peer processes round-robin across the allocated GPUs over persistent TCP sockets), while recording job metadata, GPU topology, and `nvidia-smi` output.
 
 ```bash
 mkdir -p logs
