@@ -127,17 +127,21 @@ Three live-hardware findings prove why Phase 2 needs both screening and compress
 
 ## 4. Summary of gaps and how Phase 2 addresses them
 
-| System gap | What Phase 1 TrustGraph-DFL does | Measured cost on real V100 `1 Gb/s` Ethernet | Phase 2 (PeerSieve) fix |
+| Gap | Problem in Phase 1 | Measured V100 Ethernet cost | Phase 2 fix |
 |---|---|---|---|
-| 1. Wasted bandwidth on discarded updates | Downloads every full FP32 payload before cosine scoring | `34.3%` to `52.4%` discarded at 4 peers (`8.05` to `10.56 GB` wasted over 25 rounds in `sender`, `3.98 GB` in `rxdelta`); `26.0%` to `100.0%` discarded at 2 peers | Pre-transfer sketch screening |
-| 2. Slow transfer of uncompressed FP32 models | Sends full 32-bit floats even for accepted neighbors | `3.08 s` TCP (`60.3%` of round) at 4 peers in `sender`, `1.54 s` (`43.2%`) in `rxdelta`, and `0.77 s` (`45.5%`) for just 1 neighbor on a dedicated V100 | 4-bit block compression with error feedback |
+| 1. Wasted downloads | Downloads full models before scoring | `34.3%` to `52.4%` discarded at 4 peers (`26.0%` to `100.0%` at 2 peers) | Pre-transfer screening |
+| 2. Slow model transfers | Sends uncompressed 32-bit weights even for kept peers | `3.08 s` TCP (`60.3%` of round) in `sender`; `1.54 s` (`43.2%`) in `rxdelta` | 4-bit block compression |
 
-### Pre-transfer sketch screening (fixes Gap 1)
+### Pre-transfer screening (fixes Gap 1)
 
-Instead of downloading a full `44.73 MB` (or `89.45 MB`) FP32 payload first, each peer builds a **CountSketch**: a small fixed-size summary (a few hundred kilobytes, over `100x` smaller than the model) created by hashing every weight into a small table of buckets and adding or subtracting it using random `+1` / `-1` signs tied to the round seed. The receiver hashes its own validation descent vector $-\nabla F_i(\theta_i^t)$ with the exact same round seed and buckets. Because mismatched weights collide with random signs and cancel out on average while matching weights add up, the dot product of the two small sketches closely approximates the cosine score of the full `11.18M`-weight vectors. Only neighbors whose sketch score passes the screen are asked to send their compressed model update, avoiding full transfers that would end up discarded. After receiving an accepted update, the receiver still checks its exact cosine score and verifies that it matches the sketch sent earlier (blocking attackers that send a fake benign sketch followed by a poisoned model).
+Right now, a peer downloads a full `44.73 MB` model before checking if it is useful. In our work, each peer first sends a tiny summary of its update (a few hundred kilobytes, made by folding the weights into a small fixed-size table called a CountSketch). The receiver folds its own validation direction the same way and estimates the cosine score from those two tiny tables.
 
-### 4-bit block compression with error feedback (fixes Gap 2)
+Only neighbors that pass this cheap check are asked to send their full update, so rejected peers never waste bandwidth. Once an accepted update arrives, the receiver checks its exact cosine score and confirms it matches the summary sent earlier, so an attacker cannot cheat by sending a good summary followed by a bad model.
 
-Even after dropping wasted transfers, sending accepted updates in uncompressed 32-bit floats still bottlenecks `1 Gb/s` Ethernet (`0.93` to `2.02 s` useful TCP at 4 peers, compared to `0.94 s` dedicated V100 compute). Weights in different ResNet-18 layers have very different magnitudes, so using one scale factor for the whole model would round small weights to zero. Instead, each sender splits its update vector into small blocks (such as `64` or `128` weights), stores one 16-bit scale factor per block, and rounds every weight in that block to a 4-bit signed integer (`INT4`). This shrinks accepted transfers by roughly `7x` (from `44.73 MB` down to about `6 MB` per model). To keep rounding noise from hurting accuracy, each sender saves its quantization error (the exact update minus the compressed update) and adds that leftover error back into its next round's update (**error feedback**) so no training signal is permanently lost.
+### 4-bit block compression (fixes Gap 2)
+
+Even useful updates are slow when sent as 32-bit floats (`44.73 MB` each). In our work, each sender cuts its update into small groups of weights (blocks), stores one shared scale per block, and rounds each weight down from 32 bits to 4 bits. Giving each small block its own scale keeps small weights from rounding to zero and shrinks each transfer by roughly `7x` (from `44.73 MB` down to about `6 MB`).
+
+To keep rounding from hurting accuracy, each sender saves the small leftover difference between its exact update and the 4-bit version, then adds that leftover back into its next round's update (error feedback). Nothing gets permanently lost.
 
 For exact reproduction and summary export commands, see [experiments/phase1/REPRODUCE.md](../../experiments/phase1/REPRODUCE.md).
