@@ -1,5 +1,3 @@
-"""Models, augmentation, and parameter-vector utilities for Phase 1 CIFAR-10 experiments."""
-
 from __future__ import annotations
 
 import torch
@@ -9,14 +7,17 @@ from torch.nn.utils import parameters_to_vector
 
 
 class SimpleCIFARCNN(nn.Module):
-    """Two-convolution, two-FC CNN for 32x32 CIFAR-10 images.
-
-    Matches the literal TrustGraph-DFL description ("two convolutional layers
-    followed by two fully connected layers") without BatchNorm.
-    """
+    """Two-convolution, two-FC CNN for 32x32 CIFAR-10 images without BatchNorm."""
 
     def __init__(self, num_classes: int = 10) -> None:
-        """Initialize convolutional and linear layers for the 2-conv CIFAR CNN."""
+        """Initialize convolutional and linear layers for the 2-conv CIFAR CNN.
+
+        Args:
+            num_classes: Number of output classes.
+
+        Returns:
+            None.
+        """
         super().__init__()
         self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
@@ -25,7 +26,14 @@ class SimpleCIFARCNN(nn.Module):
         self.fc2 = nn.Linear(256, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute class logits for a batch of 32x32 RGB images."""
+        """Compute class logits for a batch of 32x32 RGB images.
+
+        Args:
+            x: Input image batch tensor of shape (B, 3, 32, 32).
+
+        Returns:
+            Logits tensor of shape (B, num_classes).
+        """
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
         x = torch.flatten(x, 1)
@@ -34,14 +42,18 @@ class SimpleCIFARCNN(nn.Module):
 
 
 class GroupNormCIFARCNN(nn.Module):
-    """Two-convolution, two-FC CNN with GroupNorm and Dropout for CIFAR-10.
-
-    GroupNorm has no running-stat buffers, so decentralized parameter averaging
-    does not drift across non-IID peers.
-    """
+    """Two-convolution, two-FC CNN with GroupNorm and Dropout for CIFAR-10."""
 
     def __init__(self, num_classes: int = 10, dropout: float = 0.25) -> None:
-        """Initialize convolutional, GroupNorm, dropout, and linear layers."""
+        """Initialize convolutional, GroupNorm, dropout, and linear layers.
+
+        Args:
+            num_classes: Number of output classes.
+            dropout: Dropout probability applied before linear layers.
+
+        Returns:
+            None.
+        """
         super().__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
         self.gn1 = nn.GroupNorm(8, 64)
@@ -53,7 +65,14 @@ class GroupNormCIFARCNN(nn.Module):
         self.fc2 = nn.Linear(256, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute class logits for a batch of 32x32 RGB images."""
+        """Compute class logits for a batch of 32x32 RGB images.
+
+        Args:
+            x: Input image batch tensor of shape (B, 3, 32, 32).
+
+        Returns:
+            Logits tensor of shape (B, num_classes).
+        """
         x = self.pool(F.relu(self.gn1(self.conv1(x))))
         x = self.pool(F.relu(self.gn2(self.conv2(x))))
         x = self.drop(torch.flatten(x, 1))
@@ -62,15 +81,19 @@ class GroupNormCIFARCNN(nn.Module):
 
 
 class PretrainedResNet18CIFAR(nn.Module):
-    """ImageNet-pretrained ResNet-18 adapted for 32x32 CIFAR-10 in DFL.
-
-    Upsamples batches to 128x128 for the pretrained stem filters and freezes
-    BatchNorm running statistics in eval mode so non-IID and Byzantine peers
-    do not corrupt shared buffers.
-    """
+    """ImageNet-pretrained ResNet-18 adapted for 32x32 CIFAR-10 with frozen BatchNorm stats."""
 
     def __init__(self, num_classes: int = 10, image_size: int = 128, pretrained: bool = True) -> None:
-        """Build a ResNet-18 backbone with a num_classes head and frozen BatchNorm stats."""
+        """Build a ResNet-18 backbone with a num_classes head and frozen BatchNorm stats.
+
+        Args:
+            num_classes: Number of output classes.
+            image_size: Target spatial resolution for bilinear upsampling.
+            pretrained: Whether to load default ImageNet weights.
+
+        Returns:
+            None.
+        """
         super().__init__()
         from torchvision.models import ResNet18_Weights, resnet18
 
@@ -82,26 +105,52 @@ class PretrainedResNet18CIFAR(nn.Module):
         self._freeze_bn_stats()
 
     def _freeze_bn_stats(self) -> None:
-        """Put all BatchNorm2d modules into eval mode to freeze running mean and variance."""
+        """Set all BatchNorm2d layers to eval mode to freeze running statistics.
+
+        Returns:
+            None.
+        """
         for mod in self.backbone.modules():
             if isinstance(mod, nn.BatchNorm2d):
                 mod.eval()
 
     def train(self, mode: bool = True) -> PretrainedResNet18CIFAR:
-        """Toggle training mode while keeping BatchNorm running stats frozen."""
+        """Toggle training mode while keeping BatchNorm running stats frozen.
+
+        Args:
+            mode: True for training mode, False for evaluation mode.
+
+        Returns:
+            This module instance.
+        """
         super().train(mode)
         self._freeze_bn_stats()
         return self
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Resize inputs to image_size if needed and return ResNet-18 class logits."""
+        """Resize inputs to image_size if needed and return ResNet-18 class logits.
+
+        Args:
+            x: Input image batch tensor of shape (B, 3, H, W).
+
+        Returns:
+            Logits tensor of shape (B, num_classes).
+        """
         if x.shape[-1] != self.image_size or x.shape[-2] != self.image_size:
             x = F.interpolate(x, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
         return self.backbone(x)
 
 
 def build_model(name: str = "cnn2x2", num_classes: int = 10) -> nn.Module:
-    """Instantiate one of the supported CIFAR-10 model architectures by name."""
+    """Instantiate one of the supported CIFAR-10 model architectures by name.
+
+    Args:
+        name: Architecture key ('cnn2x2', 'cnn2x2_gn', 'resnet18_pretrained', or 'resnet18_scratch').
+        num_classes: Number of output classes.
+
+    Returns:
+        Newly initialized PyTorch nn.Module on CPU.
+    """
     if name == "cnn2x2":
         return SimpleCIFARCNN(num_classes=num_classes)
     if name == "cnn2x2_gn":
@@ -115,13 +164,28 @@ def build_model(name: str = "cnn2x2", num_classes: int = 10) -> nn.Module:
 
 @torch.no_grad()
 def model_to_vector(model: nn.Module) -> torch.Tensor:
-    """Return a detached, contiguous FP32 copy of all model parameters."""
+    """Flatten all model parameters into a detached, contiguous 1D FP32 copy.
+
+    Args:
+        model: PyTorch module whose parameters will be flattened.
+
+    Returns:
+        1D FP32 tensor copy of all model parameters.
+    """
     return parameters_to_vector(model.parameters()).detach().clone().float()
 
 
 @torch.no_grad()
 def vector_to_model(vec: torch.Tensor, model: nn.Module) -> None:
-    """Copy a 1D parameter vector into a model in-place without aliasing vec."""
+    """Copy a 1D parameter vector into a model in-place without aliasing vec.
+
+    Args:
+        vec: 1D tensor whose length matches the model's parameter count.
+        model: Target PyTorch module updated in-place.
+
+    Returns:
+        None.
+    """
     offset = 0
     for param in model.parameters():
         numel = param.numel()
@@ -132,7 +196,15 @@ def vector_to_model(vec: torch.Tensor, model: nn.Module) -> None:
 
 
 def augment_cifar_batch(x: torch.Tensor, generator: torch.Generator | None = None) -> torch.Tensor:
-    """Apply vectorized RandomHorizontalFlip + RandomCrop(32, padding=4) to a (B, C, 32, 32) batch."""
+    """Apply RandomHorizontalFlip and RandomCrop(32, padding=4) to a CIFAR image batch.
+
+    Args:
+        x: Input image batch tensor of shape (B, C, 32, 32).
+        generator: Optional CPU random generator for deterministic augmentation.
+
+    Returns:
+        Augmented tensor of the same shape and device as x.
+    """
     bsz, _, h, w = x.shape
     out = x.clone()
     flip_mask = torch.rand(bsz, generator=generator, device="cpu") < 0.5
@@ -155,10 +227,17 @@ def compute_validation_gradient(
     batch_size: int = 64,
     weight_decay: float = 0.0,
 ) -> torch.Tensor:
-    """Compute exact mean loss gradient nabla F(theta; D_val) as a 1D FP32 tensor.
+    """Compute the exact mean validation loss gradient nabla F(theta; D_val) as a 1D FP32 tensor.
 
-    If ``weight_decay > 0``, adds the L2 regularization gradient ``weight_decay * theta``
-    so the reference matches SGD with weight decay.
+    Args:
+        model: PyTorch model evaluated in eval mode.
+        x_val: Validation image tensor.
+        y_val: Validation label tensor.
+        batch_size: Mini-batch size used to accumulate exact mean gradients.
+        weight_decay: Optional L2 penalty coefficient added as weight_decay * theta.
+
+    Returns:
+        1D FP32 gradient vector matching model_to_vector(model).shape.
     """
     model.zero_grad(set_to_none=True)
     n_samples = int(x_val.shape[0])
@@ -196,7 +275,24 @@ def train_local_epoch(
     grad_clip_norm: float = 0.0,
     generator: torch.Generator | None = None,
 ) -> None:
-    """Train model in-place using SGD on preloaded tensors."""
+    """Train model in-place using SGD on preloaded local tensors.
+
+    Args:
+        model: PyTorch model updated in-place.
+        x_train: Local training images.
+        y_train: Local training labels.
+        lr: SGD learning rate.
+        momentum: SGD momentum factor.
+        weight_decay: L2 weight decay factor.
+        batch_size: Mini-batch size.
+        epochs: Number of local passes over x_train.
+        augment: Whether to apply random CIFAR flip and crop augmentation.
+        grad_clip_norm: Max gradient L2 norm (disabled when <= 0).
+        generator: Optional CPU random generator for shuffling and augmentation.
+
+    Returns:
+        None.
+    """
     n_samples = int(x_train.shape[0])
     if n_samples == 0:
         return
@@ -233,7 +329,17 @@ def evaluate_accuracy(
     y_test: torch.Tensor,
     batch_size: int = 512,
 ) -> tuple[float, float]:
-    """Evaluate classification accuracy in [0, 1] and mean cross-entropy loss."""
+    """Evaluate classification accuracy and mean cross-entropy loss on a test tensor set.
+
+    Args:
+        model: PyTorch model to evaluate in eval mode.
+        x_test: Test image tensor.
+        y_test: Test label tensor.
+        batch_size: Evaluation mini-batch size.
+
+    Returns:
+        Tuple of (accuracy in [0, 1], mean cross-entropy loss).
+    """
     model.eval()
     n_samples = int(x_test.shape[0])
     correct = 0

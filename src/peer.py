@@ -1,5 +1,3 @@
-"""Decentralized peer runtime shared across local and multi-process DFL execution."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,7 +18,14 @@ from src.models import (
 
 
 def sync_device(device: torch.device) -> None:
-    """Block until pending CUDA kernels finish on device."""
+    """Block until pending CUDA kernels finish on device.
+
+    Args:
+        device: Torch device to synchronize when using CUDA.
+
+    Returns:
+        None.
+    """
     if device.type == "cuda":
         torch.cuda.synchronize(device)
 
@@ -34,7 +39,11 @@ class PeerPayload:
     update: torch.Tensor
 
     def payload_bytes(self) -> int:
-        """Return the byte size of one model parameter vector in this payload."""
+        """Return the byte size of one model parameter vector in this payload.
+
+        Returns:
+            Number of bytes occupied by post_model.
+        """
         return int(self.post_model.numel()) * self.post_model.element_size()
 
 
@@ -66,7 +75,23 @@ class PeerNode:
         y_val: torch.Tensor,
         device: torch.device,
     ) -> None:
-        """Initialize a peer with its local shards, graph neighbors, and initial weights."""
+        """Initialize a peer with its local shards, graph neighbors, and initial weights.
+
+        Args:
+            peer_id: Unique integer rank of this peer.
+            neighbors: List of adjacent peer IDs in the communication graph.
+            is_byzantine: Whether this peer behaves maliciously.
+            model: PyTorch module instance used for training, validation, and evaluation.
+            init_vec: Initial 1D parameter vector copied onto device.
+            x_train: Local training images on device.
+            y_train: Local training labels on device.
+            x_val: Local validation images on device.
+            y_val: Local validation labels on device.
+            device: Compute device assigned to this peer.
+
+        Returns:
+            None.
+        """
         self.peer_id = peer_id
         self.neighbors = list(neighbors)
         self.is_byzantine = is_byzantine
@@ -80,11 +105,19 @@ class PeerNode:
 
     @property
     def param_count(self) -> int:
-        """Return the total number of scalar parameters in this peer's model."""
+        """Return the total number of scalar parameters in this peer's model.
+
+        Returns:
+            Integer count of parameters in model_vec.
+        """
         return int(self.model_vec.numel())
 
     def has_finite_weights(self) -> bool:
-        """Return True if every model weight is finite (no NaN or Inf values)."""
+        """Check whether every weight in model_vec is finite.
+
+        Returns:
+            True if model_vec contains no NaN or Inf values, False otherwise.
+        """
         return bool(torch.isfinite(self.model_vec).all().item())
 
     def local_step(
@@ -100,7 +133,23 @@ class PeerNode:
         train_gen: torch.Generator,
         skip_training: bool = False,
     ) -> LocalStepResult:
-        """Compute pre-update validation gradient and run local SGD on this peer's shard."""
+        """Compute the pre-update validation gradient and run local SGD on this peer's shard.
+
+        Args:
+            lr: Learning rate for this round.
+            momentum: SGD momentum factor.
+            weight_decay: L2 regularization weight decay.
+            batch_size: Mini-batch size for validation gradient and SGD.
+            epochs: Number of local training epochs.
+            augment: Whether to apply CIFAR flip and crop augmentation.
+            grad_clip_norm: Max gradient L2 norm (disabled when <= 0).
+            val_grad_weight_decay: Whether to add L2 decay term to the validation gradient.
+            train_gen: CPU random generator for shuffling and augmentation.
+            skip_training: If True, skip SGD and return empty post_model/update placeholders.
+
+        Returns:
+            LocalStepResult containing pre/post weights, update vector, validation gradient, and timings.
+        """
         prev_model = self.model_vec.clone()
         if skip_training:
             empty = torch.empty(0, device=self.device)
@@ -165,7 +214,16 @@ class PeerNode:
         attack_cfg: AttackConfig,
         attack_gen: torch.Generator,
     ) -> PeerPayload:
-        """Build this peer's outgoing payload using only local state (for distributed runs)."""
+        """Build this peer's outgoing payload using only local state for distributed runs.
+
+        Args:
+            step: Output of local_step() for the current round.
+            attack_cfg: Configured attack settings.
+            attack_gen: CPU random generator for noise attacks.
+
+        Returns:
+            PeerPayload to transmit to graph neighbors.
+        """
         if not self.is_byzantine or attack_cfg.name in {"none", "label_flip", "label_flip_all"}:
             return PeerPayload(sender_id=self.peer_id, post_model=step.post_model, update=step.update)
 
@@ -201,7 +259,17 @@ class PeerNode:
         agg_cfg: AggregatorConfig,
         attack_name: str,
     ) -> tuple[AggregationResult | None, float]:
-        """Run TrustGraph-DFL aggregation for benign peers or neighbor averaging for label-flip attackers."""
+        """Aggregate received neighbor payloads and update model_vec in-place.
+
+        Args:
+            step: Output of local_step() for the current round.
+            received: Map of neighbor ID to received PeerPayload.
+            agg_cfg: TrustGraph aggregation configuration.
+            attack_name: Active attack name used to pick Byzantine state update behavior.
+
+        Returns:
+            Tuple of (AggregationResult for benign peers or None for Byzantine peers, elapsed seconds).
+        """
         sync_device(self.device)
         t0 = time.perf_counter()
 
@@ -248,6 +316,15 @@ class PeerNode:
 
     @torch.no_grad()
     def evaluate(self, x_test: torch.Tensor, y_test: torch.Tensor, eval_batch_size: int) -> tuple[float, float]:
-        """Evaluate this peer's local model on the held-out test set."""
+        """Evaluate this peer's local model on the held-out test set.
+
+        Args:
+            x_test: Test image tensor on device.
+            y_test: Test label tensor on device.
+            eval_batch_size: Mini-batch size for evaluation.
+
+        Returns:
+            Tuple of (accuracy in [0, 1], mean cross-entropy loss).
+        """
         vector_to_model(self.model_vec, self.model)
         return evaluate_accuracy(self.model, x_test, y_test, batch_size=eval_batch_size)

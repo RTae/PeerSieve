@@ -33,7 +33,14 @@ class PartitionedDataset:
 
 
 def _normalize_cifar_uint8(images_nhwc: np.ndarray) -> torch.Tensor:
-    """Convert uint8 (N, 32, 32, 3) images to normalized FP32 (N, 3, 32, 32)."""
+    """Convert uint8 NHWC CIFAR images to normalized FP32 NCHW tensors.
+
+    Args:
+        images_nhwc: Uint8 NumPy array of shape (N, 32, 32, 3).
+
+    Returns:
+        Contiguous FP32 tensor of shape (N, 3, 32, 32) normalized by CIFAR-10 mean and std.
+    """
     arr = images_nhwc.astype(np.float32) / 255.0
     mean = np.array(CIFAR10_MEAN, dtype=np.float32).reshape(1, 1, 1, 3)
     std = np.array(CIFAR10_STD, dtype=np.float32).reshape(1, 1, 1, 3)
@@ -45,7 +52,14 @@ def _normalize_cifar_uint8(images_nhwc: np.ndarray) -> torch.Tensor:
 def _load_cifar10_raw_batches(
     batches_dir: Path,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Load CIFAR-10 python batches directly from an extracted cifar-10-batches-py directory."""
+    """Load CIFAR-10 python batches directly from an extracted directory.
+
+    Args:
+        batches_dir: Path to the extracted cifar-10-batches-py directory.
+
+    Returns:
+        Tuple of (x_train, y_train, x_test, y_test) normalized tensors.
+    """
     train_images = []
     train_labels: list[int] = []
     for batch_idx in range(1, 6):
@@ -71,7 +85,15 @@ def load_cifar10_tensors(
     data_dir: str | Path = "data",
     download: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Load full CIFAR-10 train (50k) and test (10k) sets into normalized FP32 tensors."""
+    """Load full CIFAR-10 train (50k) and test (10k) sets as normalized FP32 tensors.
+
+    Args:
+        data_dir: Directory containing or receiving cifar-10-batches-py.
+        download: Whether to download CIFAR-10 via torchvision if missing locally.
+
+    Returns:
+        Tuple of (x_train, y_train, x_test, y_test) tensors.
+    """
     root = Path(data_dir)
     batches_dir = root / "cifar-10-batches-py"
     if batches_dir.is_dir():
@@ -101,7 +123,18 @@ def make_synthetic_cifar_tensors(
     noise_std: float = 0.85,
     seed: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Create a learnable synthetic 10-class 3x32x32 image dataset for offline tests."""
+    """Create a learnable synthetic 10-class 3x32x32 image dataset for offline tests.
+
+    Args:
+        n_train: Number of training images to generate.
+        n_test: Number of test images to generate.
+        num_classes: Number of distinct class prototypes.
+        noise_std: Standard deviation of additive Gaussian pixel noise.
+        seed: Random seed for reproducible generation.
+
+    Returns:
+        Tuple of (x_train, y_train, x_test, y_test) tensors.
+    """
     rng = np.random.default_rng(seed)
     prototypes = np.zeros((num_classes, 3, 32, 32), dtype=np.float32)
     yy, xx = np.meshgrid(np.linspace(-1.0, 1.0, 32), np.linspace(-1.0, 1.0, 32), indexing="ij")
@@ -117,7 +150,14 @@ def make_synthetic_cifar_tensors(
         prototypes[c, (c + 2) % 3] = 0.4 * np.sin(freq * yy)
 
     def _sample(n: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Draw n synthetic images and balanced class labels with Gaussian noise."""
+        """Draw n synthetic images and balanced class labels with Gaussian noise.
+
+        Args:
+            n: Number of examples to sample.
+
+        Returns:
+            Tuple of (images, labels) tensors.
+        """
         y = np.arange(n, dtype=np.int64) % num_classes
         rng.shuffle(y)
         x = prototypes[y] + rng.normal(0.0, noise_std, size=(n, 3, 32, 32)).astype(np.float32)
@@ -129,7 +169,15 @@ def make_synthetic_cifar_tensors(
 
 
 def _stratified_class_totals(n_total: int, num_classes: int) -> np.ndarray:
-    """Split n_total evenly across num_classes so all class totals sum to n_total."""
+    """Split n_total evenly across classes so all totals sum to n_total.
+
+    Args:
+        n_total: Total number of samples to allocate.
+        num_classes: Number of classes.
+
+    Returns:
+        1D int64 array of length num_classes with per-class sample counts.
+    """
     totals = np.full(num_classes, n_total // num_classes, dtype=np.int64)
     totals[: n_total % num_classes] += 1
     return totals
@@ -140,7 +188,16 @@ def _sample_class_pools(
     class_totals: np.ndarray,
     rng: np.random.Generator,
 ) -> list[np.ndarray]:
-    """Randomly draw shuffled index pools of the requested size for each class."""
+    """Randomly draw shuffled index pools of the requested size for each class.
+
+    Args:
+        y_np: 1D NumPy array of integer training labels.
+        class_totals: Required number of samples for each class.
+        rng: NumPy random generator.
+
+    Returns:
+        List of shuffled index arrays, one per class.
+    """
     pools: list[np.ndarray] = []
     for c, need in enumerate(class_totals):
         idx_c = np.where(y_np == c)[0]
@@ -161,9 +218,15 @@ def _balanced_dirichlet_counts(
 ) -> np.ndarray:
     """Compute an integer (num_classes, n_nodes) count matrix with exact row and column sums.
 
-    Draws Gamma(alpha_dir, 1) entries, applies Sinkhorn scaling to match exact class
-    totals and per-node sample counts, and rounds to integers while keeping the
-    non-IID skew.
+    Args:
+        class_totals: Exact total samples available per class.
+        n_nodes: Number of peer nodes.
+        samples_per_node: Exact number of samples assigned to each node.
+        alpha_dir: Dirichlet concentration parameter controlling non-IID skew.
+        rng: NumPy random generator.
+
+    Returns:
+        Int64 array of shape (num_classes, n_nodes) matching exact class and node totals.
     """
     num_classes = len(class_totals)
     total_samples = int(class_totals.sum())
@@ -213,7 +276,16 @@ def _assign_from_pools(
     counts: np.ndarray,
     rng: np.random.Generator,
 ) -> list[np.ndarray]:
-    """Slice disjoint per-node index arrays according to a (num_classes, n_nodes) count matrix."""
+    """Slice disjoint per-node index arrays according to a class-by-node count matrix.
+
+    Args:
+        class_pools: Disjoint index arrays per class.
+        counts: Int64 matrix of shape (num_classes, n_nodes).
+        rng: NumPy random generator used to shuffle each node's indices.
+
+    Returns:
+        List of shuffled 1D index arrays, one per peer.
+    """
     num_classes, n_nodes = counts.shape
     offsets = np.zeros(num_classes, dtype=np.int64)
     per_node: list[np.ndarray] = []
@@ -244,12 +316,23 @@ def partition_dirichlet_balanced(
     num_classes: int = 10,
     seed: int = 42,
 ) -> PartitionedDataset:
-    """Subsample n_nodes * samples_per_node images and split non-IID via Dirichlet(alpha_dir).
+    """Split training data across peers with balanced Dirichlet non-IID skew and validation sets.
 
-    When val_split is "local", each node holds out val_frac of its own non-IID shard
-    as D_i^val (TrustGraph-DFL Section 5.1). When val_split is "iid", each node gets
-    a class-balanced validation set from a disjoint pool while training shards remain
-    Dirichlet(alpha_dir).
+    Args:
+        x_train: Full training image tensor.
+        y_train: Full training label tensor.
+        x_test: Held-out test image tensor.
+        y_test: Held-out test label tensor.
+        n_nodes: Number of decentralized peers.
+        samples_per_node: Total samples (train plus val) assigned to each peer.
+        alpha_dir: Dirichlet concentration parameter.
+        val_frac: Fraction of each peer's samples held out for validation.
+        val_split: Either 'local' (non-IID shard holdout) or 'iid' (class-balanced validation).
+        num_classes: Number of label classes.
+        seed: Random seed for reproducible partitioning.
+
+    Returns:
+        PartitionedDataset holding per-node train/val shards, test tensors, and class counts.
     """
     if val_split not in {"local", "iid"}:
         raise ValueError(f"Unknown val_split {val_split!r}; expected 'local' or 'iid'.")
@@ -310,7 +393,16 @@ def partition_dirichlet_balanced(
 
 
 def apply_label_flip(y: torch.Tensor, mode: str = "pair_0_1", num_classes: int = 10) -> torch.Tensor:
-    """Return a label-flipped copy of target labels."""
+    """Return a label-flipped copy of target labels for data-poisoning attacks.
+
+    Args:
+        y: 1D integer label tensor.
+        mode: Either 'pair_0_1' (swap classes 0 and 1) or 'all_classes' (map c -> C-1-c).
+        num_classes: Total number of classes.
+
+    Returns:
+        New integer label tensor with flipped labels.
+    """
     flipped = y.clone()
     if mode == "pair_0_1":
         # Literal TrustGraph-DFL Section 5.1: "Label-flipping between classes 0 and 1".
