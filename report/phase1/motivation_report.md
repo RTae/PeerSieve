@@ -6,7 +6,7 @@ This report measures the communication, round-time, receive-memory, and repeat-t
 
 ## Hardware and measurement setup
 
-We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using our Phase 1 simulator with synchronized GPU timers and FP32 transfer accounting. Every run trained `PretrainedResNet18CIFAR` (`11,181,642` FP32 parameters, `44.73 MB` or `42.65 MiB` per update) across 20 peers for 25 communication rounds with 0 `NaN` runs.
+We ran all 14 configurations of `paper_resnet18_50k` (seed 42) on `octave` using our in-process `LocalTransport` runner (`src/simulator.py`) with synchronized GPU timers and FP32 transfer accounting, and verified end-to-end multi-process execution across all 8 A100 GPUs over persistent TCP sockets (`src/distributed.py`, `TcpPeerTransport`). Every sweep run trained `PretrainedResNet18CIFAR` (`11,181,642` FP32 parameters, `44.73 MB` or `42.65 MiB` per model vector) across 20 peers for 25 communication rounds with 0 `NaN` runs.
 
 | Component | Configuration |
 |---|---|
@@ -90,7 +90,7 @@ The same pattern holds across topologies and attacker fractions. Under 30% label
 
 Figure 5b turns the `Model Poison` bar from Figure 5a (`119.1 MB` useful plus `149.3 MB` wasted, totaling `268.4 MB` per benign peer per round) into wall-clock seconds by pairing our measured A100 compute with real inter-node TCP transfers on the cluster.
 
-1. **Gray bar (measured A100 compute, `0.660 s`).** On our `octave` A100-PCIE-40GB GPU during the 30% model-poisoning run, one benign peer takes a median of `0.602 s` for local SGD (range `0.587` to `1.223 s`, 25 rounds), `0.055 s` for the validation gradient (range `0.053` to `3.323 s`, peaking on round 1 cuDNN initialization), and `0.0032 s` for cosine scoring and aggregation (range `0.0029` to `0.134 s`). Across all 14 runs, total median compute stays between `0.647 s` and `0.669 s`.
+1. **Gray bar (measured A100 compute, `0.660 s`).** On our `octave` A100-PCIE-40GB GPU during the 30% model-poisoning run, one benign peer takes a median of `0.602 s` for local SGD (range `0.587` to `1.223 s`, 25 rounds), `0.055 s` for the validation gradient (range `0.053` to `3.323 s`, peaking on round 1 cuDNN initialization), and `0.0032 s` for cosine scoring and aggregation (range `0.0029` to `0.134 s`). Across all 14 runs, total median compute stays between `0.647 s` and `0.668 s`.
 2. **Blue and red bars at `1 Gb/s` (measured inter-node TCP on `ja4` to `ja3`).** We timed real TCP socket transfers across `enp68s0f0` (`1000 Mb/s` Ethernet, MTU `1500`) for all four ResNet-18 payload sizes below. TCP framing caps real goodput at `941.2 Mb/s` (`94.1%` of nominal `1 Gb/s`), making real transfers `6.2%` slower than an idealized `1000 Mb/s` wire bound.
 
 | Measured TCP workload (`ja4` to `ja3`, `enp68s0f0` 1 Gb/s) | Payload (MB) | Repeats | Median (s) | Min to max (s) | Goodput (Mb/s) |
@@ -112,6 +112,12 @@ Combining the measured A100 compute (`0.660 s`) with our measured `1 Gb/s` clust
 | `100 Mb/s` WAN / edge | Reference estimate | 0.660 | 9.528 | 11.941 | 22.129 | 97.0 |
 
 Reading Figure 5b from left to right highlights two findings. At the `10 Gb/s` datacenter reference rate, compute dominates (`0.660 s` of `0.875 s`, `24.5%` communication). On our cluster's measured `1 Gb/s` Ethernet (`941.2 Mb/s` real goodput), transfer time reaches `2.281 s` (`77.5%` of the `2.941 s` round), which is `3.5x` slower than A100 compute. At the `100 Mb/s` WAN reference rate, transfer takes `21.469 s` (`97.0%` of the round). Eliminating the red wasted bar alone is not enough, because the measured useful transfer alone (`1.012 s` on cluster `1 Gb/s`, and `9.528 s` estimated at `100 Mb/s`) still exceeds all local A100 compute (`0.660 s`) by `1.53x`. Scaling the other topologies by our measured `941.2 Mb/s` cluster goodput under 30% label flipping puts communication at `53.2%` of round time on Ring (`0.76 s` transfer vs. `0.67 s` compute) and `69.3%` on Small-World (`1.49 s` transfer vs. `0.66 s` compute).
+
+### 1.3 Single-vector lower bound and multi-GPU distributed check
+
+The byte totals in Figure 5 bill one FP32 model vector (`44.73 MB`) per neighbor transfer, which is a conservative lower bound that matches receiver-anchored scoring (`rxdelta`, where the receiver forms $\theta_j^{t+1/2} - \theta_i^t$ locally). Under strict `sender` scoring ($\Delta_j^t = \theta_j^{t+1/2} - \theta_j^t$), a decentralized peer does not know neighbor $j$'s pre-round weights $\theta_j^t$, so `TcpPeerTransport` must send both $\theta_j^{t+1/2}$ and $\Delta_j^t$ (`89.45 MB` per neighbor), doubling wire volume over Figure 5.
+
+We also verified our multi-process runtime (`PeerNode` and `TcpPeerTransport`, `8` independent peer processes across all `8x A100-PCIE-40GB` GPUs on `octave`, `5` rounds, `25%` model poisoning, `er_p = 0.3`, seed `42`, `0` `NaN` runs). All `8` peers completed in `12.76 s` (`79.39%` per-peer and `84.26%` consensus accuracy after 5 rounds, `40.0%` wasted transfers), recording `2.05 GiB` peak allocated GPU memory per peer (`3.35 GiB` reserved) and median per-peer timings of `0.621 s` local train, `0.046 s` validation gradient, `0.0051 s` pinned D2H staging, `0.339 s` loopback TCP (`89.45 MB` per neighbor), `0.0373 s` H2D copy, and `0.0023 s` aggregation.
 
 ---
 
@@ -136,7 +142,7 @@ Batched TrustGraph-DFL holds every neighbor's `42.65 MiB` FP32 update in memory 
 | Random (30% label flip, model poison, noise) | 6.0 | 8 | 42.7 | 255.9 | 341.2 | 8.0x |
 | Random (no attack, 10%, 20%, 40%, 50% Byzantine) | 6.2 to 6.8 | 11 | 42.7 | 263.0 to 290.1 | 469.2 | 11.0x |
 
-ResNet-18 fits inside a `40 GiB` A100 GPU (`7.06` to `8.08 GiB` peak allocated GPU memory in our simulator, which stages all 20 peer shards and models on one GPU). Even so, the measured `8x` to `11x` multiplier exposes the scaling gap. Holding `d` full payloads simultaneously grows with both model size and graph degree, whereas a streaming receiver needs only constant buffer space independent of `d`.
+ResNet-18 fits inside a `40 GiB` A100 GPU (`2.05 GiB` peak allocated GPU memory per peer in our 8-GPU distributed run, and `6.89` to `7.89 GiB` in our single-GPU simulator that stages all 20 peer shards and models on one GPU). Even so, the measured `8x` to `11x` multiplier exposes the scaling gap. Holding `d` full payloads simultaneously grows with both model size and graph degree, whereas a streaming receiver needs only constant buffer space independent of `d`.
 
 ### 2.2 Repeated downloads from blocked attackers vs. benign false positives (Gap 4, Figure 6b)
 
