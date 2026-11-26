@@ -717,3 +717,41 @@ def test_summarize_system_directory_separates_models(tmp_path: Path) -> None:
     sys_rows = summarize_system_directory(tmp_path)
     assert len(sys_rows) == 2
     assert {r.model for r in sys_rows} == {"cnn2x2", "cnn2x2_gn"}
+
+
+def test_logging_utils_writes_run_log_and_respects_level(tmp_path: Path) -> None:
+    from src.logging_utils import configure_logging, get_logger
+
+    extra_log = tmp_path / "cli.log"
+    configure_logging(level="INFO", log_file=extra_log, quiet=True)
+    log = get_logger(rank=2)
+    log.debug("hidden debug message")
+    log.info("visible info message")
+
+    out_dir = tmp_path / "logged_run"
+    run_experiment(
+        ExperimentConfig(
+            dataset="synthetic",
+            n_nodes=4,
+            samples_per_node=20,
+            rounds=2,
+            model_name="cnn2x2",
+            topology="ring",
+            byzantine_frac=0.0,
+            attack="none",
+            device="cpu",
+            eval_every=2,
+            seed=3,
+            output_dir=str(out_dir),
+            verbose=True,
+        )
+    )
+    cli_text = extra_log.read_text(encoding="utf-8")
+    assert "hidden debug message" not in cli_text
+    assert "r=2 | visible info message" in cli_text
+    run_log = out_dir / "run.log"
+    assert run_log.exists()
+    run_text = run_log.read_text(encoding="utf-8")
+    assert "Start local run:" in run_text
+    assert "Finished local run" in run_text
+    configure_logging(level="INFO")
