@@ -1,4 +1,4 @@
-# TrustGraph-DFL reproduction repository
+# Peersieve
 
 ## Scope and source files
 
