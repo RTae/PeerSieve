@@ -93,7 +93,7 @@ uv run torchrun --standalone --nproc_per_node=8 -m experiments.phase1.run \
 
 | Flag group | Options |
 |---|---|
-| Execution | `--mode single \| suite \| distributed \| transfer_bench`, `--suite <name>`, `--seeds 42 43 44`, `--device auto \| cpu \| cuda`, `--skip-existing` |
+| Execution | `--mode single \| suite \| distributed \| transfer_bench`, `--suite <name>`, `--seeds 42 43 44`, `--device auto \| cpu \| cuda`, `--skip-existing`, `--log-level`, `--log-file` |
 | Sharding and transport | `--shard-index`, `--num-shards`, `--dist-iface`, `--dist-port` |
 | Model and data | `--model cnn2x2 \| cnn2x2_gn \| resnet18_pretrained \| resnet18_scratch`, `--val-split local \| iid`, `--grad-clip-norm` |
 | TrustGraph scoring | `--val-grad-sign descent_neg \| paper_pos`, `--trustgraph-score-threshold`, `--trustgraph-delta-mode sender \| receiver` |
@@ -124,6 +124,7 @@ See [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) for t
 │   ├── attacks.py                  # none, label_flip, label_flip_all, model_poison, random_noise
 │   ├── data.py                     # CIFAR-10 and synthetic test loaders, Dirichlet split
 │   ├── distributed.py              # Multi-process and multi-GPU DFL peer runner
+│   ├── logging_utils.py            # Loguru configuration, host/rank formatting, and per-run log sinks
 │   ├── metrics.py                  # Per-round accuracy, FPR, rejection streak, and system-cost tracker
 │   ├── models.py                   # SimpleCIFARCNN, GroupNormCIFARCNN, PretrainedResNet18CIFAR
 │   ├── peer.py                     # Self-contained PeerNode runtime shared by local and distributed runs

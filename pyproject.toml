@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "TrustGraph-DFL decentralized federated learning reproduction, FPR study, and distributed system benchmark"
 requires-python = ">=3.11"
 dependencies = [
+    "loguru>=0.8.0",
     "networkx>=3.0",
     "numpy>=1.26",
     "torch>=2.2",
