@@ -7,10 +7,13 @@ from pathlib import Path
 
 from experiments.phase1.suites import SUITES, build_suite_runs
 from src.distributed import run_distributed_experiment
+from src.logging_utils import configure_logging, get_logger
 from src.simulator import ExperimentConfig, prepare_dataset, run_experiment
 from src.transport import run_transfer_benchmark
 
 __all__ = ["SUITES", "build_suite_runs", "parse_args", "main"]
+
+logger = get_logger()
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,6 +83,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-existing", action="store_true", help="Skip runs that already have summary.json.")
     p.add_argument("--output-root", default="outputs/phase1")
     p.add_argument("--quiet", action="store_true")
+    p.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Minimum loguru log level written to stderr and --log-file.",
+    )
+    p.add_argument("--log-file", default=None, help="Optional extra log file path capturing all run logs.")
     # Distributed and TCP transport options
     p.add_argument("--dist-iface", default=None, help="Network interface for distributed TCP transport (default loopback).")
     p.add_argument("--dist-port", type=int, default=29600, help="Base TCP port for distributed peer sockets.")
@@ -179,18 +189,20 @@ def _run_single(args: argparse.Namespace, base_cfg: ExperimentConfig, out_root: 
     for seed in args.seeds:
         out_dir = out_root / "single" / tag / f"seed_{seed}"
         if args.skip_existing and (out_dir / "summary.json").exists():
-            print(f"=== Skipping completed {tag} (seed={seed}) ===", flush=True)
+            logger.info("Skipping completed {} (seed={})", tag, seed)
             continue
         cfg = replace(base_cfg, seed=seed, output_dir=str(out_dir))
-        print(f"=== Running {tag} (seed={seed}) -> {out_dir} ===", flush=True)
+        logger.info("Running {} (seed={}) -> {}", tag, seed, out_dir)
         res = run_experiment(cfg)
         s = res["summary"]
-        print(
-            f"DONE {tag} seed={seed}: final_acc={100.0 * float(s['final_benign_test_acc_mean']):.2f}% "
-            f"best_acc={100.0 * float(s['best_benign_test_acc_mean']):.2f}% "
-            f"fpr_cum={100.0 * float(s['fpr_cumulative']):.2f}% "
-            f"wall={float(s['total_wall_sec']):.1f}s",
-            flush=True,
+        logger.success(
+            "DONE {} seed={}: final_acc={:.2f}% best_acc={:.2f}% fpr_cum={:.2f}% wall={:.1f}s",
+            tag,
+            seed,
+            100.0 * float(s["final_benign_test_acc_mean"]),
+            100.0 * float(s["best_benign_test_acc_mean"]),
+            100.0 * float(s["fpr_cumulative"]),
+            float(s["total_wall_sec"]),
         )
 
 
@@ -223,10 +235,14 @@ def _run_suite(args: argparse.Namespace, base_cfg: ExperimentConfig, out_root: P
             pending_jobs.append((seed, run_name, cfg))
 
     shard_jobs = [job for idx, job in enumerate(pending_jobs) if idx % args.num_shards == args.shard_index]
-    print(
-        f"=== Suite '{args.suite}': shard {args.shard_index}/{args.num_shards} "
-        f"running {len(shard_jobs)}/{len(pending_jobs)} pending jobs (skipped {skipped} completed) ===",
-        flush=True,
+    logger.info(
+        "Suite '{}': shard {}/{} running {}/{} pending jobs (skipped {} completed)",
+        args.suite,
+        args.shard_index,
+        args.num_shards,
+        len(shard_jobs),
+        len(pending_jobs),
+        skipped,
     )
 
     summaries: list[dict[str, object]] = []
@@ -237,10 +253,14 @@ def _run_suite(args: argparse.Namespace, base_cfg: ExperimentConfig, out_root: P
             data_cache[cache_key] = prepare_dataset(cfg)
         out_dir = suite_root / run_name / f"seed_{seed}"
         run_cfg = replace(cfg, output_dir=str(out_dir))
-        print(
-            f"\n=== [{args.suite} shard {args.shard_index} ({job_idx}/{len(shard_jobs)})] "
-            f"{run_name} (seed={seed}) ===",
-            flush=True,
+        logger.info(
+            "[{} shard {} ({}/{})] {} (seed={})",
+            args.suite,
+            args.shard_index,
+            job_idx,
+            len(shard_jobs),
+            run_name,
+            seed,
         )
         res = run_experiment(run_cfg, preloaded_data=data_cache[cache_key])
         s = dict(res["summary"])
@@ -255,23 +275,31 @@ def _run_suite(args: argparse.Namespace, base_cfg: ExperimentConfig, out_root: P
     with open(suite_root / summary_name, "w", encoding="utf-8") as f:
         json.dump(summaries, f, indent=2)
 
-    print(f"\n=== Suite '{args.suite}' shard {args.shard_index}/{args.num_shards} summary ===", flush=True)
-    print(
-        f"{'Run':44s} {'Seed':>5s} {'FinalAcc':>9s} {'ConsAcc':>9s} "
-        f"{'FPR(cum)':>9s} {'ByzAcc':>8s} {'CosBen':>8s} {'CosByz':>8s}",
-        flush=True,
+    logger.info("Suite '{}' shard {}/{} summary", args.suite, args.shard_index, args.num_shards)
+    logger.info(
+        "{:44s} {:>5s} {:>9s} {:>9s} {:>9s} {:>8s} {:>8s} {:>8s}",
+        "Run",
+        "Seed",
+        "FinalAcc",
+        "ConsAcc",
+        "FPR(cum)",
+        "ByzAcc",
+        "CosBen",
+        "CosByz",
     )
     for s in summaries:
         cb = f"{float(s['mean_benign_score']):+.3f}" if s["mean_benign_score"] is not None else "   n/a"
         cm = f"{float(s['mean_byz_score']):+.3f}" if s["mean_byz_score"] is not None else "   n/a"
-        print(
-            f"{str(s['run_name']):44s} {int(s['config']['seed']):5d} "
-            f"{100.0 * float(s['final_benign_test_acc_mean']):8.2f}% "
-            f"{100.0 * float(s['final_consensus_test_acc']):8.2f}% "
-            f"{100.0 * float(s['fpr_cumulative']):8.2f}% "
-            f"{100.0 * float(s['byz_accept_cumulative']):7.2f}% "
-            f"{cb:>8s} {cm:>8s}",
-            flush=True,
+        logger.info(
+            "{:44s} {:5d} {:8.2f}% {:8.2f}% {:8.2f}% {:7.2f}% {:>8s} {:>8s}",
+            str(s["run_name"]),
+            int(s["config"]["seed"]),
+            100.0 * float(s["final_benign_test_acc_mean"]),
+            100.0 * float(s["final_consensus_test_acc"]),
+            100.0 * float(s["fpr_cumulative"]),
+            100.0 * float(s["byz_accept_cumulative"]),
+            cb,
+            cm,
         )
 
 
@@ -293,12 +321,14 @@ def _run_distributed(args: argparse.Namespace, base_cfg: ExperimentConfig, out_r
     res = run_distributed_experiment(cfg, iface=args.dist_iface, base_port=args.dist_port)
     if res is not None:
         s = res["summary"]
-        print(
-            f"DONE distributed {tag} seed={seed}: final_acc={100.0 * float(s['final_benign_test_acc_mean']):.2f}% "
-            f"cons_acc={100.0 * float(s['final_consensus_test_acc']):.2f}% "
-            f"fpr_cum={100.0 * float(s['fpr_cumulative']):.2f}% "
-            f"wall={float(s['total_wall_sec']):.1f}s",
-            flush=True,
+        logger.success(
+            "DONE distributed {} seed={}: final_acc={:.2f}% cons_acc={:.2f}% fpr_cum={:.2f}% wall={:.1f}s",
+            tag,
+            seed,
+            100.0 * float(s["final_benign_test_acc_mean"]),
+            100.0 * float(s["final_consensus_test_acc"]),
+            100.0 * float(s["fpr_cumulative"]),
+            float(s["total_wall_sec"]),
         )
 
 
@@ -309,6 +339,7 @@ def main() -> None:
         None.
     """
     args = parse_args()
+    configure_logging(level=args.log_level, log_file=args.log_file, quiet=args.quiet)
     if args.mode == "transfer_bench":
         run_transfer_benchmark(
             role=args.bench_role,

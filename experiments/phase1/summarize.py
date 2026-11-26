@@ -9,6 +9,10 @@ from pathlib import Path
 
 import numpy as np
 
+from src.logging_utils import configure_logging, get_logger
+
+logger = get_logger()
+
 
 @dataclass
 class SummaryRow:
@@ -485,17 +489,18 @@ def main() -> None:
     p.add_argument("--job-id", default=None, help="Optional Slurm job ID stored in exported system metrics JSON.")
     p.add_argument("--commit", default=None, help="Optional git commit hash stored in exported system metrics JSON.")
     args = p.parse_args()
+    configure_logging()
 
     rows = summarize_directory(args.root)
     if not rows:
-        print(f"No summary.json files found under {args.root}")
+        logger.warning("No summary.json files found under {}", args.root)
         return
 
     output = format_markdown_report(rows, root=args.root, title=args.title)
     sys_rows = summarize_system_directory(args.root)
     if sys_rows:
         output += "\n" + format_system_markdown_report(sys_rows)
-    print(output, end="")
+    logger.info("\n{}", output.rstrip())
     if args.out:
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -508,7 +513,7 @@ def main() -> None:
             commit=args.commit,
             transfer_bench_json=args.transfer_bench_json,
         )
-        print(f"Exported {exported['total_runs']} runs to {args.export_system_json}")
+        logger.success("Exported {} runs to {}", exported["total_runs"], args.export_system_json)
 
 
 if __name__ == "__main__":

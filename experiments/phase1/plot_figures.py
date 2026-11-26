@@ -9,6 +9,9 @@ import numpy as np
 
 from experiments.phase1 import figroles as fr
 from experiments.phase1 import figstyle as fs
+from src.logging_utils import configure_logging, get_logger
+
+logger = get_logger()
 
 
 def _parse_variant_key(label: str) -> str | None:
@@ -103,7 +106,7 @@ def plot_attack_accuracy(
     fs.light_grid(ax_conv, "y")
     fs.light_grid(ax_bar, "y")
 
-    print("\n=== Fig. 1 (50k) TrustGraph-DFL Consensus Convergence Across Attacks (3 seeds) ===")
+    logger.info("Fig. 1(a) TrustGraph-DFL Consensus Convergence Across Attacks (3 seeds)")
     for atk in fr.ATTACK_ORDER:
         c = curves[f"{atk}__tg_strong"]
         rounds = np.array(c["eval_rounds"], dtype=float)
@@ -123,7 +126,7 @@ def plot_attack_accuracy(
         )
         ax_conv.fill_between(rounds, np.clip(mean - std, 0, 100), np.clip(mean + std, 0, 100), color=col, alpha=0.14)
         pts = " ".join(f"r{int(r)}={v:.2f}" for r, v in zip(rounds, mean))
-        print(f"  {atk:16s}: {pts} (final +/- {std[-1]:.2f})")
+        logger.info("  {:16s}: {} (final +/- {:.2f})", atk, pts, std[-1])
 
     ax_conv.set_title("(a) Consensus Convergence Over Training", pad=10, fontweight="bold")
     ax_conv.set_xlabel("Communication Round")
@@ -141,9 +144,9 @@ def plot_attack_accuracy(
     cons_m = [float(rows_idx[("random", a, 30, "tg_stab")]["cons_mean"]) for a in fr.ATTACK_ORDER]
     cons_s = [float(rows_idx[("random", a, 30, "tg_stab")]["cons_std"]) for a in fr.ATTACK_ORDER]
 
-    print("\n=== Fig. 1(b) TrustGraph-DFL Per-Peer vs. Consensus Accuracy (%) ===")
+    logger.info("Fig. 1(b) TrustGraph-DFL Per-Peer vs. Consensus Accuracy (%)")
     for a, pm, ps, cm, cs in zip(fr.ATTACK_ORDER, peer_m, peer_s, cons_m, cons_s):
-        print(f"  {a:16s}: peer={pm:.2f}+/-{ps:.2f}%  cons={cm:.2f}+/-{cs:.2f}%")
+        logger.info("  {:16s}: peer={:.2f}+/-{:.2f}%  cons={:.2f}+/-{:.2f}%", a, pm, ps, cm, cs)
 
     b1 = ax_bar.bar(
         x - w / 2, peer_m, width=w, yerr=peer_s, capsize=4,
@@ -205,9 +208,9 @@ def plot_topology_and_byzantine_sweep(
     c_m = [float(rows_idx[(tp, "label_flip_all", 30, "tg_stab")]["cons_mean"]) for tp, _ in topos]
     c_s = [float(rows_idx[(tp, "label_flip_all", 30, "tg_stab")]["cons_std"]) for tp, _ in topos]
 
-    print("\n=== Fig. 2(a) TrustGraph-DFL Topologies under label_flip_all (30% Byz, bep=2, 3 seeds) ===")
+    logger.info("Fig. 2(a) TrustGraph-DFL Topologies under label_flip_all (30% Byz, bep=2, 3 seeds)")
     for (tp, _), pm, ps, cm, cs in zip(topos, p_m, p_s, c_m, c_s):
-        print(f"  {tp:12s}: peer={pm:.2f}+/-{ps:.2f}%  cons={cm:.2f}+/-{cs:.2f}%")
+        logger.info("  {:12s}: peer={:.2f}+/-{:.2f}%  cons={:.2f}+/-{:.2f}%", tp, pm, ps, cm, cs)
 
     b1 = ax_topo.bar(
         x - w / 2, p_m, width=w, yerr=p_s, capsize=4,
@@ -239,9 +242,9 @@ def plot_topology_and_byzantine_sweep(
     fpr_m = np.array([float(rows_idx[("random", "label_flip_all", f, "tg_stab")]["fpr_mean"]) for f in fracs])
     fpr_sd = np.array([float(rows_idx[("random", "label_flip_all", f, "tg_stab")]["fpr_std"]) for f in fracs])
 
-    print("\n=== Fig. 2(b) TrustGraph-DFL Byzantine Stress Sweep (10%-50%, label_flip_all, bep=2, 3 seeds) ===")
+    logger.info("Fig. 2(b) TrustGraph-DFL Byzantine Stress Sweep (10%-50%, label_flip_all, bep=2, 3 seeds)")
     for f, cm, cs, pm, ps, fm, fs_ in zip(fracs, cons_m, cons_sd, peer_m, peer_sd, fpr_m, fpr_sd):
-        print(f"  byz={f}%: cons={cm:.2f}+/-{cs:.2f}%  peer={pm:.2f}+/-{ps:.2f}%  fpr={fm:.2f}+/-{fs_:.2f}%")
+        logger.info("  byz={}%: cons={:.2f}+/-{:.2f}%  peer={:.2f}+/-{:.2f}%  fpr={:.2f}+/-{:.2f}%", f, cm, cs, pm, ps, fm, fs_)
 
     for arr, sd, lbl, col, ls, mk in (
         (cons_m, cons_sd, "Consensus Acc (%)", fs.PALETTE["blue_main"], "-", "o"),
@@ -303,7 +306,7 @@ def plot_ablations_and_fpr_dynamics(
     stds = [float(rows_idx[("random", "model_poison", 30, k)]["cons_std"]) for k, _ in abl_keys]
     colors = [fr.ABLATION_COLOR[k] for k, _ in abl_keys]
 
-    print("\n=== Fig. 3(a) (50k) Section 5.5 Ablations under model_poison (3 seeds) ===")
+    logger.info("Fig. 3(a) Section 5.5 Ablations under model_poison (3 seeds)")
     bars = ax_abl.bar(
         x, means, width=0.58, yerr=stds, capsize=5,
         color=colors, edgecolor="black", linewidth=1.8,
@@ -320,7 +323,7 @@ def plot_ablations_and_fpr_dynamics(
             fontweight="bold",
             color=fs.INK,
         )
-        print(f"  {k:14s}: cons={m:.2f} +/- {s:.2f}%")
+        logger.info("  {:14s}: cons={:.2f} +/- {:.2f}%", k, m, s)
 
     ax_abl.set_xticks(x)
     ax_abl.set_xticklabels([lbl for _, lbl in abl_keys])
@@ -329,7 +332,7 @@ def plot_ablations_and_fpr_dynamics(
     ax_abl.set_ylim(0, 108)
 
     curves = data["curves"]
-    print("\n=== Fig. 3(b) (50k) Per-Round FPR Trajectory for TrustGraph-DFL ===")
+    logger.info("Fig. 3(b) Per-Round FPR Trajectory for TrustGraph-DFL")
     for atk in fr.ATTACK_ORDER:
         c = curves[f"{atk}__tg_strong"]
         rds = np.array(c["fpr_rounds"], dtype=float)
@@ -347,7 +350,7 @@ def plot_ablations_and_fpr_dynamics(
             linewidth=2.4,
         )
         ax_dyn.fill_between(rds, np.clip(fm - fsd, 0, 100), np.clip(fm + fsd, 0, 100), color=col, alpha=0.12)
-        print(f"  {atk:16s}: r1={fm[0]:.1f}% r5={fm[4]:.1f}% r15={fm[14]:.1f}% r25={fm[-1]:.1f}%")
+        logger.info("  {:16s}: r1={:.1f}% r5={:.1f}% r15={:.1f}% r25={:.1f}%", atk, fm[0], fm[4], fm[14], fm[-1])
 
     ax_dyn.set_title("(b) Per-Round FPR Climbs Near Convergence", pad=10, fontweight="bold")
     ax_dyn.set_xlabel("Communication Round")
@@ -402,8 +405,8 @@ def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
         (r"$\tau=0.035$", 100.0 * float(rx_t035_mp["fpr_cumulative"]), 100.0 * float(rx_t035_mp["byz_accept_cumulative"]), (-6, -22)),
     ]
 
-    print("\n=== Fig. 4(a) Sender vs. rxdelta Trade-off on model_poison (30% Byz, 50k CIFAR-10) ===")
-    print(f"  Base sender (3-seed)     : FPR={base_pt[0]:5.2f}%, ByzAcc={base_pt[1]:5.2f}%")
+    logger.info("Fig. 4(a) Sender vs. rxdelta Trade-off on model_poison (30% Byz, 50k CIFAR-10)")
+    logger.info("  Base sender (3-seed)     : FPR={:5.2f}%, ByzAcc={:5.2f}%", base_pt[0], base_pt[1])
 
     ax_trade.scatter(
         [base_pt[0]], [base_pt[1]],
@@ -422,7 +425,7 @@ def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
         label="rxdelta (receiver-anchored)",
     )
     for lbl, x_v, y_v, off in rx_pts:
-        print(f"  rxdelta {lbl:16s} : FPR={x_v:5.2f}%, ByzAcc={y_v:5.2f}%")
+        logger.info("  rxdelta {:16s} : FPR={:5.2f}%, ByzAcc={:5.2f}%", lbl, x_v, y_v)
         ax_trade.annotate(lbl, xy=(x_v, y_v), xytext=off, textcoords="offset points", fontsize=12.0, color=fs.PALETTE["blue_main"], fontweight="bold")
 
     ax_trade.set_title("(a) FPR vs. Byzantine Acceptance (Model Poisoning)", pad=10, fontweight="bold")
@@ -472,14 +475,14 @@ def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
         color=fs.PALETTE["blue_main"], linestyle="-", marker="s", markevery=marks, markersize=7.5, linewidth=2.8, zorder=6,
     )
 
-    print("\n=== Fig. 4(b) Per-Round FPR Trajectory on model_poison (r=1, 5, 10, 15, 25) ===")
+    logger.info("Fig. 4(b) Per-Round FPR Trajectory on model_poison (r=1, 5, 10, 15, 25)")
     for name, arr in (
         ("Base sender (3-seed)", fpr_b_m),
         ("rxdelta (tau=0.035)", fpr_rx035),
         ("rxdelta (tau=0.020)", fpr_rx020),
         ("rxdelta (tau=0.003)", fpr_rx003),
     ):
-        print(f"  {name:24s}: r1={arr[0]:5.1f}% r5={arr[4]:5.1f}% r10={arr[9]:5.1f}% r15={arr[14]:5.1f}% r25={arr[-1]:5.1f}%")
+        logger.info("  {:24s}: r1={:5.1f}% r5={:5.1f}% r10={:5.1f}% r15={:5.1f}% r25={:5.1f}%", name, arr[0], arr[4], arr[9], arr[14], arr[-1])
 
     ax_traj.set_title("(b) Per-Round FPR Over Training", pad=10, fontweight="bold")
     ax_traj.set_xlabel("Communication Round")
@@ -549,8 +552,14 @@ def plot_v100_bandwidth_waste(data: dict[str, object], out_dir: Path) -> None:
             fp_l.append(fp_mb)
             byz_l.append(bz_mb)
             wp_l.append(wp)
-            print(
-                f"  {key:24s}: rx={rx_mb:6.2f} MB | useful={u_mb:6.2f} | fp_waste={fp_mb:5.2f} | byz_waste={bz_mb:5.2f} ({wp:5.1f}% wasted)"
+            logger.info(
+                "  {:24s}: rx={:6.2f} MB | useful={:6.2f} | fp_waste={:5.2f} | byz_waste={:5.2f} ({:5.1f}% wasted)",
+                key,
+                rx_mb,
+                u_mb,
+                fp_mb,
+                bz_mb,
+                wp,
             )
         return np.array(use_l), np.array(fp_l), np.array(byz_l), wp_l
 
@@ -565,7 +574,7 @@ def plot_v100_bandwidth_waste(data: dict[str, object], out_dir: Path) -> None:
         ("4p_random_noise_sender", "Random Noise\n(sender)"),
         ("4p_model_poison_rxdelta", "Model Poison\n(rxdelta)"),
     ]
-    print("\n=== Fig. 5(a) Real 4-Peer V100 Wire Receive Traffic per Peer / Round (MB) ===")
+    logger.info("Fig. 5(a) Real 4-Peer V100 Wire Receive Traffic per Peer / Round (MB)")
     u4, f4, b4, w4 = _extract_wire_mb(specs_4p)
     x4 = np.arange(len(specs_4p), dtype=float)
     bw4 = 0.54
@@ -587,7 +596,7 @@ def plot_v100_bandwidth_waste(data: dict[str, object], out_dir: Path) -> None:
         ("2p_model_poison_sender", "Model Poison\n(sender)"),
         ("2p_model_poison_rxdelta", "Model Poison\n(rxdelta)"),
     ]
-    print("\n=== Fig. 5(b) Real 2-Peer V100 Wire Receive Traffic per Peer / Round (MB) ===")
+    logger.info("Fig. 5(b) Real 2-Peer V100 Wire Receive Traffic per Peer / Round (MB)")
     u2, f2, b2, w2 = _extract_wire_mb(specs_2p)
     x2 = np.arange(len(specs_2p), dtype=float)
     bw2 = 0.50
@@ -669,9 +678,17 @@ def plot_v100_distributed_ethernet(data: dict[str, object], out_dir: Path) -> No
             tx_was.append(w)
             shares.append(sh)
             wastes.append(wp)
-            print(
-                f"  {key:24s}: compute={c:.3f}s | tx={tx:.3f}s (net={float(mt['net_sec_per_peer']['median']):.3f}s, "
-                f"use={u:.3f}s, waste={w:.3f}s) | total={tot:.3f}s ({sh:.1f}% comm, {wp:.1f}% wasted)"
+            logger.info(
+                "  {:24s}: compute={:.3f}s | tx={:.3f}s (net={:.3f}s, use={:.3f}s, waste={:.3f}s) | total={:.3f}s ({:.1f}% comm, {:.1f}% wasted)",
+                key,
+                c,
+                tx,
+                float(mt["net_sec_per_peer"]["median"]),
+                u,
+                w,
+                tot,
+                sh,
+                wp,
             )
         return np.array(comps), np.array(tx_use), np.array(tx_was), shares, wastes
 
@@ -684,7 +701,7 @@ def plot_v100_distributed_ethernet(data: dict[str, object], out_dir: Path) -> No
         ("2p_model_poison_sender", "Model Poison\n(sender, 89.5 MB)"),
         ("2p_model_poison_rxdelta", "Model Poison\n(rxdelta, 44.7 MB)"),
     ]
-    print("\n=== Fig. 6(a) Real 2-Peer V100 Distributed Training (1 Dedicated V100 + NIC / Peer) ===")
+    logger.info("Fig. 6(a) Real 2-Peer V100 Distributed Training (1 Dedicated V100 + NIC / Peer)")
     c2, u2, w2, sh2, _ = _extract_bars(specs_2p)
     x2 = np.arange(len(specs_2p), dtype=float)
     bw2 = 0.50
@@ -708,7 +725,7 @@ def plot_v100_distributed_ethernet(data: dict[str, object], out_dir: Path) -> No
         ("4p_random_noise_sender", "Random Noise\n(sender)"),
         ("4p_model_poison_rxdelta", "Model Poison\n(rxdelta)"),
     ]
-    print("\n=== Fig. 6(b) Real 4-Peer V100 Distributed Training (2 Peers / V100, Degree 3) ===")
+    logger.info("Fig. 6(b) Real 4-Peer V100 Distributed Training (2 Peers / V100, Degree 3)")
     c4, u4, w4, sh4, _ = _extract_bars(specs_4p)
     x4 = np.arange(len(specs_4p), dtype=float)
     bw4 = 0.54
@@ -750,6 +767,7 @@ def main() -> None:
     p.add_argument("--data-v100", default="report/data/phase1_v100_distributed_2node.json")
     p.add_argument("--out-dir", default="report/figures")
     args = p.parse_args()
+    configure_logging()
 
     data_50k = json.loads(Path(args.data_50k).read_text(encoding="utf-8"))
     data_rxdelta = json.loads(Path(args.data_rxdelta).read_text(encoding="utf-8"))
