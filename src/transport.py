@@ -14,7 +14,10 @@ import time
 import numpy as np
 import torch
 
+from src.logging_utils import get_logger
 from src.peer import PeerPayload, sync_device
+
+logger = get_logger()
 
 
 @dataclass
@@ -742,11 +745,17 @@ def _time_transfer_workloads(
             "goodput_mbps": round(mbps, 2),
             "samples_sec": [round(t, 6) for t in times],
         }
-        print(
-            f"[client {socket.gethostname()} -> {host}] {name:20s} "
-            f"({n_bytes / 1e6:6.2f} MB): median={med:.4f}s "
-            f"(min={mn:.4f}s, max={mx:.4f}s, n={len(times)}) -> {mbps:.1f} Mb/s",
-            flush=True,
+        logger.info(
+            "[client {} -> {}] {:20s} ({:6.2f} MB): median={:.4f}s (min={:.4f}s, max={:.4f}s, n={}) -> {:.1f} Mb/s",
+            socket.gethostname(),
+            host,
+            name,
+            n_bytes / 1e6,
+            med,
+            mn,
+            mx,
+            len(times),
+            mbps,
         )
     return results
 
@@ -802,11 +811,11 @@ def run_transfer_benchmark(
         srv.settimeout(90.0)
         srv.bind(("0.0.0.0", port))
         srv.listen(1)
-        print(f"[server {socket.gethostname()}] listening on 0.0.0.0:{port}", flush=True)
+        logger.info("[server {}] listening on 0.0.0.0:{}", socket.gethostname(), port)
         conn, addr = srv.accept()
         conn.settimeout(90.0)
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        print(f"[server {socket.gethostname()}] accepted connection from {addr[0]}:{addr[1]}", flush=True)
+        logger.info("[server {}] accepted connection from {}:{}", socket.gethostname(), addr[0], addr[1])
         try:
             _serve_transfer_workloads(conn, workloads)
         finally:
@@ -817,7 +826,7 @@ def run_transfer_benchmark(
     if connected_sock is not None:
         results = _time_transfer_workloads(connected_sock, host, workloads)
     else:
-        print(f"[client {socket.gethostname()}] connecting to {host}:{port}", flush=True)
+        logger.info("[client {}] connecting to {}:{}", socket.gethostname(), host, port)
         sock: socket.socket | None = None
         for attempt in range(180):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

@@ -11,6 +11,7 @@ import torch
 
 from src.attacks import label_flip_mode_for_attack
 from src.data import PartitionedDataset, apply_label_flip
+from src.logging_utils import get_logger, run_log_sink
 from src.metrics import MetricsTracker
 from src.models import build_model, evaluate_accuracy, model_to_vector, vector_to_model
 from src.peer import PeerNode
@@ -143,6 +144,7 @@ def run_distributed_peer(
         Dictionary with 'summary' and 'history' on rank 0, or None on non-zero ranks.
     """
     run_cfg = replace(cfg, n_nodes=world_size)
+    log = get_logger(rank=rank, include_host=True)
     agg_cfg = run_cfg.aggregator_config()
     atk_cfg = run_cfg.attack_config()
     if init_vec is None:
@@ -246,172 +248,201 @@ def run_distributed_peer(
 
     had_nan = False
     t_run_start = time.perf_counter()
+    log_file = (out_path / "run.log") if (rank == 0 and out_path is not None) else None
 
-    try:
-        transport.barrier()
-        for r in range(run_cfg.rounds):
-            t_round_start = time.perf_counter()
-            lr_now = learning_rate_for_round(run_cfg, r)
-            node_epochs = (
-                run_cfg.byz_local_epochs if (is_byz and run_cfg.byz_local_epochs > 0) else run_cfg.local_epochs
-            )
-            step = peer.local_step(
-                lr=lr_now,
-                momentum=run_cfg.momentum,
-                weight_decay=run_cfg.weight_decay,
-                batch_size=run_cfg.batch_size,
-                epochs=node_epochs,
-                augment=run_cfg.augment,
-                grad_clip_norm=run_cfg.grad_clip_norm,
-                val_grad_weight_decay=run_cfg.val_grad_weight_decay,
-                train_gen=train_gen,
-                skip_training=False,
-            )
-            payload = peer.prepare_decentralized_payload(step, atk_cfg, attack_gen)
-            received, tx_stats = transport.exchange(rank, neighbors, payload)
-            agg_res, agg_sec = peer.aggregate_received(step, received, agg_cfg, run_cfg.attack)
+    with run_log_sink(log_file):
+        try:
+            if rank == 0 and run_cfg.verbose:
+                log.info(
+                    "Start distributed run: world={} model={} topo={} attack={} byz={:.0%} delta={} wire={:.2f}MB/nbr rounds={} seed={} device={}",
+                    world_size,
+                    run_cfg.model_name,
+                    run_cfg.topology,
+                    run_cfg.attack,
+                    byz_frac_eff,
+                    run_cfg.trustgraph_delta_mode,
+                    (param_count * 4 * (2 if transport.send_both_vectors else 1)) / 1e6,
+                    run_cfg.rounds,
+                    run_cfg.seed,
+                    device,
+                )
+            transport.barrier()
+            for r in range(run_cfg.rounds):
+                t_round_start = time.perf_counter()
+                lr_now = learning_rate_for_round(run_cfg, r)
+                node_epochs = (
+                    run_cfg.byz_local_epochs if (is_byz and run_cfg.byz_local_epochs > 0) else run_cfg.local_epochs
+                )
+                step = peer.local_step(
+                    lr=lr_now,
+                    momentum=run_cfg.momentum,
+                    weight_decay=run_cfg.weight_decay,
+                    batch_size=run_cfg.batch_size,
+                    epochs=node_epochs,
+                    augment=run_cfg.augment,
+                    grad_clip_norm=run_cfg.grad_clip_norm,
+                    val_grad_weight_decay=run_cfg.val_grad_weight_decay,
+                    train_gen=train_gen,
+                    skip_training=False,
+                )
+                payload = peer.prepare_decentralized_payload(step, atk_cfg, attack_gen)
+                received, tx_stats = transport.exchange(rank, neighbors, payload)
+                agg_res, agg_sec = peer.aggregate_received(step, received, agg_cfg, run_cfg.attack)
 
-            local_finite = peer.has_finite_weights()
-            do_eval = should_eval(r, run_cfg.rounds, run_cfg.eval_every)
-            local_eval: tuple[float, float] | None = None
-            if do_eval and not is_byz:
-                local_eval = peer.evaluate(x_test, y_test, run_cfg.eval_batch_size)
+                local_finite = peer.has_finite_weights()
+                do_eval = should_eval(r, run_cfg.rounds, run_cfg.eval_every)
+                local_eval: tuple[float, float] | None = None
+                if do_eval and not is_byz:
+                    local_eval = peer.evaluate(x_test, y_test, run_cfg.eval_batch_size)
 
-            edge_report: list[dict[str, object]] = []
-            byz_w_share = 0.0
-            self_fallback = False
-            if agg_res is not None:
-                self_fallback = agg_res.self_fallback
-                total_w = sum(agg_res.neighbor_weights.values())
-                byz_w = sum(agg_res.neighbor_weights[j] for j in neighbors if j in byzantine_ids)
-                byz_w_share = (byz_w / total_w) if total_w > 0.0 else 0.0
-                for j in neighbors:
-                    edge_report.append(
-                        {
-                            "sender_id": j,
-                            "zero_frac": agg_res.neighbor_zero_weight_frac[j],
-                            "score": agg_res.scores.get(j),
+                edge_report: list[dict[str, object]] = []
+                byz_w_share = 0.0
+                self_fallback = False
+                if agg_res is not None:
+                    self_fallback = agg_res.self_fallback
+                    total_w = sum(agg_res.neighbor_weights.values())
+                    byz_w = sum(agg_res.neighbor_weights[j] for j in neighbors if j in byzantine_ids)
+                    byz_w_share = (byz_w / total_w) if total_w > 0.0 else 0.0
+                    for j in neighbors:
+                        edge_report.append(
+                            {
+                                "sender_id": j,
+                                "zero_frac": agg_res.neighbor_zero_weight_frac[j],
+                                "score": agg_res.scores.get(j),
+                            }
+                        )
+
+                peer_round_msg: dict[str, object] = {
+                    "rank": rank,
+                    "is_byzantine": is_byz,
+                    "finite": local_finite,
+                    "train_sec": step.train_sec,
+                    "val_grad_sec": step.val_grad_sec,
+                    "agg_sec": agg_sec,
+                    "d2h_sec": tx_stats.d2h_sec,
+                    "net_sec": tx_stats.net_sec,
+                    "h2d_sec": tx_stats.h2d_sec,
+                    "wire_bytes_recv": tx_stats.bytes_recv,
+                    "self_fallback": self_fallback,
+                    "byz_weight_share": byz_w_share,
+                    "edges": edge_report,
+                    "eval_acc": local_eval[0] if local_eval is not None else None,
+                    "eval_loss": local_eval[1] if local_eval is not None else None,
+                }
+                gathered_msgs = transport.gather_json(peer_round_msg)
+                gathered_vecs = transport.gather_tensors(peer.model_vec) if do_eval else None
+
+                if rank == 0 and tracker is not None and gathered_msgs is not None:
+                    ben_msgs = [m for m in gathered_msgs if not m["is_byzantine"]]
+                    if not had_nan and any(not bool(m["finite"]) for m in ben_msgs):
+                        had_nan = True
+                        log.warning("Non-finite weights detected on round {}/{}", r + 1, run_cfg.rounds)
+
+                    n_ben = max(len(ben_msgs), 1)
+                    train_mean = sum(float(m["train_sec"]) for m in ben_msgs) / n_ben
+                    val_mean = sum(float(m["val_grad_sec"]) for m in ben_msgs) / n_ben
+                    agg_stats = tracker.summarize_benign_round(
+                        benign_reports=ben_msgs,
+                        agg_sec_per_peer=sum(float(m["agg_sec"]) for m in ben_msgs) / n_ben,
+                        d2h_sec_per_peer=sum(float(m["d2h_sec"]) for m in ben_msgs) / n_ben,
+                        net_sec_per_peer=sum(float(m["net_sec"]) for m in ben_msgs) / n_ben,
+                        h2d_sec_per_peer=sum(float(m["h2d_sec"]) for m in ben_msgs) / n_ben,
+                        wire_bytes_recv_per_peer=sum(float(m["wire_bytes_recv"]) for m in ben_msgs) / n_ben,
+                    )
+
+                    eval_metrics: dict[str, float] | None = None
+                    if do_eval and gathered_vecs is not None:
+                        accs = [float(m["eval_acc"]) for m in ben_msgs if m["eval_acc"] is not None]
+                        losses = [float(m["eval_loss"]) for m in ben_msgs if m["eval_loss"] is not None]
+                        cons_vec = torch.stack([gathered_vecs[i] for i in benign_ids], dim=0).mean(dim=0).to(device)
+                        vector_to_model(cons_vec, peer.model)
+                        cons_acc, cons_loss = evaluate_accuracy(peer.model, x_test, y_test, batch_size=run_cfg.eval_batch_size)
+                        eval_metrics = {
+                            "benign_test_acc_mean": float(np.mean(accs)),
+                            "benign_test_acc_std": float(np.std(accs)),
+                            "benign_test_acc_min": float(np.min(accs)),
+                            "benign_test_acc_max": float(np.max(accs)),
+                            "benign_test_loss_mean": float(np.mean(losses)),
+                            "consensus_test_acc": float(cons_acc),
+                            "consensus_test_loss": float(cons_loss),
                         }
+
+                    rec = tracker.record_round(
+                        round_idx=r,
+                        train_sec_per_peer=train_mean,
+                        val_grad_sec_per_peer=val_mean,
+                        agg_stats=agg_stats,
+                        eval_metrics=eval_metrics,
+                        round_wall_sec=time.perf_counter() - t_round_start,
                     )
+                    if history_file is not None:
+                        history_file.write(json.dumps(rec) + "\n")
+                        history_file.flush()
+                    if run_cfg.verbose and do_eval:
+                        log.info(
+                            "[round {:3d}/{}] acc={:5.2f}% cons={:5.2f}% fpr={:5.1f}% byz_acc={:5.1f}% net={:.3f}s wall={:.2f}s",
+                            r + 1,
+                            run_cfg.rounds,
+                            100.0 * float(rec["benign_test_acc_mean"]),
+                            100.0 * float(rec["consensus_test_acc"]),
+                            100.0 * float(rec["fpr_round"]),
+                            100.0 * float(rec["byz_accept_rate"]),
+                            float(rec.get("net_sec_per_peer", 0.0)),
+                            float(rec["round_wall_sec"]),
+                        )
 
-            peer_round_msg: dict[str, object] = {
-                "rank": rank,
-                "is_byzantine": is_byz,
-                "finite": local_finite,
-                "train_sec": step.train_sec,
-                "val_grad_sec": step.val_grad_sec,
-                "agg_sec": agg_sec,
-                "d2h_sec": tx_stats.d2h_sec,
-                "net_sec": tx_stats.net_sec,
-                "h2d_sec": tx_stats.h2d_sec,
-                "wire_bytes_recv": tx_stats.bytes_recv,
-                "self_fallback": self_fallback,
-                "byz_weight_share": byz_w_share,
-                "edges": edge_report,
-                "eval_acc": local_eval[0] if local_eval is not None else None,
-                "eval_loss": local_eval[1] if local_eval is not None else None,
-            }
-            gathered_msgs = transport.gather_json(peer_round_msg)
-            gathered_vecs = transport.gather_tensors(peer.model_vec) if do_eval else None
-
-            if rank == 0 and tracker is not None and gathered_msgs is not None:
-                ben_msgs = [m for m in gathered_msgs if not m["is_byzantine"]]
-                if any(not bool(m["finite"]) for m in ben_msgs):
-                    had_nan = True
-
-                n_ben = max(len(ben_msgs), 1)
-                train_mean = sum(float(m["train_sec"]) for m in ben_msgs) / n_ben
-                val_mean = sum(float(m["val_grad_sec"]) for m in ben_msgs) / n_ben
-                agg_stats = tracker.summarize_benign_round(
-                    benign_reports=ben_msgs,
-                    agg_sec_per_peer=sum(float(m["agg_sec"]) for m in ben_msgs) / n_ben,
-                    d2h_sec_per_peer=sum(float(m["d2h_sec"]) for m in ben_msgs) / n_ben,
-                    net_sec_per_peer=sum(float(m["net_sec"]) for m in ben_msgs) / n_ben,
-                    h2d_sec_per_peer=sum(float(m["h2d_sec"]) for m in ben_msgs) / n_ben,
-                    wire_bytes_recv_per_peer=sum(float(m["wire_bytes_recv"]) for m in ben_msgs) / n_ben,
-                )
-
-                eval_metrics: dict[str, float] | None = None
-                if do_eval and gathered_vecs is not None:
-                    accs = [float(m["eval_acc"]) for m in ben_msgs if m["eval_acc"] is not None]
-                    losses = [float(m["eval_loss"]) for m in ben_msgs if m["eval_loss"] is not None]
-                    cons_vec = torch.stack([gathered_vecs[i] for i in benign_ids], dim=0).mean(dim=0).to(device)
-                    vector_to_model(cons_vec, peer.model)
-                    cons_acc, cons_loss = evaluate_accuracy(peer.model, x_test, y_test, batch_size=run_cfg.eval_batch_size)
-                    eval_metrics = {
-                        "benign_test_acc_mean": float(np.mean(accs)),
-                        "benign_test_acc_std": float(np.std(accs)),
-                        "benign_test_acc_min": float(np.min(accs)),
-                        "benign_test_acc_max": float(np.max(accs)),
-                        "benign_test_loss_mean": float(np.mean(losses)),
-                        "consensus_test_acc": float(cons_acc),
-                        "consensus_test_loss": float(cons_loss),
-                    }
-
-                rec = tracker.record_round(
-                    round_idx=r,
-                    train_sec_per_peer=train_mean,
-                    val_grad_sec_per_peer=val_mean,
-                    agg_stats=agg_stats,
-                    eval_metrics=eval_metrics,
-                    round_wall_sec=time.perf_counter() - t_round_start,
-                )
-                if history_file is not None:
-                    history_file.write(json.dumps(rec) + "\n")
-                    history_file.flush()
-                if run_cfg.verbose and do_eval:
-                    print(
-                        f"[dist r={r + 1:3d}/{run_cfg.rounds}] "
-                        f"acc={100.0 * float(rec['benign_test_acc_mean']):5.2f}% "
-                        f"(cons={100.0 * float(rec['consensus_test_acc']):5.2f}%) "
-                        f"fpr={100.0 * float(rec['fpr_round']):5.1f}% "
-                        f"byz_acc={100.0 * float(rec['byz_accept_rate']):5.1f}% "
-                        f"net={float(rec.get('net_sec_per_peer', 0.0)):.3f}s "
-                        f"({float(rec['round_wall_sec']):.2f}s)",
-                        flush=True,
-                    )
-
-        local_peak_alloc = (
-            round(float(torch.cuda.max_memory_allocated(device)) / float(1024 ** 2), 2)
-            if device.type == "cuda"
-            else None
-        )
-        local_peak_res = (
-            round(float(torch.cuda.max_memory_reserved(device)) / float(1024 ** 2), 2)
-            if device.type == "cuda"
-            else None
-        )
-        mem_reports = transport.gather_json(
-            {"rank": rank, "peak_gpu_alloc_mib": local_peak_alloc, "peak_gpu_reserved_mib": local_peak_res}
-        )
-
-        if rank == 0 and tracker is not None:
-            allocs = [float(m["peak_gpu_alloc_mib"]) for m in (mem_reports or []) if m["peak_gpu_alloc_mib"] is not None]
-            resvs = [float(m["peak_gpu_reserved_mib"]) for m in (mem_reports or []) if m["peak_gpu_reserved_mib"] is not None]
-            summary = tracker.finalize_summary(
-                config_dict=asdict(run_cfg),
-                resolved_device=str(device),
-                topo_info=topo_info,
-                total_wall_sec=time.perf_counter() - t_run_start,
-                had_nan=had_nan,
-                peak_gpu_alloc_mib=round(max(allocs), 2) if allocs else None,
-                peak_gpu_reserved_mib=round(max(resvs), 2) if resvs else None,
+            local_peak_alloc = (
+                round(float(torch.cuda.max_memory_allocated(device)) / float(1024 ** 2), 2)
+                if device.type == "cuda"
+                else None
             )
-            summary["execution_mode"] = "distributed"
-            summary["world_size"] = world_size
-            summary["send_both_vectors"] = bool(transport.send_both_vectors)
-            summary["wire_bytes_per_neighbor"] = int(param_count * 4 * (2 if transport.send_both_vectors else 1))
-            summary["peers"] = peer_endpoints
-            if out_path is not None:
-                with open(out_path / "summary.json", "w", encoding="utf-8") as f:
-                    json.dump(summary, f, indent=2)
-            return {"summary": summary, "history": tracker.history}
-        return None
-    finally:
-        if history_file is not None:
-            history_file.close()
-        if owns_transport and transport is not None:
-            transport.close()
+            local_peak_res = (
+                round(float(torch.cuda.max_memory_reserved(device)) / float(1024 ** 2), 2)
+                if device.type == "cuda"
+                else None
+            )
+            mem_reports = transport.gather_json(
+                {"rank": rank, "peak_gpu_alloc_mib": local_peak_alloc, "peak_gpu_reserved_mib": local_peak_res}
+            )
+
+            if rank == 0 and tracker is not None:
+                allocs = [float(m["peak_gpu_alloc_mib"]) for m in (mem_reports or []) if m["peak_gpu_alloc_mib"] is not None]
+                resvs = [float(m["peak_gpu_reserved_mib"]) for m in (mem_reports or []) if m["peak_gpu_reserved_mib"] is not None]
+                summary = tracker.finalize_summary(
+                    config_dict=asdict(run_cfg),
+                    resolved_device=str(device),
+                    topo_info=topo_info,
+                    total_wall_sec=time.perf_counter() - t_run_start,
+                    had_nan=had_nan,
+                    peak_gpu_alloc_mib=round(max(allocs), 2) if allocs else None,
+                    peak_gpu_reserved_mib=round(max(resvs), 2) if resvs else None,
+                )
+                summary["execution_mode"] = "distributed"
+                summary["world_size"] = world_size
+                summary["send_both_vectors"] = bool(transport.send_both_vectors)
+                summary["wire_bytes_per_neighbor"] = int(param_count * 4 * (2 if transport.send_both_vectors else 1))
+                summary["peers"] = peer_endpoints
+                if out_path is not None:
+                    with open(out_path / "summary.json", "w", encoding="utf-8") as f:
+                        json.dump(summary, f, indent=2)
+                if run_cfg.verbose:
+                    log.success(
+                        "Finished distributed run in {:.1f}s: acc={:.2f}% cons={:.2f}% fpr={:.2f}% byz_acc={:.2f}% waste={:.1f}% nan={}",
+                        float(summary["total_wall_sec"]),
+                        100.0 * float(summary["final_benign_test_acc_mean"]),
+                        100.0 * float(summary["final_consensus_test_acc"]),
+                        100.0 * float(summary["fpr_cumulative"]),
+                        100.0 * float(summary["byz_accept_cumulative"]),
+                        float(summary["system_metrics"]["wasted_transfer_pct"]),
+                        had_nan,
+                    )
+                return {"summary": summary, "history": tracker.history}
+            return None
+        finally:
+            if history_file is not None:
+                history_file.close()
+            if owns_transport and transport is not None:
+                transport.close()
 
 
 def run_distributed_experiment(
