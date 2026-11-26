@@ -117,7 +117,6 @@ See [report/phase1/reproduce_report.md](report/phase1/reproduce_report.md) for t
 ```text
 .
 ├── AGENTS.md                       # Repository scope, testing rules, and lab Slurm conventions
-├── TrustGraph-DFL.pdf              # Target paper (Xu et al., CIBDA 2026)
 ├── pyproject.toml                  # uv project and dependency specification
 ├── src/
 │   ├── aggregators.py              # TrustGraph-DFL aggregation (sender/receiver delta and clipping)
