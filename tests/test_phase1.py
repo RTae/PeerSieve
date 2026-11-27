@@ -106,7 +106,7 @@ def test_trustgraph_sign_direction_and_self_fallback() -> None:
     assert res_pos.scores[1] < -0.99 and res_pos.scores[2] > 0.99
     assert res_pos.neighbor_weights[1] == 0.0 and res_pos.neighbor_weights[2] > 0.99
 
-    # Invalid validation sign strings are rejected strictly.
+    # Reject unknown validation gradient signs.
     import pytest
 
     with pytest.raises(ValueError, match="Unknown val_grad_sign"):
@@ -166,7 +166,7 @@ def test_vector_to_model_does_not_alias_source_vector() -> None:
 
 
 def test_end_to_end_synthetic_model_poison_shows_sign_effect() -> None:
-    """Fast synthetic DFL smoke test confirming descent defends while ascent degrades."""
+    """Synthetic DFL smoke test checking that descent defends and ascent degrades."""
     base = ExperimentConfig(
         dataset="synthetic",
         n_nodes=10,
@@ -383,9 +383,9 @@ def test_trustgraph_receiver_anchored_delta_mode() -> None:
     self_prev = torch.tensor([0.0, 0.0, 0.0])
     self_update = torch.tensor([0.2, 0.0, 0.0])
     self_post = self_prev + self_update
-    # Receiver wants to move along +x (val_grad = [-1, 0, 0] -> descent = [+1, 0, 0]).
+    # Receiver wants to move along +x (val_grad = [-1, 0, 0], so descent direction is [+1, 0, 0]).
     val_grad = torch.tensor([-1.0, 0.0, 0.0])
-    # Neighbor j ALREADY moved to x=+1.0 in prior rounds, and took a noisy tiny step [-0.05, 0.1, 0] this round.
+    # Neighbor j already moved to x=+1.0 in earlier rounds and took a small noisy step [-0.05, 0.1, 0] this round.
     nbr_post = torch.tensor([0.95, 0.1, 0.0])
     nbr_sender_update = torch.tensor([-0.05, 0.1, 0.0])
 
@@ -616,7 +616,7 @@ def test_distributed_peers_end_to_end_socketpair(tmp_path: Path) -> None:
 
 
 def test_distributed_rxdelta_wire_bytes_and_adjacent_byzantine_stability(tmp_path: Path) -> None:
-    """Confirm receiver-anchored mode sends one vector and adjacent attackers stay finite even if rank 0 is Byzantine."""
+    """Check that receiver-anchored mode sends one vector and adjacent attackers stay finite when rank 0 is Byzantine."""
     import threading
     from src.distributed import run_distributed_peer
     from src.simulator import prepare_dataset, seed_everything
