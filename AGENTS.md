@@ -1,11 +1,11 @@
-# Peersieve
+# PeerSieve
 
 ## Scope and source files
 
-This repository contains the PyTorch CIFAR-10 reproduction, robustness audit, receiver-anchored (`rxdelta`) false positive rate (FPR) study, and system-cost measurements of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026), managed with `uv`.
+This repository contains the PyTorch CIFAR-10 reproduction, defense audit, receiver-anchored (`rxdelta`) false positive rate (FPR) study, and system-cost measurements of [TrustGraph-DFL](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026), managed with `uv`.
 
-- **`src/`.** Core decentralized FL components: [peer.py](src/peer.py) (`PeerNode`), [transport.py](src/transport.py) (`LocalTransport`, `TcpPeerTransport`, `run_transfer_benchmark`), [metrics.py](src/metrics.py) (`MetricsTracker`), [distributed.py](src/distributed.py) (`run_distributed_experiment`), [simulator.py](src/simulator.py) (`run_experiment`), [aggregators.py](src/aggregators.py) (`aggregate_trustgraph`), [attacks.py](src/attacks.py), [data.py](src/data.py), [models.py](src/models.py) (`SimpleCIFARCNN`, `GroupNormCIFARCNN`, `PretrainedResNet18CIFAR`), and [topology.py](src/topology.py).
-- **`experiments/phase1/`.** Suite definitions ([suites.py](experiments/phase1/suites.py)), CLI runner supporting local, sharded suite, distributed multi-GPU, and TCP transfer benchmark modes ([run.py](experiments/phase1/run.py)), summary aggregator ([summarize.py](experiments/phase1/summarize.py)), publication figure generator ([plot_figures.py](experiments/phase1/plot_figures.py)), house style ([figstyle.py](experiments/phase1/figstyle.py), leave unedited), fixed visual encodings ([figroles.py](experiments/phase1/figroles.py)), reproduction guide ([REPRODUCE.md](experiments/phase1/REPRODUCE.md)), and Slurm launcher ([slurm_run.sh](experiments/phase1/slurm_run.sh)).
+- **`src/`.** Core decentralized FL components: [peer.py](src/peer.py) (`PeerNode`), [transport.py](src/transport.py) (`LocalTransport`, `TcpPeerTransport`, `run_transfer_benchmark`), [metrics.py](src/metrics.py) (`MetricsTracker`), [distributed.py](src/distributed.py) (`run_distributed_experiment`), [simulator.py](src/simulator.py) (`run_experiment`), [aggregators.py](src/aggregators.py) (`aggregate_trustgraph`), [attacks.py](src/attacks.py), [data.py](src/data.py), [logging_utils.py](src/logging_utils.py), [models.py](src/models.py) (`SimpleCIFARCNN`, `GroupNormCIFARCNN`, `PretrainedResNet18CIFAR`), and [topology.py](src/topology.py).
+- **`experiments/phase1/`.** Suite definitions ([suites.py](experiments/phase1/suites.py)), CLI runner supporting local, sharded suite, distributed multi-GPU, and TCP transfer benchmark modes ([run.py](experiments/phase1/run.py)), summary aggregator ([summarize.py](experiments/phase1/summarize.py)), figure generator ([plot_figures.py](experiments/phase1/plot_figures.py)), house style ([figstyle.py](experiments/phase1/figstyle.py), leave unedited), fixed visual encodings ([figroles.py](experiments/phase1/figroles.py)), reproduction guide ([REPRODUCE.md](experiments/phase1/REPRODUCE.md)), and Slurm launcher ([slurm_run.sh](experiments/phase1/slurm_run.sh)).
 - **`tests/`.** Unit and offline synthetic DFL integration suite ([test_phase1.py](tests/test_phase1.py)).
 - **`report/`.** Phase 1 reports under `report/phase1/` ([reproduce_report.md](report/phase1/reproduce_report.md) and [motivation_report.md](report/phase1/motivation_report.md)), committed TrustGraph-DFL 3-seed, `rxdelta` FPR, and system-metrics datasets under `report/data/`, and 300 dpi PNG plus header-free PDF figures under `report/figures/`.
 
@@ -20,7 +20,7 @@ Keep `outputs/`, `data/`, and `logs/` out of Git. Do not restore deleted interme
   - **Validation split.** Compare literal `val=local` (10% local non-IID shard) against balanced `val=iid` (250 stratified samples per node on 50k).
   - **Reference anchor.** Compare strict `sender` ($\theta_j^{t+1/2}-\theta_j^t$) against receiver-anchored `rxdelta` ($\theta_j^{t+1/2}-\theta_i^t$).
   - **Accuracy metrics.** Report per-peer benign mean (`Final Acc`) alongside consensus parameter average (`Cons Acc`), FPR, and Byzantine acceptance rate.
-- Leave `experiments/phase1/figstyle.py` unchanged when drawing figures unless explicitly instructed. Generate figures strictly from committed `report/data/*.json` via `uv run python -m experiments.phase1.plot_figures`, visually inspect generated PNGs for layout clarity, and verify exported PDFs contain no header or footnote text (`pdftotext`).
+- Leave `experiments/phase1/figstyle.py` unchanged when drawing figures unless explicitly instructed. Generate figures from committed `report/data/*.json` via `uv run python -m experiments.phase1.plot_figures`, visually inspect generated PNGs for layout clarity, and verify exported PDFs contain no header or footnote text (`pdftotext`).
 
 ## Lab hardware and Slurm
 

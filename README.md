@@ -75,12 +75,12 @@ uv run python -m experiments.phase1.plot_figures --help
 
 ### How configuration layering works (`single` and `distributed`)
 
-Instead of requiring 40 flags on every command, `single` and `distributed` layer settings in four steps (later steps override earlier ones):
+Both `single` and `distributed` load settings in four layers, where each later layer overrides earlier ones:
 
-1. `--preset`: starts from `resnet18_50k` (default: pretrained ResNet-18, 2,500 images/peer, 25 rounds, cosine LR, `val=iid`, gradient and model clipping) or `cnn_10k` (literal 10k 2-conv CNN defaults).
-2. `--config path.json`: optionally loads a JSON config file (including any previous run's saved `config.json`).
-3. Core CLI flags: everyday flags such as `--attack`, `--byzantine-frac`, `--topology`, `--val-grad-sign`, `--delta-mode`, `--rounds`, `--device`.
-4. `--set key=value`: repeatable typed override for *any* field in [ExperimentConfig](src/simulator.py) (for example `--set er_p=1.0 --set byz_local_epochs=2 --set trustgraph_use_relu=false`).
+1. `--preset`: starts from `resnet18_50k` (pretrained ResNet-18, 2,500 images per peer, 25 rounds, cosine learning rate, `val=iid`, gradient and model clipping) or `cnn_10k` (literal 10k 2-conv CNN defaults).
+2. `--config path.json`: loads a JSON config file, including any previous run's saved `config.json`.
+3. Core CLI flags: everyday flags such as `--attack`, `--byzantine-frac`, `--topology`, `--val-grad-sign`, `--delta-mode`, `--rounds`, and `--device`.
+4. `--set key=value`: repeatable typed override for any field in [ExperimentConfig](src/simulator.py), such as `--set er_p=1.0 --set byz_local_epochs=2 --set trustgraph_use_relu=false`.
 
 ### 1. Experiment runner (`experiments.phase1.run`)
 
@@ -88,13 +88,13 @@ Instead of requiring 40 flags on every command, `single` and `distributed` layer
 |---|---|---|
 | `single` | All peers in one process (`LocalTransport`) | Test one custom attack, topology, or hyperparameter setting |
 | `suite` | Runs a named grid from [suites.py](experiments/phase1/suites.py) | Reproduce paper tables and sweeps (supports multi-GPU sharding) |
-| `distributed` | One OS process per peer over TCP (`TcpPeerTransport`) | Measure real multi-GPU or multi-node Ethernet communication |
+| `distributed` | One OS process per peer over TCP (`TcpPeerTransport`) | Measure multi-GPU or inter-node Ethernet communication |
 | `transfer-bench` | Point-to-point TCP payload timer between two hosts | Measure raw cluster Ethernet goodput without GPU training |
 | `list-suites` | Lists registered suites and run counts | Check available `--suite` names before launching a sweep |
 
-#### `single` — run one custom experiment
+#### Custom single-process run (`single`)
 
-Outputs are written under `<output-root>/single/<tag>/seed_<id>/`. Pass multiple seeds as a comma-separated list (`--seeds 42,43,44`) or by repeating `--seed`.
+The command writes outputs under `<output-root>/single/<tag>/seed_<id>/`. Pass multiple seeds as a comma-separated list (`--seeds 42,43,44`) or repeat `--seed`.
 
 ```bash
 uv run python -m experiments.phase1.run single \
@@ -108,9 +108,9 @@ uv run python -m experiments.phase1.run single \
   --delta-mode receiver --set trustgraph_score_threshold=0.02 --seed 42
 ```
 
-#### `suite` — run a named benchmark suite
+#### Named benchmark suite (`suite`)
 
-Outputs are written under `<output-root>/<suite>/<run-name>/seed_<id>/`, plus `<output-root>/<suite>/suite_summaries.json`. For multi-GPU parallel execution, split jobs with `--shard-index` and `--num-shards` (or let [slurm_run.sh](experiments/phase1/slurm_run.sh) shard automatically across allocated GPUs).
+The command writes per-run outputs under `<output-root>/<suite>/<run-name>/seed_<id>/` and a combined summary at `<output-root>/<suite>/suite_summaries.json`. For multi-GPU runs, split jobs with `--shard-index` and `--num-shards`, or let [slurm_run.sh](experiments/phase1/slurm_run.sh) shard jobs across allocated GPUs.
 
 ```bash
 # List all available suites
@@ -122,13 +122,13 @@ uv run python -m experiments.phase1.run suite \
   --seeds 42,43,44 --skip-existing --output-root outputs/phase1_50k
 ```
 
-#### `distributed` — run real multi-process peers over TCP
+#### Multi-process peers over TCP (`distributed`)
 
-Each peer runs in its own OS process (`RANK` / `WORLD_SIZE` from `torchrun`, or `SLURM_PROCID` / `SLURM_NTASKS` from Slurm `srun`). Rank `0` writes `config.json`, `history.jsonl`, `summary.json`, and `run.log` under `<output-root>/distributed/<tag>/seed_<id>/`.
+Each peer runs in its own OS process (`RANK` and `WORLD_SIZE` from `torchrun`, or `SLURM_PROCID` and `SLURM_NTASKS` from Slurm `srun`). Rank `0` writes `config.json`, `history.jsonl`, `summary.json`, and `run.log` under `<output-root>/distributed/<tag>/seed_<id>/`.
 
 - Omit `--dist-iface` for single-node loopback TCP (`127.0.0.1`).
 - Pass `--dist-iface enp68s0f0` for inter-node Ethernet TCP across separate servers.
-- Set `--delta-mode sender` (`89.45 MB`/neighbor, 2 vectors) or `receiver` (`44.73 MB`/neighbor, 1 vector).
+- Set `--delta-mode sender` (`89.45 MB` per neighbor, 2 vectors) or `receiver` (`44.73 MB` per neighbor, 1 vector).
 
 ```bash
 # Single-node 4-GPU launch with torchrun
@@ -137,9 +137,9 @@ uv run torchrun --standalone --nproc_per_node=4 -m experiments.phase1.run distri
   --attack model_poison --byzantine-frac 0.25 --seed 42 --output-root outputs/dist_run
 ```
 
-#### `transfer-bench` — measure raw TCP link speed
+#### Point-to-point TCP link benchmark (`transfer-bench`)
 
-Run with `--role server` on node A and `--role client --host <node-A-ip>` on node B (or `--role auto` under `srun --ntasks=2 --ntasks-per-node=1`):
+Run with `--role server` on node A and `--role client --host <node-A-ip>` on node B, or use `--role auto` under `srun --ntasks=2 --ntasks-per-node=1`:
 
 ```bash
 uv run python -m experiments.phase1.run transfer-bench \
@@ -149,7 +149,7 @@ uv run python -m experiments.phase1.run transfer-bench \
 
 ### 2. Result summarizer (`experiments.phase1.summarize`)
 
-Recursively finds every `summary.json` under `ROOT`, deduplicates `(config, seed)`, logs Markdown accuracy and system-cost tables via `loguru`, and optionally writes a Markdown file (`--out`) or aggregated JSON (`--export-system-json`).
+Finds every `summary.json` under `ROOT`, deduplicates `(config, seed)`, logs Markdown accuracy and system-cost tables via `loguru`, and optionally writes a Markdown file (`--out`) or aggregated JSON (`--export-system-json`).
 
 ```bash
 uv run python -m experiments.phase1.summarize outputs/phase1_50k \
@@ -157,11 +157,11 @@ uv run python -m experiments.phase1.summarize outputs/phase1_50k \
   --out outputs/phase1_50k/summary_table.md
 ```
 
-| Argument / Flag | Default | Description |
+| Argument or flag | Default | Description |
 |---|---|---|
 | `ROOT` | *(required)* | Directory searched recursively for `summary.json` files |
 | `--out` | `None` | Write the rendered Markdown report to this file path |
-| `--title` | `"Phase 1 Experiment Summary"` | Top-level Markdown heading |
+| `--title` | `"TrustGraph-DFL Experiment Summary"` | Top-level Markdown heading |
 | `--export-system-json` | `None` | Export aggregated system metrics across runs to JSON |
 | `--transfer-bench-json` | `None` | Embed a `transfer-bench` JSON report inside exported JSON |
 | `--job-id`, `--commit` | `None` | Optional Slurm job ID and git hash metadata for exported JSON |
@@ -169,7 +169,7 @@ uv run python -m experiments.phase1.summarize outputs/phase1_50k \
 
 ### 3. Figure builder (`experiments.phase1.plot_figures`)
 
-Generates all 6 publication 300 dpi PNG and header-free PDF figures strictly from committed JSON datasets under `report/data/`.
+Reads the committed JSON datasets under `report/data/` and writes all 6 PNG (300 dpi) and header-free PDF figures to `report/figures/`.
 
 ```bash
 uv run python -m experiments.phase1.plot_figures \
@@ -221,10 +221,10 @@ For full Slurm scripts (`slurm_run.sh`), multi-node V100 Ethernet commands, and 
 
 ### Common `--set` fields (`ExperimentConfig`)
 
-Any field on [ExperimentConfig](src/simulator.py) can be set with `--set key=value`:
-- Training: `lr`, `lr_schedule` (`constant`/`cosine`), `local_epochs`, `momentum`, `weight_decay`, `batch_size`, `augment`, `grad_clip_norm`, `val_grad_weight_decay`, `alpha_dir`, `val_frac`, `data_dir`
+You can override any field on [ExperimentConfig](src/simulator.py) with `--set key=value`:
+- Training: `lr`, `lr_schedule` (`constant` or `cosine`), `local_epochs`, `momentum`, `weight_decay`, `batch_size`, `augment`, `grad_clip_norm`, `val_grad_weight_decay`, `alpha_dir`, `val_frac`, `data_dir`
 - Topology and attacks: `er_p`, `ws_k`, `ws_p`, `byz_local_epochs`, `poison_lambda`, `noise_sigma`
-- TrustGraph scoring: `alpha`, `trustgraph_use_relu`, `trustgraph_metric` (`cosine`/`euclidean`), `trustgraph_score_threshold`, `trustgraph_clip_norm`, `trustgraph_clip_mode` (`update`/`model`), `trustgraph_clip_factor`
+- TrustGraph scoring: `alpha`, `trustgraph_use_relu`, `trustgraph_metric` (`cosine` or `euclidean`), `trustgraph_score_threshold`, `trustgraph_clip_norm`, `trustgraph_clip_mode` (`update` or `model`), `trustgraph_clip_factor`
 
 ### Named suites (`experiments/phase1/suites.py`)
 
@@ -281,5 +281,5 @@ Any field on [ExperimentConfig](src/simulator.py) can be set with `--set key=val
 ## Development
 
 - Run `uv run --no-sync pytest -v` after editing any code under [src/](src/), [experiments/](experiments/), or [tests/](tests/).
-- Regenerate figures strictly from [report/data/](report/data/) with `uv run python -m experiments.phase1.plot_figures`, leave [experiments/phase1/figstyle.py](experiments/phase1/figstyle.py) unchanged, and verify exported PDFs have no header text via `pdftotext`.
+- Regenerate figures from [report/data/](report/data/) with `uv run python -m experiments.phase1.plot_figures`, leave [experiments/phase1/figstyle.py](experiments/phase1/figstyle.py) unchanged, and check exported PDFs for header or footnote text with `pdftotext`.
 - Keep `outputs/`, `data/`, and `logs/` out of Git.
