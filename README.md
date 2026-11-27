@@ -1,4 +1,4 @@
-# PeerSieve
+*# PeerSieve
 
 This repository reproduces [TrustGraph-DFL.pdf](TrustGraph-DFL.pdf) (Xu et al., CIBDA 2026) in PyTorch on CIFAR-10 and measures its real multi-node Ethernet communication bottlenecks to motivate PeerSieve.
 
@@ -50,7 +50,7 @@ Every completed run creates four files inside its output directory:
 - `summary.json`: final aggregated metrics for the run
 - `run.log`: timestamped `loguru` log for that run
 
-### Step 4. Summarize results and build figures
+### Step 4. Summarize results and build figures (optional if you only want to run experiments again) 
 
 ```bash
 # Log a Markdown summary table for any output folder (add --out table.md to save it)
@@ -177,3 +177,4 @@ Common options for `python -m experiments.phase1.run`:
 - Run `uv run --no-sync pytest -v` after editing any code under [src/](src/), [experiments/](experiments/), or [tests/](tests/).
 - Regenerate figures strictly from [report/data/](report/data/) with `uv run python -m experiments.phase1.plot_figures`, leave [experiments/phase1/figstyle.py](experiments/phase1/figstyle.py) unchanged, and verify exported PDFs have no header text via `pdftotext`.
 - Keep `outputs/`, `data/`, and `logs/` out of Git.
+*
