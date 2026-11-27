@@ -1,6 +1,6 @@
 # Experiment reproduction guide
 
-This guide walks step by step through reproducing the CIFAR-10 TrustGraph-DFL experiments, multi-node `1 Gb/s` Ethernet communication measurements, summary tables, and publication figures. It uses the same Typer CLI and layered configuration workflow documented in [README.md](../../README.md).
+This guide gives the commands to reproduce the CIFAR-10 TrustGraph-DFL experiments, the multi-node `1 Gb/s` Ethernet measurements, the summary tables, and all six figures. It uses the Typer CLI and layered configuration documented in [README.md](../../README.md).
 
 | Target report | Data source | Figures |
 |---|---|---|
@@ -82,7 +82,7 @@ uv run python -m experiments.phase1.run suite \
 
 ### Multi-GPU Slurm execution (sharded across 8x A100 on `octave`)
 
-[slurm_run.sh](slurm_run.sh) automatically records `scontrol show job -d`, `nvidia-smi topo -m`, and per-GPU CSV metadata into the Slurm log, then shards `suite` jobs evenly across every allocated GPU using `--shard-index` and `--num-shards`:
+[slurm_run.sh](slurm_run.sh) records `scontrol show job -d`, `nvidia-smi topo -m`, and per-GPU CSV metadata in the Slurm log, then splits `suite` jobs across every allocated GPU with `--shard-index` and `--num-shards`:
 
 ```bash
 mkdir -p logs
@@ -94,13 +94,13 @@ sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
   --seeds 42,43,44 --skip-existing --output-root outputs/phase1_50k
 ```
 
-## Step 4. Reproduce the real multi-node Ethernet measurements
+## Step 4. Reproduce the multi-node Ethernet measurements
 
-The communication bottleneck measurements in [motivation_report.md](../../report/phase1/motivation_report.md) run one OS process per peer over real TCP sockets (`TcpPeerTransport`) via `experiments.phase1.run distributed` using the `resnet18_50k` preset (`2,500` images/peer, `25` rounds, `val=iid`, `descent`).
+The runs in [motivation_report.md](../../report/phase1/motivation_report.md) launch one OS process per peer over TCP (`TcpPeerTransport`) with `experiments.phase1.run distributed`. They use the `resnet18_50k` preset (`2,500` images per peer, `25` rounds, `val=iid`, `descent`).
 
-- **Single-node loopback check.** Omit `--dist-iface` to test multi-GPU distributed training over `127.0.0.1` (`torchrun` or `slurm_run.sh distributed`).
+- **Single-node loopback check.** Omit `--dist-iface` to test multi-GPU distributed training over `127.0.0.1` with `torchrun` or `slurm_run.sh distributed`.
 - **Inter-node `1 Gb/s` Ethernet.** Pass `--dist-iface enp68s0f0` so peers exchange FP32 payloads across separate V100 servers (`ja3` and `ja4`, partition `open`, driver `525.116.04`, CUDA `11.8` environment `~/venvs/peersieve-v100`).
-- **Two topologies measured.** `2` peers (`1` dedicated V100 + NIC per peer, degree `1`) and `4` peers (`2` peers per V100 across 2 nodes, complete graph `--set er_p=1.0`, degree `3`), comparing `--delta-mode sender` (`89.45 MB`/neighbor, 2 vectors) against `--delta-mode receiver` (`44.73 MB`/neighbor, 1 vector).
+- **Two measured setups.** We test `2` peers (`1` dedicated V100 and NIC per peer, degree `1`) and `4` peers (`2` peers per V100 across two nodes on a complete graph with `--set er_p=1.0`, degree `3`). Both setups compare `--delta-mode sender` (`89.45 MB` per neighbor, 2 vectors) against `--delta-mode receiver` (`44.73 MB` per neighbor, 1 vector).
 
 ### Single-node 8-GPU distributed check (`octave`)
 
@@ -135,7 +135,7 @@ srun -p open --nodes=2 --ntasks=4 --ntasks-per-node=2 --gres=gpu:v100:1 --time=0
   --output-root outputs/phase1_v100_2node/4p_mp_sender
 ```
 
-Switch `--delta-mode sender` to `--delta-mode receiver` (or vary `--attack none`, `label_flip_all --set byz_local_epochs=2`, `random_noise`) to reproduce all 8 runs recorded in [phase1_v100_distributed_2node.json](../../report/data/phase1_v100_distributed_2node.json). To measure raw inter-node TCP goodput without GPU training, run `experiments.phase1.run transfer-bench` across two nodes with `--role auto`.
+To reproduce all 8 runs in [phase1_v100_distributed_2node.json](../../report/data/phase1_v100_distributed_2node.json), change `--delta-mode sender` to `--delta-mode receiver` and vary `--attack` across `none`, `label_flip_all --set byz_local_epochs=2`, and `random_noise`. To measure raw inter-node TCP goodput without GPU training, run `experiments.phase1.run transfer-bench` across two nodes with `--role auto`.
 
 ## Step 5. Summarize results, rebuild figures, and verify PDFs
 
@@ -147,7 +147,7 @@ uv run python -m experiments.phase1.summarize outputs/phase1_50k \
   --out outputs/phase1_50k/summary_table.md
 ```
 
-Regenerate all six 300 dpi PNG and header-free PDF figures strictly from the committed JSON datasets in [report/data/](../../report/data/), then confirm no header or footnote text appears in the exported PDFs:
+Regenerate all six 300 dpi PNG and header-free PDF figures from the committed JSON datasets in [report/data/](../../report/data/), then confirm no header or footnote text appears in the exported PDFs:
 
 ```bash
 uv run python -m experiments.phase1.plot_figures
