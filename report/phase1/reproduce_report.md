@@ -17,7 +17,7 @@ This report tests [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) (Xu et al., CIB
 
 ## Metrics we try to reproduce
 
-Section 5.1 of [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) defines two metrics: test accuracy and false positive rate (FPR). This is because the paper does not state how it combines separate peer models into one test accuracy value and does not report attacker acceptance, we report four metrics.
+Section 5.1 of [TrustGraph-DFL.pdf](../../TrustGraph-DFL.pdf) defines two metrics: test accuracy and false positive rate (FPR). Because the paper does not state how it combines separate peer models into one accuracy value and does not report attacker acceptance, we report four metrics.
 
 ### Per-peer accuracy
 
@@ -25,7 +25,7 @@ The test accuracy a deployed benign peer gets using its own local model weights 
 
 $$\text{Per-peer accuracy} = \frac{1}{|\mathcal{B}|} \sum_{i \in \mathcal{B}} \text{Acc}(\theta_i^t)$$
 
-Evaluate each benign peer $i \in \mathcal{B}$ on the test set and average the scores. Higher means better accuracy on individual nodes; lower means nodes are hurt by attacks or local non-IID drift.
+Evaluate each benign peer $i \in \mathcal{B}$ on the test set and average the scores. Higher means better accuracy on individual nodes; lower means attacks or local non-IID drift hurt individual nodes.
 
 ### Consensus accuracy (added diagnostic)
 
@@ -33,7 +33,7 @@ The test accuracy of one offline model made by averaging the weight vectors of a
 
 $$\text{Consensus accuracy} = \text{Acc}\!\left(\frac{1}{|\mathcal{B}|} \sum_{i \in \mathcal{B}} \theta_i^t\right)$$
 
-Average all benign weight vectors $\theta_i^t$ into one model $\bar{\theta}^t$, then test $\bar{\theta}^t$. Higher means the network learned stronger shared weights; lower means the shared model degraded. We add this diagnostic because the paper leaves its single accuracy rule unclear, and comparing it with per-peer accuracy separates learning quality from slow graph mixing.
+Average all benign weight vectors $\theta_i^t$ into one model $\bar{\theta}^t$, then test $\bar{\theta}^t$. Higher means the network learned stronger shared weights; lower means the shared model degraded. We add this metric because the paper does not specify its aggregation rule for test accuracy. Comparing consensus accuracy with per-peer accuracy separates learning quality from slow graph mixing.
 
 ### False positive rate (FPR, from the paper)
 
@@ -41,7 +41,7 @@ The share of benign neighbor updates that a benign peer rejects with zero weight
 
 $$\text{FPR} = \frac{\text{rejected benign-to-benign updates}}{\text{total benign-to-benign updates}}$$
 
-Count every benign-to-benign transfer given $w_{ij} = 0$ across all rounds and divide by all benign-to-benign transfers. Lower means the filter keeps more helpful neighbors; higher means peers throw away useful updates.
+Count every benign-to-benign transfer that receives $w_{ij} = 0$ across all rounds, then divide by all benign-to-benign transfers. Lower means the filter keeps more helpful neighbors; higher means peers discard useful updates.
 
 ### Byzantine acceptance (added diagnostic)
 
@@ -49,7 +49,7 @@ The share of malicious neighbor updates that a benign peer accepts with positive
 
 $$\text{Byzantine acceptance} = \frac{\text{accepted Byzantine-to-benign updates}}{\text{total Byzantine-to-benign updates}}$$
 
-Count every Byzantine-to-benign transfer given $w_{ij} > 0$ across all rounds and divide by all Byzantine-to-benign transfers. Lower means stronger defense; higher means bad updates slip through. We add this diagnostic because a broken filter can get low FPR just by accepting every neighbor, including attackers.
+Count every Byzantine-to-benign transfer that receives $w_{ij} > 0$ across all rounds, then divide by all Byzantine-to-benign transfers. Lower means stronger defense; higher means bad updates slip through. We add this metric because a broken filter can get low FPR just by accepting every neighbor, including attackers.
 
 ---
 
@@ -66,9 +66,9 @@ The paper reports about 93% accuracy with no attackers. The small 2-conv CNN on 
 
 ## 2. Attack resilience at 30% Byzantine peers
 
-The paper reports 89.5% to 93% accuracy under 30% attackers on a Random graph. On the literal 10k setup without clipping, model poisoning and random noise blow up the weights and crash every run. With the fixed gradient sign ($-\nabla F_i$) and clipping on 50k ResNet-18, all three attacks stay stable with zero `NaN` runs, and random noise is blocked completely.
+The paper reports 89.5% to 93% accuracy under 30% attackers on a Random graph. On the literal 10k setup without clipping, model poisoning and random noise blow up the weights and crash every run. With the fixed gradient sign ($-\nabla F_i$) and clipping on 50k ResNet-18, all three attacks finish with zero `NaN` runs, and the filter blocks every random-noise update (`0.00%` Byzantine acceptance).
 
-![Fig. 1 TrustGraph-DFL Attack Regimes (50k)](../figures/fig1-attacks-50k.png)
+![Fig. 1 TrustGraph-DFL attack regimes on 50k CIFAR-10](../figures/fig1-attacks-50k.png)
 
 | Attack on 50k Random ER ($p=0.3$) | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | Cosine (benign / Byzantine) | `NaN` runs |
 |---|---:|---:|---:|---:|---:|---:|
@@ -83,7 +83,7 @@ The paper reports 89.5% to 93% accuracy under 30% attackers on a Random graph. O
 
 Table 1 of the paper reports 89.1% on Ring, 91.2% on Random, and 90.4% on Small-World under 30% label flipping. On 50k ResNet-18, Random and Small-World stay near 89.5% per-peer and 92.4% consensus accuracy. Ring has lower per-peer accuracy (84.70%) because each peer connects to only two neighbors, so updates mix more slowly.
 
-![Fig. 2 TrustGraph-DFL Topologies and Byzantine Stress (50k)](../figures/fig2-topologies-and-stress-50k.png)
+![Fig. 2 TrustGraph-DFL topologies and Byzantine stress on 50k CIFAR-10](../figures/fig2-topologies-and-stress-50k.png)
 
 | Topology (30% all-class label flip, 50k) | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | Cosine (benign / Byzantine) | `NaN` runs |
 |---|---:|---:|---:|---:|---:|---:|
@@ -95,7 +95,7 @@ Table 1 of the paper reports 89.1% on Ring, 91.2% on Random, and 90.4% on Small-
 
 ## 4. Scaling to 50% Byzantine peers
 
-Figure 3b of the paper increases attackers up to 50%. On 50k ResNet-18 (Figure 2b), raising label-flipping attackers from 10% to 50% drops consensus accuracy by only 0.60 points, with zero `NaN` runs.
+Figure 3b of the paper increases attackers up to 50%. On 50k ResNet-18 (Figure 2b), raising label-flipping attackers from 10% to 50% drops consensus accuracy by 0.60 percentage points, with zero `NaN` runs.
 
 | Byzantine fraction (all-class label flip, Random) | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | `NaN` runs |
 |---:|---:|---:|---:|---:|---:|
@@ -109,9 +109,9 @@ Figure 3b of the paper increases attackers up to 50%. On 50k ResNet-18 (Figure 2
 
 ## 5. Component ablations (Section 5.5)
 
-Section 5.5 tests what happens when we remove ReLU, switch cosine similarity to Euclidean distance, or change self-weight $\alpha$. Dropping ReLU or switching to Euclidean distance lets every attacker through (`100%` Byzantine acceptance) and causes large accuracy drops. Raising $\alpha$ to `0.7` keeps too much weight on the local model and hurts per-peer accuracy, while $\alpha = 0.3$ works slightly better than $\alpha = 0.5$ here.
+Section 5.5 tests what happens when we remove ReLU, switch cosine similarity to Euclidean distance, or change self-weight $\alpha$. Dropping ReLU or switching to Euclidean distance lets every attacker through (`100%` Byzantine acceptance) and lowers accuracy by `35.9` and `9.0` consensus points. Raising $\alpha$ to `0.7` drops per-peer accuracy from `88.88%` to `82.49%`, while $\alpha = 0.3$ reaches `89.18%` per-peer and `91.67%` consensus.
 
-![Fig. 3 TrustGraph-DFL Ablations and FPR Dynamics (50k)](../figures/fig3-ablations-and-fpr-dynamics-50k.png)
+![Fig. 3 TrustGraph-DFL ablations and FPR dynamics on 50k CIFAR-10](../figures/fig3-ablations-and-fpr-dynamics-50k.png)
 
 | Ablation variant (30% model poison, $\lambda=10$) | Per-peer accuracy (%) | Consensus accuracy (%) | FPR (%) | Byzantine acceptance (%) | `NaN` runs |
 |---|---:|---:|---:|---:|---:|
@@ -129,7 +129,7 @@ The paper reports 3% to 9% FPR. Under default `sender` scoring ($\theta_j^{t+1/2
 
 To fix this, we tested receiver-anchored scoring (`rxdelta`, $\theta_j^{t+1/2} - \theta_i^t$), which measures where a neighbor moves relative to the receiver's own model. With balanced validation (`val=iid`), `rxdelta` brings FPR into the paper's 3% to 9% target at $\tau = 0.003$, though more attackers pass. Raising the threshold $\tau$ blocks more attackers at the cost of higher FPR (Figure 4).
 
-![Fig. 4 Receiver-Anchored FPR on TrustGraph-DFL (50k)](../figures/fig4-fpr-rxdelta-50k.png)
+![Fig. 4 Receiver-anchored FPR on TrustGraph-DFL for 50k CIFAR-10](../figures/fig4-fpr-rxdelta-50k.png)
 
 | Method (`val=iid` unless noted) | No-attack consensus (%) | FPR range (%) | Model poison Byzantine acceptance (%) | Label flip Byzantine acceptance (%) | Random noise Byzantine acceptance (%) |
 |---|---:|---:|---:|---:|---:|
@@ -147,10 +147,10 @@ Running the paper's literal 10k 2-conv CNN setup stopped near 55% accuracy and c
 
 ### What we changed
 
-1. **Larger model and full dataset.** Switched from the 2-conv CNN on 10,000 images to a pretrained ResNet-18 on all 50,000 CIFAR-10 images with standard crop and flip augmentation.
-2. **Fixed validation gradient sign.** Algorithm 1 in the paper uses $+\nabla F_i$, which points toward higher loss instead of lower loss. Flipping it to $-\nabla F_i$ fixes the direction so benign updates score positive and flipped attacks score negative.
-3. **Gradient and update clipping.** Cosine similarity checks angle only, not size. Clipping local gradients at norm `10.0`, capping neighbor moves at twice the peer's own update size, and using a small threshold ($\tau = 0.003$) stopped every `NaN` crash.
-4. **Balanced validation and `rxdelta`.** Using a small balanced validation set (`val=iid`, 250 images per peer) and receiver-anchored scoring (`rxdelta`) lowered FPR from about 40% into the 6.5% to 9.5% range. We also flipped all classes for 2 epochs because flipping only classes `0` and `1` barely hurt ResNet-18.
+1. **Larger model and full dataset.** We switched from the 2-conv CNN on 10,000 images to a pretrained ResNet-18 on all 50,000 CIFAR-10 images with random crop and horizontal flip augmentation.
+2. **Fixed validation gradient sign.** Algorithm 1 in the paper uses $+\nabla F_i$, which points toward higher loss instead of lower loss. Flipping it to $-\nabla F_i$ makes benign updates score positive and flipped attacks score negative.
+3. **Gradient and update clipping.** Cosine similarity checks angle, not scale. Clipping local gradients at norm `10.0`, capping neighbor moves at twice the peer's own update norm, and setting $\tau = 0.003$ stopped every `NaN` crash.
+4. **Balanced validation and `rxdelta`.** Using a balanced validation set (`val=iid`, 250 images per peer) and receiver-anchored scoring (`rxdelta`) lowered FPR from about 40% into the 6.5% to 9.5% range. We also flipped all classes for 2 epochs because flipping only classes `0` and `1` had little effect on ResNet-18.
 
 The table below shows the literal 10k CNN results (3 seeds, 200 rounds, Random graph) that revealed these issues.
 
@@ -171,7 +171,7 @@ The table below shows the literal 10k CNN results (3 seeds, 200 rounds, Random g
 1. **Literal 10k CNN cannot reach 93%.** Matching the paper's accuracy requires 50,000 images and a pretrained ResNet-18.
 2. **Low FPR trades off against attacker rejection.** Default `sender` scoring leaves FPR near 40%. Switching to `rxdelta` with `val=iid` brings FPR down to 6.5% to 9.5% at $\tau = 0.003$, but lets more attackers pass; raising $\tau$ to `0.035` reverses that tradeoff.
 3. **Ring per-peer accuracy stays 4.4 points below Table 1.** With only two neighbors per peer, individual models stay more specialized (`84.70%`), even though their consensus average reaches `91.69%`.
-4. **Unmeasured multi-seed variance on `rxdelta`.** Main 50k runs average 3 seeds (`42, 43, 44`), while the 16 `rxdelta` runs used seed `42` only.
+4. **Single seed on `rxdelta`.** Main 50k runs average 3 seeds (`42, 43, 44`), while the 16 `rxdelta` runs used seed `42`.
 
 ---
 
