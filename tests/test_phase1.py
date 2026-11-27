@@ -93,18 +93,24 @@ def test_trustgraph_sign_direction_and_self_fallback() -> None:
     nbr_posts = {1: self_post + benign_update, 2: self_post + mal_update}
     nbr_updates = {1: benign_update, 2: mal_update}
 
-    # With descent_neg (-val_grad), the benign neighbor gets weight 1 and the attacker gets 0.
-    cfg_neg = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", alpha=0.5)
+    # With descent (-val_grad), the benign neighbor gets weight 1 and the attacker gets 0.
+    cfg_neg = AggregatorConfig(name="trustgraph", val_grad_sign="descent", alpha=0.5)
     res_neg = aggregate_trustgraph(self_post, val_grad, [1, 2], nbr_posts, nbr_updates, cfg_neg)
     assert res_neg.scores[1] > 0.99 and res_neg.scores[2] < -0.99
     assert res_neg.neighbor_weights[1] > 0.99 and res_neg.neighbor_weights[2] == 0.0
     assert res_neg.neighbor_zero_weight_frac == {1: 0.0, 2: 1.0}
 
-    # With paper_pos (+val_grad), signs flip so the attacker gets weight 1 and the benign peer gets 0.
-    cfg_pos = AggregatorConfig(name="trustgraph", val_grad_sign="paper_pos", alpha=0.5)
+    # With ascent (+val_grad), signs flip so the attacker gets weight 1 and the benign peer gets 0.
+    cfg_pos = AggregatorConfig(name="trustgraph", val_grad_sign="ascent", alpha=0.5)
     res_pos = aggregate_trustgraph(self_post, val_grad, [1, 2], nbr_posts, nbr_updates, cfg_pos)
     assert res_pos.scores[1] < -0.99 and res_pos.scores[2] > 0.99
     assert res_pos.neighbor_weights[1] == 0.0 and res_pos.neighbor_weights[2] > 0.99
+
+    # Invalid validation sign strings are rejected strictly.
+    import pytest
+
+    with pytest.raises(ValueError, match="Unknown val_grad_sign"):
+        AggregatorConfig(val_grad_sign="invalid_sign").validate()
 
     # When all neighbors score below zero, the peer keeps self_post unchanged.
     res_fb = aggregate_trustgraph(
@@ -160,7 +166,7 @@ def test_vector_to_model_does_not_alias_source_vector() -> None:
 
 
 def test_end_to_end_synthetic_model_poison_shows_sign_effect() -> None:
-    """Fast synthetic DFL smoke test confirming descent_neg defends while paper_pos degrades."""
+    """Fast synthetic DFL smoke test confirming descent defends while ascent degrades."""
     base = ExperimentConfig(
         dataset="synthetic",
         n_nodes=10,
@@ -177,8 +183,8 @@ def test_end_to_end_synthetic_model_poison_shows_sign_effect() -> None:
         seed=11,
         verbose=False,
     )
-    res_neg = run_experiment(ExperimentConfig(**{**base.__dict__, "val_grad_sign": "descent_neg"}))
-    res_pos = run_experiment(ExperimentConfig(**{**base.__dict__, "val_grad_sign": "paper_pos"}))
+    res_neg = run_experiment(ExperimentConfig(**{**base.__dict__, "val_grad_sign": "descent"}))
+    res_pos = run_experiment(ExperimentConfig(**{**base.__dict__, "val_grad_sign": "ascent"}))
 
     s_neg = res_neg["summary"]
     s_pos = res_pos["summary"]
@@ -213,7 +219,7 @@ def test_trustgraph_clip_norm_caps_large_updates_and_preserves_small() -> None:
 
     u_huge = 100.0 * self_update
     u_small = 0.5 * self_update
-    cfg = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", trustgraph_clip_norm=True, alpha=0.5)
+    cfg = AggregatorConfig(name="trustgraph", val_grad_sign="descent", trustgraph_clip_norm=True, alpha=0.5)
 
     res_huge = aggregate_trustgraph(
         self_post,
@@ -252,7 +258,7 @@ def test_summarize_directory_deduplicates_and_counts_nans(tmp_path: Path) -> Non
                 "attack": "model_poison",
                 "byzantine_frac": 0.3,
                 "aggregator": "trustgraph",
-                "val_grad_sign": "descent_neg",
+                "val_grad_sign": "descent",
                 "seed": seed,
             },
             "final_benign_test_acc_mean": acc,
@@ -294,7 +300,7 @@ def test_model_space_clip_and_stabilized_models() -> None:
 
     cfg = AggregatorConfig(
         name="trustgraph",
-        val_grad_sign="descent_neg",
+        val_grad_sign="descent",
         trustgraph_clip_norm=True,
         trustgraph_clip_mode="model",
         trustgraph_clip_factor=2.0,
@@ -377,19 +383,19 @@ def test_trustgraph_receiver_anchored_delta_mode() -> None:
     self_prev = torch.tensor([0.0, 0.0, 0.0])
     self_update = torch.tensor([0.2, 0.0, 0.0])
     self_post = self_prev + self_update
-    # Receiver wants to move along +x (val_grad = [-1, 0, 0] -> descent_neg = [+1, 0, 0]).
+    # Receiver wants to move along +x (val_grad = [-1, 0, 0] -> descent = [+1, 0, 0]).
     val_grad = torch.tensor([-1.0, 0.0, 0.0])
     # Neighbor j ALREADY moved to x=+1.0 in prior rounds, and took a noisy tiny step [-0.05, 0.1, 0] this round.
     nbr_post = torch.tensor([0.95, 0.1, 0.0])
     nbr_sender_update = torch.tensor([-0.05, 0.1, 0.0])
 
-    cfg_sender = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", trustgraph_delta_mode="sender")
+    cfg_sender = AggregatorConfig(name="trustgraph", val_grad_sign="descent", trustgraph_delta_mode="sender")
     res_s = aggregate_trustgraph(
         self_post, val_grad, [1], {1: nbr_post}, {1: nbr_sender_update}, cfg_sender, self_prev=self_prev, self_update=self_update
     )
     assert res_s.scores[1] < 0.0 and res_s.neighbor_weights[1] == 0.0
 
-    cfg_rx = AggregatorConfig(name="trustgraph", val_grad_sign="descent_neg", trustgraph_delta_mode="receiver")
+    cfg_rx = AggregatorConfig(name="trustgraph", val_grad_sign="descent", trustgraph_delta_mode="receiver")
     res_r = aggregate_trustgraph(
         self_post, val_grad, [1], {1: nbr_post}, {1: nbr_sender_update}, cfg_rx, self_prev=self_prev, self_update=self_update
     )
@@ -443,7 +449,7 @@ def test_simulator_logs_system_cost_metrics(tmp_path: Path) -> None:
             byzantine_frac=0.25,
             attack="model_poison",
             aggregator="trustgraph",
-            val_grad_sign="descent_neg",
+            val_grad_sign="descent",
             trustgraph_clip_norm=True,
             device="cpu",
             eval_every=4,
@@ -542,7 +548,7 @@ def test_distributed_peers_end_to_end_socketpair(tmp_path: Path) -> None:
         byzantine_frac=0.25,
         attack="model_poison",
         aggregator="trustgraph",
-        val_grad_sign="descent_neg",
+        val_grad_sign="descent",
         trustgraph_clip_norm=True,
         device="cpu",
         eval_every=4,
@@ -633,7 +639,7 @@ def test_distributed_rxdelta_wire_bytes_and_adjacent_byzantine_stability(tmp_pat
         byzantine_frac=0.5,
         attack="model_poison",
         aggregator="trustgraph",
-        val_grad_sign="descent_neg",
+        val_grad_sign="descent",
         trustgraph_clip_norm=True,
         trustgraph_clip_mode="model",
         trustgraph_delta_mode="receiver",
@@ -765,21 +771,28 @@ def test_typer_cli_subcommands_and_single_run(tmp_path: Path) -> None:
     runner = CliRunner()
     root_help = runner.invoke(run_cli.app, ["--help"])
     assert root_help.exit_code == 0
+    assert "--install-completion" not in root_help.stdout
     for cmd in ("single", "suite", "distributed", "transfer-bench", "list-suites"):
         assert cmd in root_help.stdout
         sub_help = runner.invoke(run_cli.app, [cmd, "--help"])
         assert sub_help.exit_code == 0
+        assert "Args:" not in sub_help.stdout
 
     suites_out = runner.invoke(run_cli.app, ["list-suites"])
     assert suites_out.exit_code == 0
 
-    assert runner.invoke(summarize.app, ["--help"]).exit_code == 0
-    assert runner.invoke(plot_figures.app, ["--help"]).exit_code == 0
+    for sub_app in (summarize.app, plot_figures.app):
+        help_res = runner.invoke(sub_app, ["--help"])
+        assert help_res.exit_code == 0
+        assert "Args:" not in help_res.stdout
+        assert "--install-completion" not in help_res.stdout
 
     single_res = runner.invoke(
         run_cli.app,
         [
             "single",
+            "--preset",
+            "cnn_10k",
             "--dataset",
             "synthetic",
             "--model",
@@ -790,6 +803,12 @@ def test_typer_cli_subcommands_and_single_run(tmp_path: Path) -> None:
             "20",
             "--rounds",
             "2",
+            "--val-grad-sign",
+            "descent",
+            "--set",
+            "er_p=0.5",
+            "--set",
+            "grad_clip_norm=5.0",
             "--eval-every",
             "2",
             "--device",
@@ -802,7 +821,37 @@ def test_typer_cli_subcommands_and_single_run(tmp_path: Path) -> None:
         ],
     )
     assert single_res.exit_code == 0, single_res.output
+    saved_cfg_path: Path | None = None
     for seed in (42, 43):
         matches = list((tmp_path / "single").glob(f"*/seed_{seed}/summary.json"))
         assert len(matches) == 1
         assert (matches[0].parent / "run.log").exists()
+        saved_cfg_path = matches[0].parent / "config.json"
+        saved_cfg = json.loads(saved_cfg_path.read_text(encoding="utf-8"))
+        assert saved_cfg["er_p"] == 0.5
+        assert saved_cfg["grad_clip_norm"] == 5.0
+        assert saved_cfg["val_grad_sign"] == "descent"
+
+    assert saved_cfg_path is not None
+    replay_res = runner.invoke(
+        run_cli.app,
+        [
+            "single",
+            "--config",
+            str(saved_cfg_path),
+            "--rounds",
+            "1",
+            "--seed",
+            "99",
+            "--quiet",
+            "--output-root",
+            str(tmp_path / "from_cfg"),
+        ],
+    )
+    assert replay_res.exit_code == 0, replay_res.output
+    replay_matches = list((tmp_path / "from_cfg" / "single").glob("*/seed_99/config.json"))
+    assert len(replay_matches) == 1
+    replay_cfg = json.loads(replay_matches[0].read_text(encoding="utf-8"))
+    assert replay_cfg["rounds"] == 1
+    assert replay_cfg["er_p"] == 0.5
+    assert replay_cfg["grad_clip_norm"] == 5.0

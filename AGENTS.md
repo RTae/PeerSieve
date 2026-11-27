@@ -15,7 +15,7 @@ Keep `outputs/`, `data/`, and `logs/` out of Git. Do not restore deleted interme
 
 - Run `uv run pytest -v` after modifying any code under `src/`, `experiments/`, or `tests/`.
 - Keep these five methodological distinctions clear in code, reports, and explanations:
-  - **Validation gradient sign.** Compare literal `paper_pos` ($+\nabla F_i$) against corrected `descent_neg` ($-\nabla F_i$).
+  - **Validation gradient sign.** Compare literal `ascent` ($+\nabla F_i$) against corrected `descent` ($-\nabla F_i$).
   - **Magnitude control.** Compare unclipped cosine against model-space receiver-norm clipping (`mclip 2 r_i`) and `grad_clip_norm=10.0`.
   - **Validation split.** Compare literal `val=local` (10% local non-IID shard) against balanced `val=iid` (250 stratified samples per node on 50k).
   - **Reference anchor.** Compare strict `sender` ($\theta_j^{t+1/2}-\theta_j^t$) against receiver-anchored `rxdelta` ($\theta_j^{t+1/2}-\theta_i^t$).
