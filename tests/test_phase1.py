@@ -755,3 +755,54 @@ def test_logging_utils_writes_run_log_and_respects_level(tmp_path: Path) -> None
     assert "Start local run:" in run_text
     assert "Finished local run" in run_text
     configure_logging(level="INFO")
+
+
+def test_typer_cli_subcommands_and_single_run(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from experiments.phase1 import plot_figures, run as run_cli, summarize
+
+    runner = CliRunner()
+    root_help = runner.invoke(run_cli.app, ["--help"])
+    assert root_help.exit_code == 0
+    for cmd in ("single", "suite", "distributed", "transfer-bench", "list-suites"):
+        assert cmd in root_help.stdout
+        sub_help = runner.invoke(run_cli.app, [cmd, "--help"])
+        assert sub_help.exit_code == 0
+
+    suites_out = runner.invoke(run_cli.app, ["list-suites"])
+    assert suites_out.exit_code == 0
+
+    assert runner.invoke(summarize.app, ["--help"]).exit_code == 0
+    assert runner.invoke(plot_figures.app, ["--help"]).exit_code == 0
+
+    single_res = runner.invoke(
+        run_cli.app,
+        [
+            "single",
+            "--dataset",
+            "synthetic",
+            "--model",
+            "cnn2x2",
+            "--n-nodes",
+            "4",
+            "--samples-per-node",
+            "20",
+            "--rounds",
+            "2",
+            "--eval-every",
+            "2",
+            "--device",
+            "cpu",
+            "--seeds",
+            "42,43",
+            "--quiet",
+            "--output-root",
+            str(tmp_path),
+        ],
+    )
+    assert single_res.exit_code == 0, single_res.output
+    for seed in (42, 43):
+        matches = list((tmp_path / "single").glob(f"*/seed_{seed}/summary.json"))
+        assert len(matches) == 1
+        assert (matches[0].parent / "run.log").exists()

@@ -1,17 +1,21 @@
-from __future__ import annotations
-
-import argparse
 import json
 from pathlib import Path
+from typing import Annotated, Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
+import typer
 
 from experiments.phase1 import figroles as fr
 from experiments.phase1 import figstyle as fs
 from src.logging_utils import configure_logging, get_logger
 
 logger = get_logger()
+app = typer.Typer(
+    name="peersieve-plot",
+    help="Generate publication 300 dpi PNG and header-free PDF figures from committed JSON datasets.",
+    pretty_exceptions_enable=False,
+)
 
 
 def _parse_variant_key(label: str) -> str | None:
@@ -755,36 +759,51 @@ def plot_v100_distributed_ethernet(data: dict[str, object], out_dir: Path) -> No
     fs.save(fig, out_dir, "fig6-v100-distributed-ethernet")
 
 
-def main() -> None:
-    """Load committed Phase 1 JSON datasets and generate all PNG and PDF figures.
+@app.command()
+def plot_cli(
+    data_50k: Annotated[Path, typer.Option(help="Committed 50k 3-seed reproduction JSON dataset.")] = Path("report/data/phase1_paper_match_50k_3seed.json"),
+    data_rxdelta: Annotated[Path, typer.Option(help="Committed receiver-anchored FPR JSON dataset.")] = Path("report/data/phase1_fpr_rxdelta.json"),
+    data_v100: Annotated[Path, typer.Option(help="Committed real multi-node V100 Ethernet JSON dataset.")] = Path("report/data/phase1_v100_distributed_2node.json"),
+    out_dir: Annotated[Path, typer.Option(help="Output directory for PNG and header-free PDF figures.")] = Path("report/figures"),
+    log_level: Annotated[Literal["DEBUG", "INFO", "WARNING", "ERROR"], typer.Option(help="Minimum loguru log level.")] = "INFO",
+) -> None:
+    """Load committed JSON datasets and generate all PNG and header-free PDF figures.
+
+    Args:
+        data_50k: Path to the 50k 3-seed reproduction JSON dataset.
+        data_rxdelta: Path to the receiver-anchored FPR JSON dataset.
+        data_v100: Path to the multi-node V100 Ethernet JSON dataset.
+        out_dir: Directory where generated PNG and PDF figures are written.
+        log_level: Minimum loguru log level.
 
     Returns:
         None.
     """
-    p = argparse.ArgumentParser(description="Draw all final TrustGraph-DFL figures from committed JSON data.")
-    p.add_argument("--data-50k", default="report/data/phase1_paper_match_50k_3seed.json")
-    p.add_argument("--data-rxdelta", default="report/data/phase1_fpr_rxdelta.json")
-    p.add_argument("--data-v100", default="report/data/phase1_v100_distributed_2node.json")
-    p.add_argument("--out-dir", default="report/figures")
-    args = p.parse_args()
-    configure_logging()
+    configure_logging(level=log_level)
 
-    data_50k = json.loads(Path(args.data_50k).read_text(encoding="utf-8"))
-    data_rxdelta = json.loads(Path(args.data_rxdelta).read_text(encoding="utf-8"))
-    rows_idx = _index_summary_rows(data_50k["rows"])
-    out_dir = Path(args.out_dir)
+    parsed_50k = json.loads(data_50k.read_text(encoding="utf-8"))
+    parsed_rxdelta = json.loads(data_rxdelta.read_text(encoding="utf-8"))
+    rows_idx = _index_summary_rows(parsed_50k["rows"])
 
     fs.apply("compact")
-    plot_attack_accuracy(rows_idx, data_50k, out_dir)
+    plot_attack_accuracy(rows_idx, parsed_50k, out_dir)
     plot_topology_and_byzantine_sweep(rows_idx, out_dir)
-    plot_ablations_and_fpr_dynamics(rows_idx, data_50k, out_dir)
-    plot_receiver_anchored_fpr(data_rxdelta, out_dir)
+    plot_ablations_and_fpr_dynamics(rows_idx, parsed_50k, out_dir)
+    plot_receiver_anchored_fpr(parsed_rxdelta, out_dir)
 
-    v100_data_path = Path(args.data_v100)
-    if v100_data_path.exists():
-        data_v100 = json.loads(v100_data_path.read_text(encoding="utf-8"))
-        plot_v100_bandwidth_waste(data_v100, out_dir)
-        plot_v100_distributed_ethernet(data_v100, out_dir)
+    if data_v100.exists():
+        parsed_v100 = json.loads(data_v100.read_text(encoding="utf-8"))
+        plot_v100_bandwidth_waste(parsed_v100, out_dir)
+        plot_v100_distributed_ethernet(parsed_v100, out_dir)
+
+
+def main() -> None:
+    """Invoke the Typer CLI application for generating publication figures.
+
+    Returns:
+        None.
+    """
+    app()
 
 
 if __name__ == "__main__":

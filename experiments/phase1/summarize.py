@@ -1,17 +1,22 @@
-from __future__ import annotations
-
-import argparse
 from collections import defaultdict
 from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
+from typing import Annotated, Literal
 
 import numpy as np
+import typer
 
 from src.logging_utils import configure_logging, get_logger
 
 logger = get_logger()
+app = typer.Typer(
+    name="peersieve-summarize",
+    help="Aggregate summary.json files into Markdown accuracy and system-cost tables.",
+    no_args_is_help=True,
+    pretty_exceptions_enable=False,
+)
 
 
 @dataclass
@@ -474,46 +479,66 @@ def format_markdown_report(rows: list[SummaryRow], root: str | Path, title: str)
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
-    """CLI entry point to print Markdown summaries and optionally export system metrics JSON.
+@app.command()
+def summarize_cli(
+    root: Annotated[Path, typer.Argument(help="Directory searched recursively for summary.json files.")],
+    out: Annotated[Path | None, typer.Option(help="Optional Markdown file path to save the summary tables.")] = None,
+    title: Annotated[str, typer.Option(help="Top-level Markdown heading for the report.")] = "Phase 1 Experiment Summary",
+    export_system_json: Annotated[Path | None, typer.Option(help="Optional JSON path to export aggregated system metrics.")] = None,
+    transfer_bench_json: Annotated[Path | None, typer.Option(help="Optional measured TCP transfer JSON to embed in exported JSON.")] = None,
+    job_id: Annotated[str | None, typer.Option(help="Optional Slurm job ID recorded in exported JSON metadata.")] = None,
+    commit: Annotated[str | None, typer.Option(help="Optional git commit hash recorded in exported JSON metadata.")] = None,
+    log_level: Annotated[Literal["DEBUG", "INFO", "WARNING", "ERROR"], typer.Option(help="Minimum loguru log level.")] = "INFO",
+) -> None:
+    """Summarize completed summary.json files into Markdown tables and optional JSON.
+
+    Args:
+        root: Directory searched recursively for summary.json files.
+        out: Optional path to write the Markdown report.
+        title: Heading for the Markdown report.
+        export_system_json: Optional output path for aggregated system metrics JSON.
+        transfer_bench_json: Optional measured TCP benchmark JSON to embed.
+        job_id: Optional Slurm job ID metadata.
+        commit: Optional git commit hash metadata.
+        log_level: Minimum loguru log level.
 
     Returns:
         None.
     """
-    p = argparse.ArgumentParser(description="Summarize Phase 1 summary.json files.")
-    p.add_argument("root", help="Directory containing Phase 1 outputs (searched recursively for summary.json).")
-    p.add_argument("--out", default=None, help="Optional Markdown file path to write the table.")
-    p.add_argument("--title", default="Phase 1 Experiment Summary", help="Heading for the Markdown report.")
-    p.add_argument("--export-system-json", default=None, help="Optional path to export aggregated system_metrics JSON.")
-    p.add_argument("--transfer-bench-json", default=None, help="Optional measured 2-node transfer JSON to embed in exported system metrics.")
-    p.add_argument("--job-id", default=None, help="Optional Slurm job ID stored in exported system metrics JSON.")
-    p.add_argument("--commit", default=None, help="Optional git commit hash stored in exported system metrics JSON.")
-    args = p.parse_args()
-    configure_logging()
+    configure_logging(level=log_level)
 
-    rows = summarize_directory(args.root)
+    rows = summarize_directory(root)
     if not rows:
-        logger.warning("No summary.json files found under {}", args.root)
+        logger.warning("No summary.json files found under {}", root)
         return
 
-    output = format_markdown_report(rows, root=args.root, title=args.title)
-    sys_rows = summarize_system_directory(args.root)
+    output = format_markdown_report(rows, root=root, title=title)
+    sys_rows = summarize_system_directory(root)
     if sys_rows:
         output += "\n" + format_system_markdown_report(sys_rows)
     logger.info("\n{}", output.rstrip())
-    if args.out:
-        out_path = Path(args.out)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(output, encoding="utf-8")
-    if args.export_system_json:
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(output, encoding="utf-8")
+        logger.success("Wrote Markdown summary to {}", out)
+    if export_system_json is not None:
         exported = export_system_metrics_json(
-            args.root,
-            args.export_system_json,
-            job_id=args.job_id,
-            commit=args.commit,
-            transfer_bench_json=args.transfer_bench_json,
+            root,
+            export_system_json,
+            job_id=job_id,
+            commit=commit,
+            transfer_bench_json=transfer_bench_json,
         )
-        logger.success("Exported {} runs to {}", exported["total_runs"], args.export_system_json)
+        logger.success("Exported {} runs to {}", exported["total_runs"], export_system_json)
+
+
+def main() -> None:
+    """Invoke the Typer CLI application for summarizing completed runs.
+
+    Returns:
+        None.
+    """
+    app()
 
 
 if __name__ == "__main__":
