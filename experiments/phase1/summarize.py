@@ -8,7 +8,6 @@ from typing import Annotated, Literal
 import numpy as np
 import typer
 
-from src.aggregators import normalize_val_grad_sign
 from src.logging_utils import configure_logging, get_logger
 
 logger = get_logger()
@@ -76,8 +75,7 @@ def method_label(cfg: dict[str, object]) -> str:
         extra.append(f"spn={spn}")
     suffix = f"[{','.join(extra)}]" if extra else ""
     if agg == "trustgraph":
-        sign = normalize_val_grad_sign(str(cfg.get("val_grad_sign", "descent")))
-        parts = [sign]
+        parts = [str(cfg.get("val_grad_sign", "descent"))]
         if not cfg.get("trustgraph_use_relu", True):
             parts.append("norelu")
         if cfg.get("trustgraph_metric", "cosine") != "cosine":

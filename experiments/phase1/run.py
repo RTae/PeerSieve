@@ -135,7 +135,7 @@ def _resolve_config(
         if not isinstance(cfg_dict, dict):
             raise typer.BadParameter(f"Config file {config_file} must contain a JSON object.")
         for k, v in cfg_dict.items():
-            if k in _CONFIG_FIELDS or k == "output_dir":
+            if k in _CONFIG_FIELDS:
                 values[k] = v
 
     for k, v in direct_overrides.items():
@@ -187,7 +187,7 @@ def list_suites() -> None:
 def single_cmd(
     preset: Annotated[PresetChoice, typer.Option(help="Base hyperparameter preset ('cnn_10k' or 'resnet18_50k').", rich_help_panel="Config & Overrides")] = "resnet18_50k",
     config: Annotated[Path | None, typer.Option(help="Optional JSON config file (or saved config.json) loaded over the preset.", rich_help_panel="Config & Overrides")] = None,
-    set_override: Annotated[list[str], typer.Option("--set", help="Override any ExperimentConfig field as key=value (repeatable, e.g. --set er_p=1.0).", rich_help_panel="Config & Overrides")] = [],
+    set_override: Annotated[list[str] | None, typer.Option("--set", help="Override any ExperimentConfig field as key=value (repeatable, e.g. --set er_p=1.0).", rich_help_panel="Config & Overrides")] = None,
     dataset: Annotated[DatasetChoice | None, typer.Option(help="Dataset ('cifar10' or 'synthetic').", rich_help_panel="Core Options")] = None,
     model: Annotated[ModelChoice | None, typer.Option(help="Model architecture.", rich_help_panel="Core Options")] = None,
     n_nodes: Annotated[int | None, typer.Option(min=2, help="Number of decentralized peers.", rich_help_panel="Core Options")] = None,
@@ -200,7 +200,7 @@ def single_cmd(
     val_grad_sign: Annotated[ValGradSignChoice | None, typer.Option(help="Validation direction: 'descent' (-grad) or 'ascent' (+grad).", rich_help_panel="Core Options")] = None,
     delta_mode: Annotated[DeltaModeChoice | None, typer.Option("--delta-mode", "--trustgraph-delta-mode", help="Scoring anchor: 'sender' (2 vectors) or 'receiver' (rxdelta, 1 vector).", rich_help_panel="Core Options")] = None,
     no_download: Annotated[bool, typer.Option("--no-download", help="Disable automatic CIFAR-10 download.", rich_help_panel="Execution & Logging")] = False,
-    seeds: Annotated[list[str], typer.Option("--seed", "--seeds", help="Random seed(s); repeat or comma-separate (e.g. --seeds 42,43,44).", rich_help_panel="Execution & Logging")] = ["42"],
+    seeds: Annotated[list[str] | None, typer.Option("--seed", "--seeds", help="Random seed(s); repeat or comma-separate (default: 42).", rich_help_panel="Execution & Logging")] = None,
     device: Annotated[DeviceChoice | None, typer.Option(help="Compute device ('auto', 'cpu', 'cuda', or 'mps').", rich_help_panel="Execution & Logging")] = None,
     eval_every: Annotated[int | None, typer.Option(help="Evaluate test accuracy every N rounds (0 = final round only).", rich_help_panel="Execution & Logging")] = None,
     skip_existing: Annotated[bool, typer.Option("--skip-existing", help="Skip seeds that already have summary.json.", rich_help_panel="Execution & Logging")] = False,
@@ -230,11 +230,11 @@ def single_cmd(
             "device": device,
             "eval_every": eval_every,
         },
-        set_items=set_override,
+        set_items=set_override or [],
         quiet=quiet,
     )
     tag = _run_tag(base_cfg)
-    for seed in _parse_seeds(seeds):
+    for seed in _parse_seeds(seeds or ["42"]):
         out_dir = output_root / "single" / tag / f"seed_{seed}"
         if skip_existing and (out_dir / "summary.json").exists():
             logger.info("Skipping completed {} (seed={})", tag, seed)
@@ -257,7 +257,7 @@ def single_cmd(
 @app.command("suite")
 def suite_cmd(
     suite: Annotated[str, typer.Option(help="Named suite from suites.py (run 'list-suites' to see all names).", rich_help_panel="Suite Selection")] = "smoke",
-    seeds: Annotated[list[str], typer.Option("--seed", "--seeds", help="Random seed(s); repeat or comma-separate (e.g. --seeds 42,43,44).", rich_help_panel="Suite Selection")] = ["42"],
+    seeds: Annotated[list[str] | None, typer.Option("--seed", "--seeds", help="Random seed(s); repeat or comma-separate (default: 42).", rich_help_panel="Suite Selection")] = None,
     shard_index: Annotated[int, typer.Option(min=0, help="Zero-based worker shard index for multi-GPU runs.", rich_help_panel="Sharding")] = 0,
     num_shards: Annotated[int, typer.Option(min=1, help="Total number of parallel worker shards.", rich_help_panel="Sharding")] = 1,
     skip_existing: Annotated[bool, typer.Option("--skip-existing", help="Skip runs that already have summary.json.", rich_help_panel="Sharding")] = False,
@@ -293,7 +293,7 @@ def suite_cmd(
 
     pending_jobs: list[tuple[int, str, ExperimentConfig]] = []
     skipped = 0
-    for seed in _parse_seeds(seeds):
+    for seed in _parse_seeds(seeds or ["42"]):
         seed_base = replace(base_cfg, seed=seed)
         for run_name, cfg in build_suite_runs(suite, seed_base):
             out_dir = suite_root / run_name / f"seed_{seed}"
@@ -353,7 +353,7 @@ def suite_cmd(
 def distributed_cmd(
     preset: Annotated[PresetChoice, typer.Option(help="Base hyperparameter preset ('cnn_10k' or 'resnet18_50k').", rich_help_panel="Config & Overrides")] = "resnet18_50k",
     config: Annotated[Path | None, typer.Option(help="Optional JSON config file loaded over the preset.", rich_help_panel="Config & Overrides")] = None,
-    set_override: Annotated[list[str], typer.Option("--set", help="Override any ExperimentConfig field as key=value (repeatable, e.g. --set er_p=1.0).", rich_help_panel="Config & Overrides")] = [],
+    set_override: Annotated[list[str] | None, typer.Option("--set", help="Override any ExperimentConfig field as key=value (repeatable, e.g. --set er_p=1.0).", rich_help_panel="Config & Overrides")] = None,
     dataset: Annotated[DatasetChoice | None, typer.Option(help="Dataset ('cifar10' or 'synthetic').", rich_help_panel="Core Options")] = None,
     model: Annotated[ModelChoice | None, typer.Option(help="Model architecture.", rich_help_panel="Core Options")] = None,
     n_nodes: Annotated[int | None, typer.Option(min=2, help="Logical peer count (overridden by torchrun/Slurm WORLD_SIZE).", rich_help_panel="Core Options")] = None,
@@ -397,7 +397,7 @@ def distributed_cmd(
             "device": device,
             "eval_every": eval_every,
         },
-        set_items=set_override,
+        set_items=set_override or [],
         quiet=quiet,
     )
     tag = _run_tag(base_cfg)

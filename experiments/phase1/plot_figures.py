@@ -28,16 +28,15 @@ def _parse_variant_key(label: str) -> str | None:
     Returns:
         Variant key ('tg_stab', 'tg_a03', 'tg_a07', 'tg_euclidean', 'tg_no_relu'), or None.
     """
-    norm = label.replace("trustgraph(descent_neg,", "trustgraph(descent,")
-    if norm.startswith("trustgraph(descent,mclip,t=0.003,val=iid)["):
+    if label.startswith("trustgraph(descent,mclip,t=0.003,val=iid)["):
         return "tg_stab"
-    if norm.startswith("trustgraph(descent,mclip,t=0.003,a=0.3,val=iid)"):
+    if label.startswith("trustgraph(descent,mclip,t=0.003,a=0.3,val=iid)"):
         return "tg_a03"
-    if norm.startswith("trustgraph(descent,mclip,t=0.003,a=0.7,val=iid)"):
+    if label.startswith("trustgraph(descent,mclip,t=0.003,a=0.7,val=iid)"):
         return "tg_a07"
-    if norm.startswith("trustgraph(descent,euclidean"):
+    if label.startswith("trustgraph(descent,euclidean"):
         return "tg_euclidean"
-    if norm.startswith("trustgraph(descent,norelu"):
+    if label.startswith("trustgraph(descent,norelu"):
         return "tg_no_relu"
     return None
 
@@ -183,7 +182,7 @@ def plot_attack_accuracy(
     )
     bot = fs.footnote(
         fig,
-        "Stabilized TrustGraph-DFL (descent_neg, mclip 2*r_i, tau=0.003, gc=10) sustains 91.5-92.9% consensus and 88.9-91.4% per-peer accuracy across all regimes.",
+        "Stabilized TrustGraph-DFL (descent, mclip 2*r_i, tau=0.003, gc=10) sustains 91.5-92.9% consensus and 88.9-91.4% per-peer accuracy across all regimes.",
     )
     fig.subplots_adjust(left=0.07, right=0.985, top=top - 0.08, bottom=bot + 0.90 / 6.4, wspace=0.22)
     fs.save(fig, out_dir, "fig1-attacks-50k")
