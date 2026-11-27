@@ -13,7 +13,7 @@ from src.logging_utils import configure_logging, get_logger
 logger = get_logger()
 app = typer.Typer(
     name="peersieve-plot",
-    help="Generate publication 300 dpi PNG and header-free PDF figures from committed JSON datasets.",
+    help="Generate 300 dpi PNG and header-free PDF figures from committed JSON datasets.",
     add_completion=False,
     pretty_exceptions_enable=False,
 )
@@ -177,7 +177,7 @@ def plot_attack_accuracy(
 
     top = fs.header(
         fig,
-        "TrustGraph-DFL Robustness Across Attack Regimes (Full 50k CIFAR-10)",
+        "TrustGraph-DFL Accuracy Across Attack Regimes (Full 50k CIFAR-10)",
         "Pretrained ResNet-18 (2,500/node, Dir alpha=0.5, iid val=250, random ER p=0.3, 30% Byz, 25 rounds, 3 seeds; 0 NaNs)",
     )
     bot = fs.footnote(
@@ -235,7 +235,7 @@ def plot_topology_and_byzantine_sweep(
     ax_topo.set_xticks(x)
     ax_topo.set_xticklabels([lbl for _, lbl in topos])
     ax_topo.set_ylabel("Final Test Accuracy (%)")
-    ax_topo.set_title("(a) Topology Robustness (30% Label Flip)", pad=10, fontweight="bold")
+    ax_topo.set_title("(a) Topology Comparison (30% Label Flip)", pad=10, fontweight="bold")
     ax_topo.set_ylim(55, 108)
     ax_topo.legend(loc="upper center", ncol=2, columnspacing=1.4)
 
@@ -269,7 +269,7 @@ def plot_topology_and_byzantine_sweep(
 
     top = fs.header(
         fig,
-        "TrustGraph-DFL Topology Robustness and Byzantine Stress Sweep (Full 50k CIFAR-10)",
+        "TrustGraph-DFL Topology Comparison and Byzantine Stress Sweep (Full 50k CIFAR-10)",
         "Pretrained ResNet-18 (2,500/node, Dir alpha=0.5, iid val=250, label_flip_all E_b=2, 25 rounds, 3 seeds)",
     )
     bot = fs.footnote(
@@ -379,7 +379,7 @@ def plot_ablations_and_fpr_dynamics(
 
 
 def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
-    """Plot sender vs. receiver-anchored (rxdelta) FPR trade-off and trajectory (Figure 4).
+    """Plot sender and receiver-anchored (rxdelta) FPR trade-off and trajectory (Figure 4).
 
     Args:
         data: Full parsed phase1_fpr_rxdelta.json dataset.
@@ -511,7 +511,7 @@ def plot_receiver_anchored_fpr(data: dict[str, object], out_dir: Path) -> None:
 
 
 def plot_v100_bandwidth_waste(data: dict[str, object], out_dir: Path) -> None:
-    """Plot real multi-node V100 received vs. wasted wire traffic per round (Figure 5).
+    """Plot multi-node V100 received and wasted wire traffic per round (Figure 5).
 
     Args:
         data: Full parsed phase1_v100_distributed_2node.json dataset.
@@ -632,7 +632,7 @@ def plot_v100_bandwidth_waste(data: dict[str, object], out_dir: Path) -> None:
 
 
 def plot_v100_distributed_ethernet(data: dict[str, object], out_dir: Path) -> None:
-    """Plot real multi-node V100 training compute vs. 1 Gb/s Ethernet transfer times (Figure 6).
+    """Plot multi-node V100 training compute and 1 Gb/s Ethernet transfer times (Figure 6).
 
     Args:
         data: Full parsed phase1_v100_distributed_2node.json dataset.
@@ -788,7 +788,7 @@ def plot_cli(
 
 
 def main() -> None:
-    """Invoke the Typer CLI application for generating publication figures.
+    """Run the Typer CLI for figure generation.
 
     Returns:
         None.

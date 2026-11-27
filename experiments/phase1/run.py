@@ -443,7 +443,7 @@ def transfer_bench_cmd(
 
 
 def main() -> None:
-    """Invoke the Typer CLI application for Phase 1 experiments.
+    """Run the Typer CLI for experiments.
 
     Returns:
         None.

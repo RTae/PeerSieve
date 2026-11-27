@@ -263,7 +263,7 @@ def summarize_system_directory(root: str | Path) -> list[SystemSummaryRow]:
         gpu_peaks = [float(sm["peak_gpu_alloc_mib"]) for sm in sms if sm.get("peak_gpu_alloc_mib") is not None]
 
         def _benign_streak(sm: dict[str, object], field: str) -> float:
-            """Read a benign rejection-streak metric supporting both benign and legacy JSON keys.
+            """Read a benign rejection-streak metric from system_metrics.
 
             Args:
                 sm: system_metrics dictionary from summary.json.
@@ -412,7 +412,7 @@ def export_system_metrics_json(
         )
     walls = [float(r["total_wall_sec"]) for r in runs]
     payload: dict[str, object] = {
-        "description": "Phase 1 CIFAR-10 ResNet-18 batched FP32 TrustGraph-DFL system-cost metrics",
+        "description": "CIFAR-10 ResNet-18 batched FP32 TrustGraph-DFL system-cost metrics",
         "source_root": str(root_p),
         "job_id": job_id,
         "commit": commit,
@@ -483,7 +483,7 @@ def format_markdown_report(rows: list[SummaryRow], root: str | Path, title: str)
 def summarize_cli(
     root: Annotated[Path, typer.Argument(help="Directory searched recursively for summary.json files.")],
     out: Annotated[Path | None, typer.Option(help="Optional Markdown file path to save the summary tables.")] = None,
-    title: Annotated[str, typer.Option(help="Top-level Markdown heading for the report.")] = "Phase 1 Experiment Summary",
+    title: Annotated[str, typer.Option(help="Top-level Markdown heading for the report.")] = "TrustGraph-DFL Experiment Summary",
     export_system_json: Annotated[Path | None, typer.Option(help="Optional JSON path to export aggregated system metrics.")] = None,
     transfer_bench_json: Annotated[Path | None, typer.Option(help="Optional measured TCP transfer JSON to embed in exported JSON.")] = None,
     job_id: Annotated[str | None, typer.Option(help="Optional Slurm job ID recorded in exported JSON metadata.")] = None,
@@ -519,7 +519,7 @@ def summarize_cli(
 
 
 def main() -> None:
-    """Invoke the Typer CLI application for summarizing completed runs.
+    """Run the Typer CLI for summarizing completed runs.
 
     Returns:
         None.

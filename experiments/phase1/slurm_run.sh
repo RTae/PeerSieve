@@ -105,14 +105,14 @@ if [[ "$SUBCMD" == "distributed" ]]; then
       echo "ERROR: peer rank ${idx} exited non-zero!"
       FAILED=1
     else
-      echo "Peer rank ${idx} completed cleanly."
+      echo "Peer rank ${idx} completed."
     fi
   done
   if [[ "$FAILED" -ne 0 ]]; then
     echo "One or more distributed peers failed. Check logs/phase1-${SLURM_JOB_ID:-local}-peer*.log"
     exit 1
   fi
-  echo "=== All ${DIST_WORLD_SIZE} distributed peers completed cleanly at $(date -Is) ==="
+  echo "=== All ${DIST_WORLD_SIZE} distributed peers completed at $(date -Is) ==="
   exit 0
 fi
 
@@ -137,7 +137,7 @@ if [[ "$SUBCMD" == "suite" && "$NUM_GPUS" -gt 1 ]]; then
       echo "ERROR: shard ${idx} (pid=${pid}) exited non-zero!"
       FAILED=1
     else
-      echo "Shard ${idx} (pid=${pid}) completed cleanly."
+      echo "Shard ${idx} (pid=${pid}) completed."
     fi
   done
 
@@ -146,7 +146,7 @@ if [[ "$SUBCMD" == "suite" && "$NUM_GPUS" -gt 1 ]]; then
     exit 1
   fi
 
-  echo "=== All ${NUM_GPUS} shards completed cleanly at $(date -Is) ==="
+  echo "=== All ${NUM_GPUS} shards completed at $(date -Is) ==="
   exit 0
 fi
 

@@ -311,7 +311,7 @@ SUITES: dict[str, Callable[[ExperimentConfig], list[tuple[str, ExperimentConfig]
 
 
 def build_suite_runs(suite: str, base: ExperimentConfig) -> list[tuple[str, ExperimentConfig]]:
-    """Return the ordered list of (run_name, config) entries for a named Phase 1 suite.
+    """Return the ordered list of (run_name, config) entries for a named suite.
 
     Args:
         suite: Suite key registered in SUITES.
