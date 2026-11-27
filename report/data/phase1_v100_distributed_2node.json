@@ -32,7 +32,7 @@
     {
       "label": "2p_none_sender",
       "slurm_job_id": "327714",
-      "rel_path": "2p/distributed/cifar10_random_none_byz0_trustgraph_descent_neg/seed_42/summary.json",
+      "rel_path": "2p/distributed/cifar10_random_none_byz0_trustgraph_descent/seed_42/summary.json",
       "config": {
         "dataset": "cifar10",
         "data_dir": "data",
@@ -64,7 +64,7 @@
         "noise_sigma": 0.5,
         "aggregator": "trustgraph",
         "alpha": 0.5,
-        "val_grad_sign": "descent_neg",
+        "val_grad_sign": "descent",
         "trustgraph_use_relu": true,
         "trustgraph_metric": "cosine",
         "trustgraph_score_threshold": 0.003,
@@ -76,7 +76,7 @@
         "device": "cuda",
         "eval_every": 5,
         "eval_batch_size": 512,
-        "output_dir": "outputs/phase1_v100_2node/2p/distributed/cifar10_random_none_byz0_trustgraph_descent_neg/seed_42",
+        "output_dir": "outputs/phase1_v100_2node/2p/distributed/cifar10_random_none_byz0_trustgraph_descent/seed_42",
         "verbose": true
       },
       "resolved_device": "cuda:0",
@@ -237,7 +237,7 @@
     {
       "label": "2p_model_poison_sender",
       "slurm_job_id": "327726",
-      "rel_path": "2p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz50_trustgraph_descent_neg/seed_42/summary.json",
+      "rel_path": "2p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz50_trustgraph_descent/seed_42/summary.json",
       "config": {
         "dataset": "cifar10",
         "data_dir": "data",
@@ -269,7 +269,7 @@
         "noise_sigma": 0.5,
         "aggregator": "trustgraph",
         "alpha": 0.5,
-        "val_grad_sign": "descent_neg",
+        "val_grad_sign": "descent",
         "trustgraph_use_relu": true,
         "trustgraph_metric": "cosine",
         "trustgraph_score_threshold": 0.003,
@@ -281,7 +281,7 @@
         "device": "cuda",
         "eval_every": 5,
         "eval_batch_size": 512,
-        "output_dir": "outputs/phase1_v100_2node/2p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz50_trustgraph_descent_neg/seed_42",
+        "output_dir": "outputs/phase1_v100_2node/2p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz50_trustgraph_descent/seed_42",
         "verbose": true
       },
       "resolved_device": "cuda:0",
@@ -444,7 +444,7 @@
     {
       "label": "2p_model_poison_rxdelta",
       "slurm_job_id": "327714",
-      "rel_path": "2p/distributed/cifar10_random_model_poison_byz50_trustgraph_descent_neg/seed_42/summary.json",
+      "rel_path": "2p/distributed/cifar10_random_model_poison_byz50_trustgraph_descent/seed_42/summary.json",
       "config": {
         "dataset": "cifar10",
         "data_dir": "data",
@@ -476,7 +476,7 @@
         "noise_sigma": 0.5,
         "aggregator": "trustgraph",
         "alpha": 0.5,
-        "val_grad_sign": "descent_neg",
+        "val_grad_sign": "descent",
         "trustgraph_use_relu": true,
         "trustgraph_metric": "cosine",
         "trustgraph_score_threshold": 0.003,
@@ -488,7 +488,7 @@
         "device": "cuda",
         "eval_every": 5,
         "eval_batch_size": 512,
-        "output_dir": "outputs/phase1_v100_2node/2p/distributed/cifar10_random_model_poison_byz50_trustgraph_descent_neg/seed_42",
+        "output_dir": "outputs/phase1_v100_2node/2p/distributed/cifar10_random_model_poison_byz50_trustgraph_descent/seed_42",
         "verbose": true
       },
       "resolved_device": "cuda:0",
@@ -651,7 +651,7 @@
     {
       "label": "4p_none_sender",
       "slurm_job_id": "327725",
-      "rel_path": "4p/r1_none_sender/distributed/cifar10_random_none_byz0_trustgraph_descent_neg/seed_42/summary.json",
+      "rel_path": "4p/r1_none_sender/distributed/cifar10_random_none_byz0_trustgraph_descent/seed_42/summary.json",
       "config": {
         "dataset": "cifar10",
         "data_dir": "data",
@@ -683,7 +683,7 @@
         "noise_sigma": 0.5,
         "aggregator": "trustgraph",
         "alpha": 0.5,
-        "val_grad_sign": "descent_neg",
+        "val_grad_sign": "descent",
         "trustgraph_use_relu": true,
         "trustgraph_metric": "cosine",
         "trustgraph_score_threshold": 0.003,
@@ -695,7 +695,7 @@
         "device": "cuda",
         "eval_every": 5,
         "eval_batch_size": 512,
-        "output_dir": "outputs/phase1_v100_2node/4p/r1_none_sender/distributed/cifar10_random_none_byz0_trustgraph_descent_neg/seed_42",
+        "output_dir": "outputs/phase1_v100_2node/4p/r1_none_sender/distributed/cifar10_random_none_byz0_trustgraph_descent/seed_42",
         "verbose": true
       },
       "resolved_device": "cuda:0",
@@ -878,7 +878,7 @@
     {
       "label": "4p_label_flip_sender",
       "slurm_job_id": "327726",
-      "rel_path": "4p/r4_label_flip_sender/distributed/cifar10_random_label_flip_all_byz25_trustgraph_descent_neg/seed_42/summary.json",
+      "rel_path": "4p/r4_label_flip_sender/distributed/cifar10_random_label_flip_all_byz25_trustgraph_descent/seed_42/summary.json",
       "config": {
         "dataset": "cifar10",
         "data_dir": "data",
@@ -910,7 +910,7 @@
         "noise_sigma": 0.5,
         "aggregator": "trustgraph",
         "alpha": 0.5,
-        "val_grad_sign": "descent_neg",
+        "val_grad_sign": "descent",
         "trustgraph_use_relu": true,
         "trustgraph_metric": "cosine",
         "trustgraph_score_threshold": 0.003,
@@ -922,7 +922,7 @@
         "device": "cuda",
         "eval_every": 5,
         "eval_batch_size": 512,
-        "output_dir": "outputs/phase1_v100_2node/4p/r4_label_flip_sender/distributed/cifar10_random_label_flip_all_byz25_trustgraph_descent_neg/seed_42",
+        "output_dir": "outputs/phase1_v100_2node/4p/r4_label_flip_sender/distributed/cifar10_random_label_flip_all_byz25_trustgraph_descent/seed_42",
         "verbose": true
       },
       "resolved_device": "cuda:0",
@@ -1107,7 +1107,7 @@
     {
       "label": "4p_model_poison_sender",
       "slurm_job_id": "327725",
-      "rel_path": "4p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz25_trustgraph_descent_neg/seed_42/summary.json",
+      "rel_path": "4p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz25_trustgraph_descent/seed_42/summary.json",
       "config": {
         "dataset": "cifar10",
         "data_dir": "data",
@@ -1139,7 +1139,7 @@
         "noise_sigma": 0.5,
         "aggregator": "trustgraph",
         "alpha": 0.5,
-        "val_grad_sign": "descent_neg",
+        "val_grad_sign": "descent",
         "trustgraph_use_relu": true,
         "trustgraph_metric": "cosine",
         "trustgraph_score_threshold": 0.003,
@@ -1151,7 +1151,7 @@
         "device": "cuda",
         "eval_every": 5,
         "eval_batch_size": 512,
-        "output_dir": "outputs/phase1_v100_2node/4p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz25_trustgraph_descent_neg/seed_42",
+        "output_dir": "outputs/phase1_v100_2node/4p/r2_model_poison_sender/distributed/cifar10_random_model_poison_byz25_trustgraph_descent/seed_42",
         "verbose": true
       },
       "resolved_device": "cuda:0",
@@ -1336,7 +1336,7 @@
     {
       "label": "4p_random_noise_sender",
       "slurm_job_id": "327726",
-      "rel_path": "4p/r5_random_noise_sender/distributed/cifar10_random_random_noise_byz25_trustgraph_descent_neg/seed_42/summary.json",
+      "rel_path": "4p/r5_random_noise_sender/distributed/cifar10_random_random_noise_byz25_trustgraph_descent/seed_42/summary.json",
       "config": {
         "dataset": "cifar10",
         "data_dir": "data",
@@ -1368,7 +1368,7 @@
         "noise_sigma": 0.5,
         "aggregator": "trustgraph",
         "alpha": 0.5,
-        "val_grad_sign": "descent_neg",
+        "val_grad_sign": "descent",
         "trustgraph_use_relu": true,
         "trustgraph_metric": "cosine",
         "trustgraph_score_threshold": 0.003,
@@ -1380,7 +1380,7 @@
         "device": "cuda",
         "eval_every": 5,
         "eval_batch_size": 512,
-        "output_dir": "outputs/phase1_v100_2node/4p/r5_random_noise_sender/distributed/cifar10_random_random_noise_byz25_trustgraph_descent_neg/seed_42",
+        "output_dir": "outputs/phase1_v100_2node/4p/r5_random_noise_sender/distributed/cifar10_random_random_noise_byz25_trustgraph_descent/seed_42",
         "verbose": true
       },
       "resolved_device": "cuda:0",
@@ -1565,7 +1565,7 @@
     {
       "label": "4p_model_poison_rxdelta",
       "slurm_job_id": "327725",
-      "rel_path": "4p/r3_model_poison_rxdelta/distributed/cifar10_random_model_poison_byz25_trustgraph_descent_neg/seed_42/summary.json",
+      "rel_path": "4p/r3_model_poison_rxdelta/distributed/cifar10_random_model_poison_byz25_trustgraph_descent/seed_42/summary.json",
       "config": {
         "dataset": "cifar10",
         "data_dir": "data",
@@ -1597,7 +1597,7 @@
         "noise_sigma": 0.5,
         "aggregator": "trustgraph",
         "alpha": 0.5,
-        "val_grad_sign": "descent_neg",
+        "val_grad_sign": "descent",
         "trustgraph_use_relu": true,
         "trustgraph_metric": "cosine",
         "trustgraph_score_threshold": 0.003,
@@ -1609,7 +1609,7 @@
         "device": "cuda",
         "eval_every": 5,
         "eval_batch_size": 512,
-        "output_dir": "outputs/phase1_v100_2node/4p/r3_model_poison_rxdelta/distributed/cifar10_random_model_poison_byz25_trustgraph_descent_neg/seed_42",
+        "output_dir": "outputs/phase1_v100_2node/4p/r3_model_poison_rxdelta/distributed/cifar10_random_model_poison_byz25_trustgraph_descent/seed_42",
         "verbose": true
       },
       "resolved_device": "cuda:0",
