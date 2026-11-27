@@ -54,7 +54,7 @@ def select_byzantine_nodes(
     byzantine_frac: float,
     seed: int = 42,
 ) -> set[int]:
-    """Deterministically sample Byzantine peer IDs without replacement.
+    """Sample Byzantine peer IDs without replacement using seed.
 
     Args:
         n_nodes: Total number of peers.
@@ -82,7 +82,7 @@ def topology_summary(graph: nx.Graph, byzantine_ids: set[int]) -> dict[str, obje
         byzantine_ids: Set of Byzantine peer IDs.
 
     Returns:
-        Dictionary of node/edge counts, degree stats, and benign subgraph connectivity.
+        Dictionary of node and edge counts, degree statistics, and benign subgraph connectivity.
     """
     degrees = [d for _, d in graph.degree()]
     benign_ids = [n for n in graph.nodes() if n not in byzantine_ids]

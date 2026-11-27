@@ -126,10 +126,10 @@ def run_distributed_peer(
     base_port: int = 29600,
     coord_dir: Path | None = None,
 ) -> dict[str, object] | None:
-    """Execute one decentralized FL peer process (one rank = one PeerNode).
+    """Run one decentralized FL peer process (one rank per PeerNode).
 
     Args:
-        cfg: Base experiment configuration (n_nodes is overridden with world_size).
+        cfg: Base experiment configuration; world_size overrides n_nodes.
         rank: Global peer rank in [0, world_size - 1].
         world_size: Total number of peer processes.
         local_rank: Node-local rank used for GPU assignment.

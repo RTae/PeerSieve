@@ -169,7 +169,7 @@ def make_synthetic_cifar_tensors(
 
 
 def _stratified_class_totals(n_total: int, num_classes: int) -> np.ndarray:
-    """Split n_total evenly across classes so all totals sum to n_total.
+    """Split n_total across classes so per-class counts differ by at most one and sum to n_total.
 
     Args:
         n_total: Total number of samples to allocate.
@@ -188,7 +188,7 @@ def _sample_class_pools(
     class_totals: np.ndarray,
     rng: np.random.Generator,
 ) -> list[np.ndarray]:
-    """Randomly draw shuffled index pools of the requested size for each class.
+    """Draw shuffled index pools of the requested size for each class.
 
     Args:
         y_np: 1D NumPy array of integer training labels.
@@ -397,7 +397,7 @@ def apply_label_flip(y: torch.Tensor, mode: str = "pair_0_1", num_classes: int =
 
     Args:
         y: 1D integer label tensor.
-        mode: Either 'pair_0_1' (swap classes 0 and 1) or 'all_classes' (map c -> C-1-c).
+        mode: Either 'pair_0_1' (swap classes 0 and 1) or 'all_classes' (map c to C - 1 - c).
         num_classes: Total number of classes.
 
     Returns:

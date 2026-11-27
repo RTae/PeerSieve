@@ -156,7 +156,7 @@ def seed_everything(seed: int) -> None:
 
 
 def prepare_dataset(cfg: ExperimentConfig) -> PartitionedDataset:
-    """Load CIFAR-10 or synthetic tensors and split them across peers via balanced Dirichlet.
+    """Load CIFAR-10 or synthetic tensors and split them across peers with balanced Dirichlet partitioning.
 
     Args:
         cfg: Experiment configuration specifying dataset, node count, shard size, and split mode.
@@ -271,7 +271,7 @@ def run_experiment(
     cfg: ExperimentConfig,
     preloaded_data: PartitionedDataset | None = None,
 ) -> dict[str, object]:
-    """Run one complete synchronous DFL experiment over PeerNode and LocalTransport.
+    """Run one synchronous DFL experiment over PeerNode and LocalTransport.
 
     Args:
         cfg: Full experiment configuration.

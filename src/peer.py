@@ -60,7 +60,7 @@ class LocalStepResult:
 
 
 class PeerNode:
-    """Self-contained decentralized FL peer owning local data, model weights, and neighbor list."""
+    """Decentralized FL peer holding local data, model weights, and neighbor IDs."""
 
     def __init__(
         self,
@@ -296,7 +296,7 @@ class PeerNode:
             tensors = [step.post_model] + [received[j].post_model for j in self.neighbors]
             self.model_vec = torch.stack(tensors, dim=0).mean(dim=0)
         elif self.neighbors:
-            # Track nearby neighbors while excluding extreme poisoned payloads from peer attackers.
+            # Average with nearby neighbors and drop outlier payloads from other attackers.
             ref_norm = max(float(torch.linalg.vector_norm(step.update).item()), 1e-6)
             max_dist = 4.0 * ref_norm
             inliers = [

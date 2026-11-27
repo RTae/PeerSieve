@@ -68,7 +68,7 @@ class PeerTransport(ABC):
 
 
 class LocalTransport(PeerTransport):
-    """In-process transport for fast single-GPU multi-peer sweeps with exact byte accounting."""
+    """In-process transport for single-GPU multi-peer sweeps with byte accounting."""
 
     def __init__(self) -> None:
         """Create an empty in-process payload table for synchronous rounds.
@@ -280,7 +280,7 @@ class TcpPeerTransport(PeerTransport):
         ctrl_recv: dict[int, socket.socket],
         send_both_vectors: bool = True,
     ) -> None:
-        """Bind connected neighbor/control sockets and allocate pinned CPU staging buffers.
+        """Bind connected neighbor and control sockets and allocate host staging buffers.
 
         Args:
             rank: Global peer rank.
@@ -376,7 +376,7 @@ class TcpPeerTransport(PeerTransport):
         srv.listen(max(total_expected * 2, 8))
 
         def _accept_loop() -> None:
-            """Accept all expected incoming neighbor data sockets and control sockets.
+            """Accept incoming neighbor data sockets and rank-0 control sockets.
 
             Returns:
                 None.
@@ -617,7 +617,7 @@ class TcpPeerTransport(PeerTransport):
                 errors.append(exc)
 
         def _do_recv(conn: socket.socket, view: memoryview) -> None:
-            """Receive one neighbor's full wire payload directly into its host buffer.
+            """Receive one neighbor's wire payload into its host buffer.
 
             Args:
                 conn: Incoming neighbor socket.

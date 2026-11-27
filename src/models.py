@@ -7,7 +7,7 @@ from torch.nn.utils import parameters_to_vector
 
 
 class SimpleCIFARCNN(nn.Module):
-    """Two-convolution, two-FC CNN for 32x32 CIFAR-10 images without BatchNorm."""
+    """Two-convolution CNN with two linear layers for 32x32 CIFAR-10 images without BatchNorm."""
 
     def __init__(self, num_classes: int = 10) -> None:
         """Initialize convolutional and linear layers for the 2-conv CIFAR CNN.
@@ -42,7 +42,7 @@ class SimpleCIFARCNN(nn.Module):
 
 
 class GroupNormCIFARCNN(nn.Module):
-    """Two-convolution, two-FC CNN with GroupNorm and Dropout for CIFAR-10."""
+    """Two-convolution CNN with GroupNorm, Dropout, and two linear layers for CIFAR-10."""
 
     def __init__(self, num_classes: int = 10, dropout: float = 0.25) -> None:
         """Initialize convolutional, GroupNorm, dropout, and linear layers.
@@ -149,7 +149,7 @@ def build_model(name: str = "cnn2x2", num_classes: int = 10) -> nn.Module:
         num_classes: Number of output classes.
 
     Returns:
-        Newly initialized PyTorch nn.Module on CPU.
+        Initialized PyTorch nn.Module on CPU.
     """
     if name == "cnn2x2":
         return SimpleCIFARCNN(num_classes=num_classes)
@@ -167,7 +167,7 @@ def model_to_vector(model: nn.Module) -> torch.Tensor:
     """Flatten all model parameters into a detached, contiguous 1D FP32 copy.
 
     Args:
-        model: PyTorch module whose parameters will be flattened.
+        model: PyTorch module to flatten.
 
     Returns:
         1D FP32 tensor copy of all model parameters.

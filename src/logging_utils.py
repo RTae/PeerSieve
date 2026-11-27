@@ -82,7 +82,7 @@ def configure_logging(
 
 
 def get_logger(rank: int | None = None, include_host: bool = False):
-    """Return a loguru logger configured with clean formatting and optional rank context.
+    """Return a loguru logger with optional host and rank context.
 
     Args:
         rank: Optional peer rank bound into every log line prefix.
@@ -98,7 +98,7 @@ def get_logger(rank: int | None = None, include_host: bool = False):
 
 @contextmanager
 def run_log_sink(log_path: str | Path | None, level: str = "INFO") -> Iterator[None]:
-    """Temporarily attach a per-run log file sink and remove it cleanly on exit.
+    """Attach a per-run log file sink for the duration of a with-block.
 
     Args:
         log_path: Target log file path (e.g., output_dir / 'run.log'), or None to disable.
