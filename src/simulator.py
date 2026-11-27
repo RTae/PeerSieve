@@ -69,7 +69,7 @@ class ExperimentConfig:
     # Aggregator
     aggregator: str = "trustgraph"
     alpha: float = 0.5
-    val_grad_sign: str = "descent_neg"  # descent_neg or paper_pos
+    val_grad_sign: str = "descent"  # descent (-grad) or ascent (+grad)
     trustgraph_use_relu: bool = True
     trustgraph_metric: str = "cosine"
     trustgraph_score_threshold: float = 0.0

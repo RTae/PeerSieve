@@ -5,6 +5,28 @@ from dataclasses import dataclass, field
 import torch
 
 
+_VAL_GRAD_SIGN_ALIASES: dict[str, str] = {
+    "descent": "descent",
+    "ascent": "ascent",
+    "descent_neg": "descent",
+    "paper_pos": "ascent",
+}
+
+
+def normalize_val_grad_sign(sign: str) -> str:
+    """Normalize a validation gradient sign string to 'descent' (-grad) or 'ascent' (+grad).
+
+    Args:
+        sign: Canonical sign ('descent' or 'ascent') or legacy alias ('descent_neg', 'paper_pos').
+
+    Returns:
+        Canonical string 'descent' or 'ascent'.
+    """
+    if sign not in _VAL_GRAD_SIGN_ALIASES:
+        raise ValueError(f"Unknown val_grad_sign: {sign!r}; expected 'descent' or 'ascent'.")
+    return _VAL_GRAD_SIGN_ALIASES[sign]
+
+
 @dataclass
 class AggregatorConfig:
     """Configuration for TrustGraph-DFL aggregation and its ablations."""
@@ -12,7 +34,7 @@ class AggregatorConfig:
     name: str = "trustgraph"
     alpha: float = 0.5  # Self-weight on the peer's own local model.
     eps: float = 1e-8
-    val_grad_sign: str = "descent_neg"  # Either descent_neg (-nabla F) or paper_pos (+nabla F).
+    val_grad_sign: str = "descent"  # Either descent (-nabla F) or ascent (+nabla F).
     trustgraph_use_relu: bool = True
     trustgraph_metric: str = "cosine"  # Either cosine or euclidean.
     trustgraph_score_threshold: float = 0.0
@@ -20,6 +42,15 @@ class AggregatorConfig:
     trustgraph_clip_mode: str = "update"  # Either update (update norm cap) or model (displacement cap).
     trustgraph_clip_factor: float = 2.0  # Multiplier on r_i for the model-space displacement cap.
     trustgraph_delta_mode: str = "sender"  # Either sender (theta_j^{t+1/2} - theta_j^t) or receiver (theta_j^{t+1/2} - theta_i^t).
+
+    def __post_init__(self) -> None:
+        """Normalize legacy validation gradient sign aliases on construction.
+
+        Returns:
+            None.
+        """
+        if self.val_grad_sign in _VAL_GRAD_SIGN_ALIASES:
+            self.val_grad_sign = _VAL_GRAD_SIGN_ALIASES[self.val_grad_sign]
 
     def validate(self) -> None:
         """Check that all aggregation configuration options are supported.
@@ -29,8 +60,7 @@ class AggregatorConfig:
         """
         if self.name != "trustgraph":
             raise ValueError(f"Unknown aggregator {self.name!r}; expected 'trustgraph'.")
-        if self.val_grad_sign not in {"descent_neg", "paper_pos"}:
-            raise ValueError(f"Unknown val_grad_sign: {self.val_grad_sign!r}")
+        self.val_grad_sign = normalize_val_grad_sign(self.val_grad_sign)
         if self.trustgraph_metric not in {"cosine", "euclidean"}:
             raise ValueError(f"Unknown trustgraph_metric: {self.trustgraph_metric!r}")
         if self.trustgraph_clip_mode not in {"update", "model"}:
@@ -122,7 +152,8 @@ def aggregate_trustgraph(
     if not neighbor_ids:
         return _self_only_result(self_post, neighbor_ids)
 
-    ref_vec = -val_grad if cfg.val_grad_sign == "descent_neg" else val_grad
+    sign = normalize_val_grad_sign(cfg.val_grad_sign)
+    ref_vec = -val_grad if sign == "descent" else val_grad
 
     if cfg.trustgraph_delta_mode == "receiver" and self_prev is None:
         raise ValueError("self_prev is required when trustgraph_delta_mode='receiver'.")
