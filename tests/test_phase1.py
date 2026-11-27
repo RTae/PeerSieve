@@ -827,7 +827,7 @@ def test_typer_cli_subcommands_and_single_run(tmp_path: Path) -> None:
         assert len(matches) == 1
         assert (matches[0].parent / "run.log").exists()
         saved_cfg_path = matches[0].parent / "config.json"
-        saved_cfg = json.loads(saved_cfg_path.read_text(encoding="utf-8"))
+        saved_cfg = json.loads(saved_cfg_path.read_text(encoding="utf-8"))["config"]
         assert saved_cfg["er_p"] == 0.5
         assert saved_cfg["grad_clip_norm"] == 5.0
         assert saved_cfg["val_grad_sign"] == "descent"
@@ -851,7 +851,7 @@ def test_typer_cli_subcommands_and_single_run(tmp_path: Path) -> None:
     assert replay_res.exit_code == 0, replay_res.output
     replay_matches = list((tmp_path / "from_cfg" / "single").glob("*/seed_99/config.json"))
     assert len(replay_matches) == 1
-    replay_cfg = json.loads(replay_matches[0].read_text(encoding="utf-8"))
+    replay_cfg = json.loads(replay_matches[0].read_text(encoding="utf-8"))["config"]
     assert replay_cfg["rounds"] == 1
     assert replay_cfg["er_p"] == 0.5
     assert replay_cfg["grad_clip_norm"] == 5.0
