@@ -269,7 +269,8 @@ You can override any field on [ExperimentConfig](src/simulator.py) with `--set k
 │   ├── figroles.py                 # Fixed colors, markers, and line styles
 │   └── slurm_run.sh                # Slurm launcher for sharded suites and distributed runs
 ├── tests/
-│   └── test_phase1.py              # Unit, CLI, logging, and offline synthetic DFL test suite
+│   ├── src/                        # Unit and integration tests mirroring src/
+│   └── experiments/phase1/         # CLI, suite, summary, and figure tests mirroring experiments/phase1/
 └── report/
     ├── phase1/
     │   ├── reproduce_report.md     # TrustGraph-DFL reproduction and FPR report
