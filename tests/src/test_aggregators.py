@@ -64,9 +64,9 @@ def test_trustgraph_empty_neighbors_and_zero_norm_scores() -> None:
 def test_trustgraph_threshold_no_relu_and_euclidean_variants() -> None:
     val_grad = torch.tensor([-1.0, 0.0])
     self_post = torch.tensor([0.0, 0.0])
-    # Neighbor 1 has cosine ~0.6; neighbor 2 has cosine ~-0.8.
+    # Neighbor 1 has cosine 0.6 and distance 1.0; neighbor 2 has cosine -0.8 and distance 2.0.
     u_pos = torch.tensor([0.6, 0.8])
-    u_neg = torch.tensor([-0.8, 0.6])
+    u_neg = torch.tensor([-1.6, 1.2])
     posts = {1: self_post + u_pos, 2: self_post + u_neg}
     updates = {1: u_pos, 2: u_neg}
 

@@ -74,6 +74,10 @@ def test_vector_to_model_does_not_alias_and_checks_length() -> None:
 
     with pytest.raises(ValueError, match="does not match"):
         vector_to_model(v0[:-1], model)
+    with pytest.raises(ValueError, match="does not match"):
+        vector_to_model(torch.cat([v0, torch.zeros(1)]), model)
+    # Failed length checks must not partially overwrite model weights.
+    assert torch.equal(model_to_vector(model), v1)
 
 
 def test_local_grad_clip_bounds_step_magnitude() -> None:
