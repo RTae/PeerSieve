@@ -186,13 +186,14 @@ def vector_to_model(vec: torch.Tensor, model: nn.Module) -> None:
     Returns:
         None.
     """
+    total_numel = sum(param.numel() for param in model.parameters())
+    if total_numel != vec.numel():
+        raise ValueError(f"Vector length {vec.numel()} does not match model parameter count {total_numel}.")
     offset = 0
     for param in model.parameters():
         numel = param.numel()
         param.copy_(vec[offset : offset + numel].view_as(param).to(device=param.device, dtype=param.dtype))
         offset += numel
-    if offset != vec.numel():
-        raise ValueError(f"Vector length {vec.numel()} does not match model parameter count {offset}.")
 
 
 def augment_cifar_batch(x: torch.Tensor, generator: torch.Generator | None = None) -> torch.Tensor:
