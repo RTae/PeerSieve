@@ -8,8 +8,8 @@ from src.simulator import ExperimentConfig
 MethodSpec = tuple[str, dict[str, object]]
 
 TRUSTGRAPH_SIGN_VARIANTS: tuple[MethodSpec, ...] = (
-    ("tg_descent_neg", {"aggregator": "trustgraph", "val_grad_sign": "descent_neg"}),
-    ("tg_paper_pos", {"aggregator": "trustgraph", "val_grad_sign": "paper_pos"}),
+    ("tg_descent", {"aggregator": "trustgraph", "val_grad_sign": "descent"}),
+    ("tg_ascent", {"aggregator": "trustgraph", "val_grad_sign": "ascent"}),
 )
 
 
@@ -52,7 +52,7 @@ def _default_trustgraph_overrides(**overrides: object) -> dict[str, object]:
     """
     cfg: dict[str, object] = {
         "aggregator": "trustgraph",
-        "val_grad_sign": "descent_neg",
+        "val_grad_sign": "descent",
         "trustgraph_clip_norm": True,
         "trustgraph_clip_mode": "model",
         "trustgraph_clip_factor": 2.0,
@@ -126,18 +126,18 @@ def _build_paper_cnn_10k(base: ExperimentConfig) -> list[tuple[str, ExperimentCo
 
     # Section 5.5 ablations and targeted diagnostics (9 runs).
     rand_base = replace(base, topology="random", byzantine_frac=0.3)
-    tg_mp = replace(rand_base, attack="model_poison", aggregator="trustgraph", val_grad_sign="descent_neg")
+    tg_mp = replace(rand_base, attack="model_poison", aggregator="trustgraph", val_grad_sign="descent")
     runs.extend(
         [
             ("sec5_5_ablations/no_relu__model_poison", replace(tg_mp, trustgraph_use_relu=False)),
             ("sec5_5_ablations/euclidean__model_poison", replace(tg_mp, trustgraph_metric="euclidean")),
             ("sec5_5_ablations/alpha03__model_poison", replace(tg_mp, alpha=0.3)),
             ("sec5_5_ablations/alpha07__model_poison", replace(tg_mp, alpha=0.7)),
-            ("diagnostics/valiid__label_flip__tg_descent_neg", replace(tg_mp, attack="label_flip", val_split="iid")),
-            ("diagnostics/valiid__model_poison__tg_descent_neg", replace(tg_mp, attack="model_poison", val_split="iid")),
-            ("diagnostics/label_flip_all__tg_descent_neg", replace(tg_mp, attack="label_flip_all")),
-            ("diagnostics/clip_norm__model_poison__tg_descent_neg", replace(tg_mp, attack="model_poison", trustgraph_clip_norm=True)),
-            ("diagnostics/clip_norm__random_noise__tg_descent_neg", replace(tg_mp, attack="random_noise", trustgraph_clip_norm=True)),
+            ("diagnostics/valiid__label_flip__tg_descent", replace(tg_mp, attack="label_flip", val_split="iid")),
+            ("diagnostics/valiid__model_poison__tg_descent", replace(tg_mp, attack="model_poison", val_split="iid")),
+            ("diagnostics/label_flip_all__tg_descent", replace(tg_mp, attack="label_flip_all")),
+            ("diagnostics/clip_norm__model_poison__tg_descent", replace(tg_mp, attack="model_poison", trustgraph_clip_norm=True)),
+            ("diagnostics/clip_norm__random_noise__tg_descent", replace(tg_mp, attack="random_noise", trustgraph_clip_norm=True)),
         ]
     )
     return runs

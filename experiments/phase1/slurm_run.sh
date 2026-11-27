@@ -14,10 +14,8 @@
 #   # Real 8-GPU distributed FL (one peer process per GPU over TcpPeerTransport):
 #   sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
 #     --cpus-per-task=32 --mem=128G --time=00:15:00 --open-mode=append --output=logs/%x-%j.out \
-#     experiments/phase1/slurm_run.sh distributed --model resnet18_pretrained --dataset cifar10 \
-#     --samples-per-node 2500 --val-split iid --lr 0.005 --lr-schedule cosine --augment --grad-clip-norm 10.0 \
-#     --trustgraph-clip-norm --trustgraph-clip-mode model --trustgraph-score-threshold 0.003 \
-#     --topology random --attack model_poison --byzantine-frac 0.25 --rounds 5 --eval-every 5 --seed 42
+#     experiments/phase1/slurm_run.sh distributed --preset resnet18_50k \
+#     --n-nodes 8 --topology random --attack model_poison --byzantine-frac 0.25 --rounds 5 --seed 42
 
 set -euo pipefail
 

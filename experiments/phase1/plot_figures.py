@@ -14,6 +14,7 @@ logger = get_logger()
 app = typer.Typer(
     name="peersieve-plot",
     help="Generate publication 300 dpi PNG and header-free PDF figures from committed JSON datasets.",
+    add_completion=False,
     pretty_exceptions_enable=False,
 )
 
@@ -27,15 +28,16 @@ def _parse_variant_key(label: str) -> str | None:
     Returns:
         Variant key ('tg_stab', 'tg_a03', 'tg_a07', 'tg_euclidean', 'tg_no_relu'), or None.
     """
-    if label.startswith("trustgraph(descent_neg,mclip,t=0.003,val=iid)["):
+    norm = label.replace("trustgraph(descent_neg,", "trustgraph(descent,")
+    if norm.startswith("trustgraph(descent,mclip,t=0.003,val=iid)["):
         return "tg_stab"
-    if label.startswith("trustgraph(descent_neg,mclip,t=0.003,a=0.3,val=iid)"):
+    if norm.startswith("trustgraph(descent,mclip,t=0.003,a=0.3,val=iid)"):
         return "tg_a03"
-    if label.startswith("trustgraph(descent_neg,mclip,t=0.003,a=0.7,val=iid)"):
+    if norm.startswith("trustgraph(descent,mclip,t=0.003,a=0.7,val=iid)"):
         return "tg_a07"
-    if label.startswith("trustgraph(descent_neg,euclidean"):
+    if norm.startswith("trustgraph(descent,euclidean"):
         return "tg_euclidean"
-    if label.startswith("trustgraph(descent_neg,norelu"):
+    if norm.startswith("trustgraph(descent,norelu"):
         return "tg_no_relu"
     return None
 
@@ -767,18 +769,7 @@ def plot_cli(
     out_dir: Annotated[Path, typer.Option(help="Output directory for PNG and header-free PDF figures.")] = Path("report/figures"),
     log_level: Annotated[Literal["DEBUG", "INFO", "WARNING", "ERROR"], typer.Option(help="Minimum loguru log level.")] = "INFO",
 ) -> None:
-    """Load committed JSON datasets and generate all PNG and header-free PDF figures.
-
-    Args:
-        data_50k: Path to the 50k 3-seed reproduction JSON dataset.
-        data_rxdelta: Path to the receiver-anchored FPR JSON dataset.
-        data_v100: Path to the multi-node V100 Ethernet JSON dataset.
-        out_dir: Directory where generated PNG and PDF figures are written.
-        log_level: Minimum loguru log level.
-
-    Returns:
-        None.
-    """
+    """Load committed JSON datasets and generate all PNG and header-free PDF figures."""
     configure_logging(level=log_level)
 
     parsed_50k = json.loads(data_50k.read_text(encoding="utf-8"))

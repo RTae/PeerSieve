@@ -55,11 +55,9 @@ sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
 # Real 8-GPU distributed DFL (one peer process per A100 GPU over TcpPeerTransport)
 sbatch -p a100 -A a100 --nodes=1 --nodelist=octave --gres=gpu:a100:8 \
   --cpus-per-task=32 --mem=128G --time=00:15:00 --open-mode=append --output=logs/%x-%j.out \
-  experiments/phase1/slurm_run.sh distributed --dataset cifar10 --model resnet18_pretrained \
-  --n-nodes 8 --samples-per-node 2500 --val-split iid --lr 0.005 --lr-schedule cosine \
-  --augment --grad-clip-norm 10.0 --trustgraph-clip-norm --trustgraph-clip-mode model \
-  --trustgraph-score-threshold 0.003 --topology random --attack model_poison \
-  --byzantine-frac 0.25 --rounds 5 --eval-every 5 --seed 42 --output-root outputs/phase1_dist_smoke
+  experiments/phase1/slurm_run.sh distributed --preset resnet18_50k \
+  --n-nodes 8 --topology random --attack model_poison --byzantine-frac 0.25 \
+  --rounds 5 --seed 42 --output-root outputs/phase1_dist_smoke
 ```
 
 ## Multi-node V100 Ethernet motivation runs
@@ -70,12 +68,9 @@ Run real multi-node distributed TrustGraph-DFL across two V100 servers (`ja3` an
 # Example: 4 peers (2 per V100 node) over physical 1 Gb/s Ethernet on partition open
 srun -p open --nodes=2 --ntasks=4 --ntasks-per-node=2 --gres=gpu:v100:1 --time=00:10:00 \
   ~/venvs/peersieve-v100/bin/python -m experiments.phase1.run distributed \
-  --device cuda --no-download --dataset cifar10 --model resnet18_pretrained \
-  --n-nodes 4 --samples-per-node 2500 --val-split iid --rounds 25 --eval-every 5 \
-  --lr 0.005 --lr-schedule cosine --augment --grad-clip-norm 10.0 \
-  --trustgraph-clip-norm --trustgraph-clip-mode model --trustgraph-score-threshold 0.003 \
-  --topology random --er-p 1.0 --attack model_poison --byzantine-frac 0.25 \
-  --trustgraph-delta-mode sender --dist-iface enp68s0f0 --seed 42 \
+  --preset resnet18_50k --device cuda --no-download --n-nodes 4 \
+  --topology random --set er_p=1.0 --attack model_poison --byzantine-frac 0.25 \
+  --delta-mode sender --dist-iface enp68s0f0 --seed 42 \
   --output-root outputs/phase1_v100_2node
 ```
 

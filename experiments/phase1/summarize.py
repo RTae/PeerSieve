@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 import numpy as np
 import typer
 
+from src.aggregators import normalize_val_grad_sign
 from src.logging_utils import configure_logging, get_logger
 
 logger = get_logger()
@@ -15,6 +16,7 @@ app = typer.Typer(
     name="peersieve-summarize",
     help="Aggregate summary.json files into Markdown accuracy and system-cost tables.",
     no_args_is_help=True,
+    add_completion=False,
     pretty_exceptions_enable=False,
 )
 
@@ -74,7 +76,7 @@ def method_label(cfg: dict[str, object]) -> str:
         extra.append(f"spn={spn}")
     suffix = f"[{','.join(extra)}]" if extra else ""
     if agg == "trustgraph":
-        sign = str(cfg.get("val_grad_sign", "descent_neg"))
+        sign = normalize_val_grad_sign(str(cfg.get("val_grad_sign", "descent")))
         parts = [sign]
         if not cfg.get("trustgraph_use_relu", True):
             parts.append("norelu")
@@ -490,21 +492,7 @@ def summarize_cli(
     commit: Annotated[str | None, typer.Option(help="Optional git commit hash recorded in exported JSON metadata.")] = None,
     log_level: Annotated[Literal["DEBUG", "INFO", "WARNING", "ERROR"], typer.Option(help="Minimum loguru log level.")] = "INFO",
 ) -> None:
-    """Summarize completed summary.json files into Markdown tables and optional JSON.
-
-    Args:
-        root: Directory searched recursively for summary.json files.
-        out: Optional path to write the Markdown report.
-        title: Heading for the Markdown report.
-        export_system_json: Optional output path for aggregated system metrics JSON.
-        transfer_bench_json: Optional measured TCP benchmark JSON to embed.
-        job_id: Optional Slurm job ID metadata.
-        commit: Optional git commit hash metadata.
-        log_level: Minimum loguru log level.
-
-    Returns:
-        None.
-    """
+    """Summarize completed summary.json files into Markdown tables and optional JSON."""
     configure_logging(level=log_level)
 
     rows = summarize_directory(root)
