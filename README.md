@@ -61,7 +61,7 @@ uv run python -m experiments.phase1.plot_figures
 
 ## CLI guide
 
-All command-line tools are built with [Typer](https://typer.tiangolo.com/) and `loguru`. Pass `--help` to any command or subcommand to inspect its exact flags, defaults, and allowed choices:
+All command-line tools use [Typer](https://typer.tiangolo.com/) and `loguru`. Pass `--help` to any command or subcommand to inspect its exact options, defaults, and choices:
 
 ```bash
 uv run python -m experiments.phase1.run --help
@@ -73,6 +73,15 @@ uv run python -m experiments.phase1.summarize --help
 uv run python -m experiments.phase1.plot_figures --help
 ```
 
+### How configuration layering works (`single` and `distributed`)
+
+Instead of requiring 40 flags on every command, `single` and `distributed` layer settings in four steps (later steps override earlier ones):
+
+1. `--preset`: starts from `resnet18_50k` (default: pretrained ResNet-18, 2,500 images/peer, 25 rounds, cosine LR, `val=iid`, gradient and model clipping) or `cnn_10k` (literal 10k 2-conv CNN defaults).
+2. `--config path.json`: optionally loads a JSON config file (including any previous run's saved `config.json`).
+3. Core CLI flags: everyday flags such as `--attack`, `--byzantine-frac`, `--topology`, `--val-grad-sign`, `--delta-mode`, `--rounds`, `--device`.
+4. `--set key=value`: repeatable typed override for *any* field in [ExperimentConfig](src/simulator.py) (for example `--set er_p=1.0 --set byz_local_epochs=2 --set trustgraph_use_relu=false`).
+
 ### 1. Experiment runner (`experiments.phase1.run`)
 
 | Subcommand | How it runs | When to use it |
@@ -81,7 +90,7 @@ uv run python -m experiments.phase1.plot_figures --help
 | `suite` | Runs a named grid from [suites.py](experiments/phase1/suites.py) | Reproduce paper tables and sweeps (supports multi-GPU sharding) |
 | `distributed` | One OS process per peer over TCP (`TcpPeerTransport`) | Measure real multi-GPU or multi-node Ethernet communication |
 | `transfer-bench` | Point-to-point TCP payload timer between two hosts | Measure raw cluster Ethernet goodput without GPU training |
-| `list-suites` | Prints registered suites and run counts | Check available `--suite` names before launching a sweep |
+| `list-suites` | Lists registered suites and run counts | Check available `--suite` names before launching a sweep |
 
 #### `single` — run one custom experiment
 
@@ -89,18 +98,19 @@ Outputs are written under `<output-root>/single/<tag>/seed_<id>/`. Pass multiple
 
 ```bash
 uv run python -m experiments.phase1.run single \
-  --dataset cifar10 --model resnet18_pretrained \
-  --n-nodes 20 --samples-per-node 2500 --val-split iid \
-  --rounds 25 --lr 0.005 --lr-schedule cosine --augment --grad-clip-norm 10.0 \
-  --topology random --er-p 0.3 --attack model_poison --byzantine-frac 0.3 \
-  --val-grad-sign descent_neg --trustgraph-clip-norm --trustgraph-clip-mode model \
-  --trustgraph-score-threshold 0.003 --seeds 42,43,44 --skip-existing \
-  --output-root outputs/single_run
+  --preset resnet18_50k --topology random --attack model_poison \
+  --byzantine-frac 0.3 --val-grad-sign descent --delta-mode sender \
+  --seeds 42,43,44 --skip-existing --output-root outputs/single_run
+
+# Override any advanced ExperimentConfig field with --set
+uv run python -m experiments.phase1.run single \
+  --preset resnet18_50k --attack label_flip_all --set byz_local_epochs=2 \
+  --delta-mode receiver --set trustgraph_score_threshold=0.02 --seed 42
 ```
 
 #### `suite` — run a named benchmark suite
 
-Outputs are written under `<output-root>/<suite>/<run-name>/seed_<id>/`, plus `<output-root>/<suite>/suite_summaries.json`. For multi-GPU parallel execution, split jobs evenly with `--shard-index` and `--num-shards` (or let [slurm_run.sh](experiments/phase1/slurm_run.sh) shard automatically across allocated GPUs).
+Outputs are written under `<output-root>/<suite>/<run-name>/seed_<id>/`, plus `<output-root>/<suite>/suite_summaries.json`. For multi-GPU parallel execution, split jobs with `--shard-index` and `--num-shards` (or let [slurm_run.sh](experiments/phase1/slurm_run.sh) shard automatically across allocated GPUs).
 
 ```bash
 # List all available suites
@@ -118,15 +128,12 @@ Each peer runs in its own OS process (`RANK` / `WORLD_SIZE` from `torchrun`, or 
 
 - Omit `--dist-iface` for single-node loopback TCP (`127.0.0.1`).
 - Pass `--dist-iface enp68s0f0` for inter-node Ethernet TCP across separate servers.
-- Set `--trustgraph-delta-mode sender` (`89.45 MB`/neighbor, 2 vectors) or `receiver` (`44.73 MB`/neighbor, 1 vector).
+- Set `--delta-mode sender` (`89.45 MB`/neighbor, 2 vectors) or `receiver` (`44.73 MB`/neighbor, 1 vector).
 
 ```bash
 # Single-node 4-GPU launch with torchrun
 uv run torchrun --standalone --nproc_per_node=4 -m experiments.phase1.run distributed \
-  --dataset cifar10 --model resnet18_pretrained --n-nodes 4 --samples-per-node 2500 \
-  --val-split iid --rounds 25 --eval-every 5 --lr 0.005 --lr-schedule cosine \
-  --augment --grad-clip-norm 10.0 --trustgraph-clip-norm --trustgraph-clip-mode model \
-  --trustgraph-score-threshold 0.003 --topology random --er-p 1.0 \
+  --preset resnet18_50k --n-nodes 4 --topology random --set er_p=1.0 \
   --attack model_poison --byzantine-frac 0.25 --seed 42 --output-root outputs/dist_run
 ```
 
@@ -176,61 +183,24 @@ For full Slurm scripts (`slurm_run.sh`), multi-node V100 Ethernet commands, and 
 
 ## CLI option reference
 
-### Model and data (`single`, `distributed`, plus base flags on `suite`)
+### Core options (`single` and `distributed`)
 
-| Flag | Default (`single` / `distributed`) | Allowed values / type | Description |
-|---|---|---|---|
-| `--dataset` | `cifar10` | `cifar10`, `synthetic` | Training dataset (`synthetic` runs fast offline tests) |
-| `--data-dir` | `data` | path | Directory storing or receiving CIFAR-10 files |
-| `--no-download` | `False` | flag | Fail instead of downloading CIFAR-10 (for offline nodes) |
-| `--model` | `cnn2x2` / `resnet18_pretrained` | `cnn2x2`, `cnn2x2_gn`, `resnet18_pretrained`, `resnet18_scratch` | Neural network architecture |
-| `--n-nodes` | `20` / `4` | int (`>= 2`) | Number of peers (`distributed` uses `WORLD_SIZE`) |
-| `--samples-per-node` | `500` / `2500` | int (`>= 10`) | Total train + validation samples per peer |
-| `--alpha-dir` | `0.5` | float | Dirichlet non-IID skew (smaller = more heterogeneous) |
-| `--val-frac` | `0.1` | float | Fraction of each peer's samples held out for validation |
-| `--val-split` | `local` / `iid` | `local`, `iid` | `local` non-IID shard validation vs. stratified balanced `iid` |
-
-### Training (`single`, `distributed`)
-
-| Flag | Default (`single` / `distributed`) | Allowed values / type | Description |
-|---|---|---|---|
-| `--rounds` | `200` / `25` | int (`>= 1`) | Total decentralized communication rounds |
-| `--local-epochs` | `1` | int (`>= 1`) | Local SGD epochs per round on benign peers |
-| `--lr` | `0.01` / `0.005` | float | Initial SGD learning rate |
-| `--lr-schedule` | `constant` / `cosine` | `constant`, `cosine` | Learning rate decay schedule across rounds |
-| `--momentum` | `0.9` | float | SGD momentum factor |
-| `--weight-decay` | `1e-4` | float | L2 weight decay during local SGD |
-| `--batch-size` | `64` | int (`>= 1`) | Mini-batch size for local SGD |
-| `--augment` | `False` | flag | Random crop and horizontal flip on CIFAR-10 |
-| `--grad-clip-norm` | `0.0` | float | Local gradient L2 norm cap (`0.0` disables; 50k uses `10.0`) |
-| `--val-grad-weight-decay` | `False` | flag | Add L2 weight decay term to validation gradient |
-
-### Topology and attacks (`single`, `distributed`)
-
-| Flag | Default (`single` / `distributed`) | Allowed values / type | Description |
-|---|---|---|---|
-| `--topology` | `random` | `ring`, `random`, `small_world` | Peer graph family |
-| `--er-p` | `0.3` | float | Edge probability for `random` Erdos-Renyi (`1.0` = complete) |
-| `--ws-k`, `--ws-p` | `4`, `0.3` | int, float | Degree and rewiring probability for `small_world` |
-| `--attack` | `label_flip` / `model_poison` | `none`, `label_flip`, `label_flip_all`, `model_poison`, `random_noise` | Byzantine attack applied on malicious peers |
-| `--byzantine-frac` | `0.3` / `0.25` | float (`0.0` to `1.0`) | Fraction of peers marked Byzantine |
-| `--byz-local-epochs` | `0` | int (`>= 0`) | Extra local epochs for label-flip attackers (`0` uses `--local-epochs`) |
-| `--poison-lambda` | `10.0` | float | Negative scaling multiplier for `model_poison` |
-| `--noise-sigma` | `0.5` | float | Gaussian std for `random_noise` |
-
-### TrustGraph scoring and clipping (`single`, `distributed`)
-
-| Flag | Default (`single` / `distributed`) | Allowed values / type | Description |
-|---|---|---|---|
-| `--alpha` | `0.5` | float (`0.0` to `1.0`) | Self-weight kept on local model during aggregation |
-| `--val-grad-sign` | `descent_neg` | `descent_neg`, `paper_pos` | Reference direction (`-grad` descent vs. literal paper `+grad`) |
-| `--trustgraph-delta-mode` | `sender` | `sender`, `receiver` | Neighbor anchor: `sender` (2 vectors) vs. `receiver` (`rxdelta`, 1 vector) |
-| `--trustgraph-score-threshold` | `0.0` / `0.003` | float | Minimum cosine score $\tau$ before ReLU zeroing |
-| `--trustgraph-metric` | `cosine` | `cosine`, `euclidean` | Similarity metric for neighbor trust scores |
-| `--no-relu` | `False` | flag | Keep negative scores instead of zeroing with ReLU |
-| `--trustgraph-clip-norm` | `False` | flag | Clip accepted neighbor step norm relative to local update |
-| `--trustgraph-clip-mode` | `update` / `model` | `update`, `model` | Clip sender update delta or model displacement from receiver |
-| `--trustgraph-clip-factor` | `2.0` | float | Clipping cap multiplier relative to receiver's own update norm |
+| Flag | Allowed values / type | Description |
+|---|---|---|
+| `--preset` | `resnet18_50k` (default), `cnn_10k` | Starting hyperparameter preset |
+| `--config` | JSON file path | Load settings from a JSON file or saved `config.json` |
+| `--set` | `key=value` (repeatable) | Override any [ExperimentConfig](src/simulator.py) field (e.g. `lr=0.01`, `er_p=1.0`, `augment=false`) |
+| `--dataset` | `cifar10`, `synthetic` | Training dataset (`synthetic` runs fast offline tests) |
+| `--model` | `cnn2x2`, `cnn2x2_gn`, `resnet18_pretrained`, `resnet18_scratch` | Model architecture |
+| `--n-nodes` | int (`>= 2`) | Number of peers (`distributed` uses `WORLD_SIZE`) |
+| `--samples-per-node` | int (`>= 10`) | Total train + validation samples per peer |
+| `--rounds` | int (`>= 1`) | Total communication rounds |
+| `--topology` | `ring`, `random`, `small_world` | Communication graph family |
+| `--attack` | `none`, `label_flip`, `label_flip_all`, `model_poison`, `random_noise` | Attack on malicious peers |
+| `--byzantine-frac` | float (`0.0` to `1.0`) | Fraction of Byzantine peers |
+| `--val-split` | `local`, `iid` | Non-IID local shard validation vs. balanced validation |
+| `--val-grad-sign` | `descent`, `ascent` | Validation direction: `descent` ($-\nabla F_i$) or `ascent` ($+\nabla F_i$) |
+| `--delta-mode` | `sender`, `receiver` | Scoring anchor: `sender` (2 vectors) vs. `receiver` (`rxdelta`, 1 vector) |
 
 ### Execution, sharding, TCP, and logging
 
@@ -239,6 +209,7 @@ For full Slurm scripts (`slurm_run.sh`), multi-node V100 Ethernet commands, and 
 | `--seed`, `--seeds` | `single`, `suite`, `distributed` | `42` | Random seed(s); `single`/`suite` accept comma-separated (`42,43,44`) or repeated flags |
 | `--device` | `single`, `suite`, `distributed` | `auto` | Compute device (`auto`, `cpu`, `cuda`, `mps`) |
 | `--eval-every` | `single`, `suite`, `distributed` | `5` | Evaluate test accuracy every N rounds (`0` = final round only) |
+| `--no-download` | `single`, `suite`, `distributed` | `False` | Fail instead of downloading CIFAR-10 (for offline compute nodes) |
 | `--skip-existing` | `single`, `suite` | `False` | Skip runs that already have `summary.json` |
 | `--shard-index`, `--num-shards` | `suite` | `0`, `1` | Partition suite jobs across parallel GPU workers |
 | `--dist-iface` | `distributed` | `None` (loopback) | Linux NIC name for inter-node TCP (e.g. `enp68s0f0`) |
@@ -247,6 +218,13 @@ For full Slurm scripts (`slurm_run.sh`), multi-node V100 Ethernet commands, and 
 | `--log-level` | all commands | `INFO` | Minimum `loguru` level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `--log-file` | `run` subcommands | `None` | Extra file receiving all CLI logs in addition to per-run `run.log` |
 | `--quiet` | `single`, `suite`, `distributed` | `False` | Raise stderr threshold to `WARNING` while keeping file logs at `--log-level` |
+
+### Common `--set` fields (`ExperimentConfig`)
+
+Any field on [ExperimentConfig](src/simulator.py) can be set with `--set key=value`:
+- Training: `lr`, `lr_schedule` (`constant`/`cosine`), `local_epochs`, `momentum`, `weight_decay`, `batch_size`, `augment`, `grad_clip_norm`, `val_grad_weight_decay`, `alpha_dir`, `val_frac`, `data_dir`
+- Topology and attacks: `er_p`, `ws_k`, `ws_p`, `byz_local_epochs`, `poison_lambda`, `noise_sigma`
+- TrustGraph scoring: `alpha`, `trustgraph_use_relu`, `trustgraph_metric` (`cosine`/`euclidean`), `trustgraph_score_threshold`, `trustgraph_clip_norm`, `trustgraph_clip_mode` (`update`/`model`), `trustgraph_clip_factor`
 
 ### Named suites (`experiments/phase1/suites.py`)
 
